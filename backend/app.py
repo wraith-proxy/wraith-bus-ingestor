@@ -63,7 +63,7 @@ def buses():
         "WHERE timestamp > dateadd('m', -5, now()) "
         "LATEST ON timestamp PARTITION BY bus_id"
     )
-    url = 'http://questdb:9000/exec?query=' + urllib.parse.quote(query)
+    url = os.getenv('QUESTDB_URL', '') + '/exec?query=' + urllib.parse.quote(query)
     try:
         with urllib.request.urlopen(url, timeout=10) as r:
             rows = json.load(r).get('dataset', [])

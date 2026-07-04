@@ -11,8 +11,8 @@ AVL_URL = (
     "https://data.bus-data.dft.gov.uk/api/v1/datafeed/"
     f"?api_key={API_KEY}&boundingBox={BBOX}"
 )
-# ILP over HTTP lives on 9000 (/write); 9009 is the raw TCP socket
-QUESTDB_ILP_URL = "http://questdb:9000/write"
+# ILP over HTTP lives on the REST port (/write); 9009 is the raw TCP socket
+QUESTDB_ILP_URL = os.environ["QUESTDB_URL"] + "/write"
 NS = {"siri": "http://www.siri.org.uk/siri"}
 
 
