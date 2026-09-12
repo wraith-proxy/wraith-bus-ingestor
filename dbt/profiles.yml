@@ -1,0 +1,42 @@
+# Kept inside the project so the whole thing is self-contained:
+#   .venv/bin/dbt run --profiles-dir .
+# NOTE: the external_location paths in models/staging/_sources.yml are RELATIVE,
+# so dbt must be invoked with dbt/ as the working directory.
+ghost_bus:
+  target: dev
+  outputs:
+    dev:
+      type: duckdb
+      # dbt builds into a SCRATCH file, never into the one Flask serves.
+      # DuckDB takes an exclusive lock for the whole run, so building straight
+      # into ghost_bus.duckdb made every read-only open fail for the duration
+      # ("Conflicting lock is held") and blanked the live map for minutes at a
+      # time. build.sh publishes the marts into ghost_bus.duckdb with an atomic
+      # rename once the tests have passed -- so the API sees either the whole
+      # old file or the whole new one, and a failed build leaves the last good
+      # marts in place. See build.sh.
+      path: ghost_bus_build.duckdb
+      # 3, not 6. The box has 6 cores and also runs QuestDB, the ingestor and
+      # the API; at 4+ threads DuckDB drove load average past 10 and the API's
+      # p50 went from 1.3 s to 15.6 s, which is long enough for nginx to start
+      # serving 504s. A slower rebuild is fine, a website that falls over is not.
+      threads: 3
+      settings:
+        # 6 GB of 15, leaving headroom for QuestDB, the ingestor and the API.
+        # The corpus is ~45M pings; the window functions in int_bus_journeys
+        # exceed this and spill to disk, which is the intended behaviour.
+        memory_limit: '6GB'
+        # DO NOT set temp_directory here. dbt-duckdb replays every `settings:`
+        # entry on each new connection it opens, and DuckDB refuses to change
+        # the temp directory once it has spilled to the current one -- so the
+        # first model big enough to spill made every subsequent model die with
+        # "Cannot switch temporary directory after the current one has been
+        # used". The default (a directory beside the database file) is correct.
+        #
+        # Pinned so that casting the feed's TIMESTAMPTZ down to a naive
+        # TIMESTAMP is deterministic. DuckDB resolves that cast against the
+        # session time zone, which otherwise comes from the host -- meaning the
+        # same parquet file would build differently on a UTC box and a BST one.
+        # Local time is obtained explicitly with AT TIME ZONE, never implicitly.
+        TimeZone: 'UTC'
+        preserve_insertion_order: false

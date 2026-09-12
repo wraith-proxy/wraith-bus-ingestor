@@ -1,0 +1,338 @@
+version: 2
+
+models:
+  - name: mart_eta_model
+    description: >
+      The fitted ETA model: one ordinary-least-squares line per grain, giving
+      remaining_secs = intercept_s + slope_s_per_km * remaining_km.
+
+      There is no model artefact to ship and no Python at inference time -- the
+      coefficients ARE the table, and Flask predicts with one multiply and one
+      add. Four grains are emitted, each refitted from the underlying pings
+      rather than averaged from the finer rows, so that a lookup can fall back
+      from (line, direction, band) through (line, direction, '*') and
+      (line, '*', '*') to ('*', '*', '*') and is guaranteed a hit.
+
+      A grain is only published if it has at least 200 observations, a positive
+      slope, and an implied mean speed between 3 and 90 km/h. A grain that fails
+      is omitted so the API falls through to a coarser row: no model is better
+      than a wrong model.
+    columns:
+      - name: line
+        description: Service number, or '*' for the global fallback row. Part of the primary key.
+        tests: [not_null]
+      - name: direction
+        description: >
+          Journey direction, or '*' meaning "this fit pools both directions".
+          Part of the primary key. '*' appears ONLY as a fallback grain here --
+          a real journey always has a real direction.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['inbound', 'outbound', 'clockwise', 'anticlockwise', '*']
+      - name: day_type
+        description: >
+          Service pattern of the day, from the LOCAL date: 'weekday', 'sat',
+          'sun', or '*' for a fallback grain. Saturday and Sunday operation
+          differs from Mon-Fri in frequency, in how many stops are actually
+          served and in traffic, so fitting them together biases every grain.
+          Sits between direction and hour_band in the key, matching the order
+          the API walks its fallback chain.
+          LIMITATION: bank holidays run a Sunday-ish service but are filed here
+          as 'weekday'. Deliberate -- a holiday calendar is a whole extra source
+          to maintain, and the eight affected days a year are diluted across
+          three weeks of training data. An ETA on Easter Monday will be a little
+          pessimistic.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['weekday', 'sat', 'sun', '*']
+      - name: hour_band
+        description: >
+          Traffic regime, or '*' meaning "this fit pools the whole day". Part of
+          the primary key. Derived from LOCAL (Europe/London) time, not UTC --
+          bucketing on UTC would put the morning peak an hour early for the
+          seven months of the year the UK is on BST. The five band names and their cut points are frozen
+          against backend/app.py -- if they drift, every lookup silently misses
+          its band and falls through to a coarser model.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['night', 'am_peak', 'inter', 'pm_peak', 'evening', '*']
+      - name: slope_s_per_km
+        description: >
+          Seconds of travel per remaining kilometre -- the pace of the service.
+          Around 170-260 s/km in this data, i.e. 14-21 km/h, which is normal for
+          a stopping urban bus (TfL's network average is about 14 km/h). It is
+          measured against the observed 3-minute-sampled path, which cuts
+          corners, so it is a pace per OBSERVED km and not an odometer claim.
+        tests: [not_null]
+      - name: intercept_s
+        description: >
+          Fixed seconds added regardless of distance. Substantial (roughly
+          300-750 s) and that is not a bug: it absorbs the disproportionate time
+          a bus spends on the last kilometre into a town centre, plus the
+          pooling of short slow journeys with long fast ones inside a grain.
+          Finer grains have smaller intercepts, which is the expected direction.
+        tests: [not_null]
+      - name: r2
+        description: >
+          Coefficient of determination for this grain. Median about 0.82 at the
+          finest grain. Exposed through the API so the UI can tell the user how
+          much to trust a prediction rather than presenting every ETA with the
+          same confidence.
+        tests: [not_null]
+      - name: n_obs
+        description: Pings the fit was made from. At least 200 by construction. A grain with 300 observations and one with 300,000 are not equally trustworthy, which is precisely why fallbacks are refitted rather than averaged.
+        tests: [not_null]
+      - name: mean_speed_kmh
+        description: 3600 / slope. Published because it is the human-readable form of the slope and makes an implausible fit obvious at a glance. Guaranteed to lie in 3..90.
+        tests: [not_null]
+
+  - name: mart_localities
+    description: >
+      The place-name index behind GET /api/search. One row per normalised
+      locality, built from stops rather than from a gazetteer, so the only
+      places that exist here are places that actually have bus stops -- which is
+      the only kind of place this application can say anything about.
+    columns:
+      - name: locality_norm
+        description: Primary key. Uppercased, punctuation-stripped, space-collapsed place name; the API normalises the user's query identically before matching.
+        tests: [not_null, unique]
+      - name: locality
+        description: Human spelling to display, chosen as the most common raw form so "Ashton-under-Lyne" wins over a stray all-caps variant.
+        tests: [not_null]
+      - name: lat
+        description: Centroid latitude of the locality's stops. Pulled towards wherever the buses go rather than the geographic centre of the settlement, which is the better place to drop the map pin anyway.
+        tests: [not_null]
+      - name: lon
+        description: Centroid longitude of the locality's stops.
+        tests: [not_null]
+      - name: n_stops
+        description: Stops in the locality. A crude size proxy, so the API can rank Manchester above a hamlet that shares a prefix.
+        tests: [not_null]
+
+  - name: mart_line_localities
+    description: >
+      Which places each line actually serves, from observed positions rather
+      than from any published route description. This is what turns "search
+      WILMSLOW" into a set of lines to highlight on the map.
+
+      Same caveat as mart_line_stops: a line number is not a route. Line '88'
+      legitimately appears in Sheffield, in Wilmslow and in rural Lancashire
+      because three unrelated operators use that number. For a search feature
+      that is tolerable -- the user gets a superset and the map shows them where
+      the buses actually are -- but it is not a claim that one route serves all
+      of those places.
+    columns:
+      - name: line
+        description: Service number. With locality_norm, the primary key.
+        tests: [not_null]
+      - name: locality_norm
+        description: Normalised place the line was observed in; joins to mart_localities.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('mart_localities')
+                field: locality_norm
+      - name: locality
+        description: Human spelling for display.
+        tests: [not_null]
+      - name: n_pings
+        description: >
+          How often the line was seen at a stop in this place. At least 20, and
+          that floor is the point of the column: a line genuinely serving a
+          place is seen there hundreds of times a week, so a handful of pings is
+          a diversion, a dead-run to the depot, or GPS drift. Claiming "the 88
+          serves Stockport" on one stray point is what makes a search feature
+          untrustworthy.
+        tests: [not_null]
+      - name: first_seen
+        description: Earliest observation, so a route change can be spotted as a locality that stops appearing.
+      - name: last_seen
+        description: Latest observation.
+
+  - name: mart_line_stops
+    description: >
+      The observed stop sequence per (line, direction) -- what the API answers
+      "what was the last stop" and "what is the next stop" from.
+
+      There is no timetable in this project, so the sequence is reconstructed
+      from behaviour: the median number of seconds into a journey at which each
+      stop gets reached, ordered. Median rather than mean, because one journey
+      stuck in a road closure would otherwise reorder the route and produce
+      confidently wrong next-stop answers.
+
+      MEASURED RELIABILITY -- READ THIS BEFORE TRUSTING seq.
+      The sequence is not good enough to answer "what is the next stop". Walking
+      the published stops in seq order and summing the distance gives, for a
+      geographically coherent line, about 6-9x the actual route length; for a
+      line whose number is reused in several towns it is 200-480x. A correctly
+      ordered sequence would give ~1x. Consecutive stops in seq are therefore
+      typically NOT adjacent on the road.
+
+      Three causes, none of them fixable inside this mart:
+        1. A line number is not a route (see below) -- roughly half of all
+           (line, direction) pairs are several unrelated routes merged.
+        2. Journeys on one line start at many different points. The 192 outbound
+           has 24 distinct start locations: short workings, part-route runs and
+           depot departures. "Seconds from origin" therefore pools populations
+           that are not comparable -- a stop is 0 minutes in for a bus that
+           started beside it and 20 minutes in for one that started at the
+           terminus, and the median of that mixture means nothing.
+        3. 3-minute sampling quantises the median to multiples of 180 s, so
+           dozens of stops tie and are separated only by a continuous
+           tie-break.
+      Cause 2 dominates. Restricting to full-length runs improves the coherent
+      case from 9.0x to 6.1x and ordering by distance rather than time gives
+      9.0x to 8.6x, so neither is a fix -- this is not a tuning problem.
+
+      WHAT WOULD FIX IT: journey_ref and DirectionRef from the post-2026-09-12
+      feed give real journey boundaries and a real route identity, and operator
+      in the mart grain separates the merged line numbers. Both are contract
+      changes. Failing that, the published timetable (BODS/NaPTAN) has the stop
+      order directly and does not need to be inferred at all.
+
+      Until then seq is usable as a rough "roughly how far along the route is
+      this stop" and NOT as a next-stop oracle. In particular it is not a sound
+      basis for rating circular routes.
+
+      KNOWN LIMITATION -- a line number is not a route. Operators pick service
+      numbers independently, so '88' is a Sheffield cross-city route AND a
+      Wilmslow-Hale route AND something in rural Lancashire, and this table
+      merges all of them into one sequence. Well-known numbers that only one
+      operator uses (the 192, the 82) read as a clean geographic progression;
+      shared numbers do not. The key in CONTRACT.md s2 has no operator column,
+      so this cannot be fixed here -- it needs `operator` added to the mart
+      grain once post-2026-09-12 data makes it available. Until then the API
+      should be more cautious about next-stop answers on low-numbered lines.
+
+      Known artefact: 3-minute sampling quantises the median to multiples of
+      180 s, so a dozen consecutive stops tie and are separated only by a
+      continuous tie-break. Within a tie the micro-order is approximate, and
+      stops on both sides of a road can both appear, because a bus passing one
+      is within 120 m of the other.
+    columns:
+      - name: line
+        description: Service number. Part of the primary key (line, direction, atco_code).
+        tests: [not_null]
+      - name: direction
+        description: >
+          Which way round the route. Mostly INFERRED from the journey's bearing
+          rather than reported by the operator -- see
+          int_journey_shape.direction_inferred. Never '*' here: a stop sequence
+          pooled across both directions is meaningless.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['inbound', 'outbound', 'clockwise', 'anticlockwise']
+      - name: day_type
+        description: >
+          Service pattern of the day the journeys ran, from the LOCAL date. A
+          full row set is emitted per real day_type and again at '*', rebuilt
+          from the underlying observations rather than merged, so a lookup
+          always resolves -- a Monday-to-Friday line still answers on a Sunday.
+          Bank holidays file as 'weekday'; see mart_eta_model.day_type.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['weekday', 'sat', 'sun', '*']
+      - name: atco_code
+        description: The stop. Part of the primary key, and the join back to NaPTAN.
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_naptan_stops')
+                field: atco_code
+      - name: stop_name
+        description: Display name. Not unique -- opposite sides of a road share it.
+        tests: [not_null]
+      - name: locality
+        description: Place the stop is in, for the "last stop" caption in the popup.
+      - name: lat
+        description: Stop latitude, so the API can render last/next stop markers without a second lookup.
+        tests: [not_null]
+      - name: lon
+        description: Stop longitude.
+        tests: [not_null]
+      - name: seq
+        description: >
+          Rank of the stop along the route, 1-based within (line, direction).
+          A ranking, not a measurement: seq 1 is the stop the median journey
+          reaches first. Deterministic across rebuilds so the route never
+          silently renumbers.
+        tests: [not_null]
+      - name: median_secs_from_origin
+        description: Median seconds from the journey's first ping to reaching this stop. The quantity seq is derived from, and directly usable as a crude "minutes into the route".
+        tests: [not_null]
+      - name: n_obs
+        description: >
+          Distinct journeys that were observed at this stop. At least 5; below
+          that it is a diversion, a layover in a side street, or the stop on the
+          other side of the road that a couple of journeys clipped.
+        tests: [not_null]
+
+  - name: mart_line_punctuality
+    description: >
+      Observed lateness per (line, direction, hour_band): median and 90th
+      percentile delay in seconds, positive meaning late. The API turns these
+      into the RAG colours, using the thresholds in backend/app.py -- this mart
+      reports the distribution and does not decide what counts as late.
+
+      EXPECT ZERO ROWS TODAY, AND THAT IS CORRECT. dest_aimed_arr only began
+      arriving in the feed on 2026-09-12, minutes before the extract window
+      closed, and the seven extracted days precede it. Worse, the moment
+      journey_ref switches from NULL to a value it triggers a journey break, so
+      the few pings that do carry a schedule sit in freshly-started journeys too
+      short to survive the plausibility filters. Both effects disappear on their
+      own once a full post-patch day has been extracted. The model is written to
+      build and return zero rows rather than error. If it is still empty after a
+      week of post-patch data, the problem is in the ingestor, not here.
+
+      Caveat for when the numbers do appear: "actual arrival" is the last moving
+      ping of the journey, which is where the bus stopped rather than
+      necessarily the scheduled destination stop. Good proxy for a journey that
+      ran to completion, poor one for a journey that was curtailed.
+    columns:
+      - name: line
+        description: Service number. Part of the primary key.
+        tests: [not_null]
+      - name: direction
+        description: Journey direction, observed or inferred.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['inbound', 'outbound', 'clockwise', 'anticlockwise']
+      - name: day_type
+        description: >
+          Service pattern of the day the journey ran, from the LOCAL date. Bank
+          holidays file as 'weekday'; see mart_eta_model.day_type.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['weekday', 'sat', 'sun']
+      - name: hour_band
+        description: The band the journey started in, from local time.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['night', 'am_peak', 'inter', 'pm_peak', 'evening']
+      - name: median_delay_s
+        description: Median delay in seconds, positive late. The typical experience, robust to the one journey that was cancelled and replaced.
+        tests: [not_null]
+      - name: p90_delay_s
+        description: 90th percentile delay. The bad-day number -- what a passenger should budget for, and much more informative than the median for deciding whether a service is reliable.
+        tests: [not_null]
+      - name: n_journeys
+        description: Journeys the aggregate is over. At least 3, which is still weak; the API should discount a small n rather than present it as fact.
+        tests: [not_null]

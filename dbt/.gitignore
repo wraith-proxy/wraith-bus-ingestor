@@ -1,0 +1,11 @@
+.venv/
+data/*.parquet
+data/naptan_stops.csv
+ghost_bus.duckdb*
+ghost_bus_build.duckdb*
+ghost_bus_staged.duckdb*
+target/
+dbt_packages/
+logs/
+__pycache__/
+.user.yml

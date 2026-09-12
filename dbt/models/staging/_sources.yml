@@ -1,0 +1,55 @@
+version: 2
+
+sources:
+  # dbt-duckdb lets a source point straight at a file instead of a table in the
+  # database: `meta.external_location` is substituted verbatim wherever
+  # {{ source(...) }} appears. Nothing is copied into ghost_bus.duckdb -- the
+  # staging views read the parquet/CSV off disk on every query.
+  #
+  # These paths are RELATIVE. dbt must therefore be run from the dbt/ directory:
+  #     cd dbt && .venv/bin/dbt run --profiles-dir .
+  # (build.sh does this for you.)
+  - name: questdb
+    description: >
+      Bus AVL positions exported from QuestDB by extract.py -- one parquet file
+      per day, already downsampled to one row per bus per 3 minutes so that
+      seven days fit in ~250 MB instead of ~1e9 raw rows.
+    tables:
+      - name: bus_positions
+        description: >
+          Union of every daily file. union_by_name=true is load-bearing: the
+          ingestor gained the schedule columns (journey_ref, origin_ref,
+          dest_aimed_arr, ...) on 2026-09-12, so files written before that have
+          strictly fewer columns. union_by_name fills the gaps with NULL instead
+          of erroring on the schema mismatch.
+        meta:
+          external_location: "read_parquet('data/bus_positions_*.parquet', union_by_name=true)"
+        columns:
+          - name: timestamp
+            description: End of the 3-minute sample bucket, UTC (TIMESTAMPTZ on disk).
+          - name: bus_id
+            description: >
+              Operator vehicle ref. REUSED across journeys and even across
+              operators, so it is never a key on its own -- int_bus_journeys
+              exists precisely to cut this stream into journeys.
+          - name: line
+            description: Public-facing service number, e.g. '88'. NOT unique across operators.
+          - name: lat
+            description: WGS84 latitude. Occasionally 0 or out-of-country when the vehicle's GPS has not fixed yet.
+          - name: lon
+            description: WGS84 longitude, same caveats as lat.
+          - name: bearing
+            description: Degrees clockwise from north; carried through for the map arrow, not used in modelling.
+
+  - name: naptan
+    description: The national NaPTAN public transport access node register (all modes, whole GB).
+    tables:
+      - name: stops
+        description: >
+          435k rows covering every rail station, ferry pier, airport and bus stop
+          in Great Britain. Read with all_varchar=true because the file mixes
+          empty strings, locale-formatted dates and numeric codes with leading
+          zeros; staging does every cast explicitly so a new bad row fails loudly
+          in one place instead of silently re-typing a column.
+        meta:
+          external_location: "read_csv('data/naptan_stops.csv', header=true, all_varchar=true, sample_size=-1)"

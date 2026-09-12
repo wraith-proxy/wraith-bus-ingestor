@@ -1,0 +1,579 @@
+# Ghost Bus Ontology
+#
+# Semantic layer over the two ODCS data contracts, modelled the way Palantir
+# Foundry structures an ontology: shared value types, object types with a primary
+# key and a title property, typed link types with explicit cardinality, and
+# functions. There is no open standard for this the way there is for the data
+# contract itself, so the shape below is Foundry-conventional rather than
+# normative -- it is documented in contracts/README.md.
+#
+# The point of it: the contracts say what the COLUMNS are, this says what the
+# THINGS are. Every property here binds to a contract + schema object + property,
+# so contracts/validate.py can prove the ontology has not drifted from the data.
+---
+apiVersion: ghost-ontology/v1
+kind: Ontology
+id: ghost-bus-ontology
+name: Ghost Bus
+version: 1.0.0
+status: draft
+domain: transit
+description: >-
+  The operational world of a bus network: vehicles working journeys along lines
+  that call at stops in localities, and the fitted models used to say whether a
+  vehicle is running to time.
+
+contracts:
+  - alias: positions
+    path: contracts/bus-positions.odcs.yaml
+  - alias: marts
+    path: contracts/bus-marts.odcs.yaml
+
+# ---------------------------------------------------------------------------
+# Shared semantic types. Declared once so the same concept cannot be typed two
+# different ways in two different places.
+# ---------------------------------------------------------------------------
+valueTypes:
+  - apiName: AtcoCode
+    baseType: String
+    description: NaPTAN national stop identifier. The join key between the live feed, NaPTAN and every stop-shaped mart.
+    constraints:
+      pattern: '^[0-9]{4}[A-Za-z0-9]+$'
+    examples: ['1800STIN0P1', '0600MA6154']
+
+  - apiName: ServiceNumber
+    baseType: String
+    description: >-
+      A published service number. DELIBERATELY NOT a route identifier: the same
+      number is used by unrelated operators in different towns, so it identifies
+      what is painted on the front of the bus, nothing more.
+    examples: ['192', 'X66', '88']
+
+  - apiName: LocalityNorm
+    baseType: String
+    description: Locality name upper-cased, punctuation stripped, whitespace collapsed. Search terms are normalised identically.
+    examples: ['WILMSLOW']
+
+  - apiName: Direction
+    baseType: String
+    description: Direction of travel. Heuristic for historical data; taken from the feed for anything after 2026-09-12.
+    enum: ['inbound', 'outbound']
+
+  - apiName: DayType
+    baseType: String
+    description: Service day class from the local (Europe/London) date. Bank holidays are not detected and classify as weekday.
+    enum: ['weekday', 'sat', 'sun']
+
+  - apiName: HourBand
+    baseType: String
+    description: Local-time band. night 22:00-05:59, am_peak 06:00-09:59, inter 10:00-15:59, pm_peak 16:00-18:59, evening 19:00-21:59.
+    enum: ['night', 'am_peak', 'inter', 'pm_peak', 'evening']
+
+  - apiName: RagStatus
+    baseType: String
+    description: >-
+      Punctuality classification on the UK PTI convention: on time from one
+      minute early to five minutes late. 'unknown' is a first-class value and is
+      used wherever the data does not support an honest answer -- it is not an
+      error state.
+    enum: ['early', 'on_time', 'late', 'unknown']
+    renderHints:
+      colorMap:
+        early: amber
+        on_time: green
+        late: red
+        unknown: grey
+      accessibility: >-
+        Colour must never be the sole carrier of this value; the status word is
+        always rendered alongside the colour.
+
+  - apiName: DelaySeconds
+    baseType: Integer
+    unit: seconds
+    description: Signed lateness. Positive is late, negative is early.
+
+  - apiName: EpochMillis
+    baseType: Long
+    unit: milliseconds
+    description: Unix epoch milliseconds, as the SIRI feed publishes times and as QuestDB stores them.
+
+# ---------------------------------------------------------------------------
+# Object types
+# ---------------------------------------------------------------------------
+objectTypes:
+
+  - apiName: Vehicle
+    displayName: Vehicle
+    pluralDisplayName: Vehicles
+    icon: bus
+    status: active
+    description: A physical bus currently reporting its position.
+    primaryKey: [busId]
+    titleProperty: busId
+    backingDatasets:
+      - contract: positions
+        object: bus_positions
+        note: >-
+          The live tail only -- newest row per vehicle inside a five-minute
+          ingest window, further filtered to those whose recorded_at is under
+          10 minutes old. Vehicles failing that filter are not Vehicle objects;
+          they are replayed dead records.
+    properties:
+      - apiName: busId
+        displayName: Vehicle reference
+        valueType: String
+        binding: {contract: positions, object: bus_positions, property: bus_id}
+        description: Not globally unique; short numeric references are reused across operators.
+      - apiName: latitude
+        valueType: Double
+        binding: {contract: positions, object: bus_positions, property: lat}
+      - apiName: longitude
+        valueType: Double
+        binding: {contract: positions, object: bus_positions, property: lon}
+      - apiName: bearing
+        valueType: Double
+        nullable: true
+        binding: {contract: positions, object: bus_positions, property: bearing}
+        description: 0.0 is ambiguous between due north and unknown.
+      - apiName: recordedAt
+        displayName: Position measured at
+        valueType: EpochMillis
+        binding: {contract: positions, object: bus_positions, property: recorded_at}
+      - apiName: lineId
+        displayName: Working line
+        valueType: ServiceNumber
+        binding: {contract: positions, object: bus_positions, property: line}
+      - apiName: operatorRef
+        displayName: Operator
+        valueType: String
+        nullable: true
+        binding: {contract: positions, object: bus_positions, property: operator}
+      - apiName: journeyRef
+        displayName: Journey reference
+        valueType: String
+        nullable: true
+        binding: {contract: positions, object: bus_positions, property: journey_ref}
+      # --- computed; produced by the API at request time, stored nowhere ---
+      - apiName: delaySeconds
+        displayName: Delay
+        valueType: DelaySeconds
+        computed: true
+        computedBy: rateVehicle
+        nullable: true
+        description: Null whenever no honest reading is possible, which is roughly a third of the fleet.
+      - apiName: delaySource
+        displayName: How the delay was measured
+        valueType: String
+        computed: true
+        computedBy: rateVehicle
+        nullable: true
+        enum: ['progress_distance', 'progress_stops']
+        description: >-
+          Provenance, surfaced to the end user. Never the ETA regression --
+          that model is ~7 minutes biased late and is not permitted to colour
+          the map.
+      - apiName: ragStatus
+        displayName: Status
+        valueType: RagStatus
+        computed: true
+        computedBy: rateVehicle
+      - apiName: predictedArrival
+        valueType: Timestamp
+        computed: true
+        computedBy: predictArrival
+        nullable: true
+      - apiName: remainingKm
+        valueType: Double
+        computed: true
+        computedBy: predictArrival
+        nullable: true
+        description: Straight-line distance to the destination stop, scaled by the 1.30 detour factor to match how the model was fitted.
+
+  - apiName: Journey
+    displayName: Journey
+    pluralDisplayName: Journeys
+    icon: route
+    status: active
+    description: >-
+      One working of a line, from an origin stop at an aimed departure time to a
+      destination stop at an aimed arrival time.
+    primaryKey: [journeyRef, originRef, originAimedDeparture]
+    titleProperty: journeyRef
+    backingDatasets:
+      - contract: positions
+        object: bus_positions
+    properties:
+      - apiName: journeyRef
+        valueType: String
+        binding: {contract: positions, object: bus_positions, property: journey_ref}
+      - apiName: lineId
+        valueType: ServiceNumber
+        binding: {contract: positions, object: bus_positions, property: line}
+      - apiName: direction
+        valueType: Direction
+        binding: {contract: positions, object: bus_positions, property: direction}
+      - apiName: originRef
+        valueType: AtcoCode
+        binding: {contract: positions, object: bus_positions, property: origin_ref}
+      - apiName: destinationRef
+        valueType: AtcoCode
+        binding: {contract: positions, object: bus_positions, property: dest_ref}
+      - apiName: originAimedDeparture
+        valueType: EpochMillis
+        binding: {contract: positions, object: bus_positions, property: origin_aimed_dep}
+      - apiName: destinationAimedArrival
+        valueType: EpochMillis
+        binding: {contract: positions, object: bus_positions, property: dest_aimed_arr}
+      - apiName: isCircular
+        valueType: Boolean
+        computed: true
+        description: >-
+          True when origin and destination are within 1 km. Load-bearing: a
+          circular journey cannot be rated by distance progress, because the
+          fraction completed is pinned at one half all the way round.
+
+  - apiName: Line
+    displayName: Line
+    pluralDisplayName: Lines
+    icon: signpost
+    status: active
+    description: A published service number. See ServiceNumber -- this is not a unique route.
+    primaryKey: [lineId]
+    titleProperty: lineId
+    backingDatasets:
+      - contract: marts
+        object: mart_line_localities
+    properties:
+      - apiName: lineId
+        valueType: ServiceNumber
+        binding: {contract: marts, object: mart_line_localities, property: line}
+
+  - apiName: Operator
+    displayName: Operator
+    pluralDisplayName: Operators
+    icon: building
+    status: active
+    description: A bus company, identified by its National Operator Code.
+    primaryKey: [operatorRef]
+    titleProperty: operatorRef
+    backingDatasets:
+      - contract: positions
+        object: bus_positions
+    properties:
+      - apiName: operatorRef
+        valueType: String
+        binding: {contract: positions, object: bus_positions, property: operator}
+
+  - apiName: Stop
+    displayName: Stop
+    pluralDisplayName: Stops
+    icon: map-pin
+    status: active
+    description: A NaPTAN bus stop.
+    primaryKey: [atcoCode]
+    titleProperty: stopName
+    backingDatasets:
+      - contract: marts
+        object: mart_line_stops
+    properties:
+      - apiName: atcoCode
+        valueType: AtcoCode
+        binding: {contract: marts, object: mart_line_stops, property: atco_code}
+      - apiName: stopName
+        valueType: String
+        binding: {contract: marts, object: mart_line_stops, property: stop_name}
+      - apiName: localityName
+        valueType: String
+        binding: {contract: marts, object: mart_line_stops, property: locality}
+      - apiName: latitude
+        valueType: Double
+        binding: {contract: marts, object: mart_line_stops, property: lat}
+      - apiName: longitude
+        valueType: Double
+        binding: {contract: marts, object: mart_line_stops, property: lon}
+
+  - apiName: LineStop
+    displayName: Stop on a line
+    pluralDisplayName: Stops on lines
+    icon: list-ordered
+    status: active
+    description: >-
+      A stop's place in one line's running order, with how long journeys
+      typically take to reach it. Modelled as an object rather than a plain link
+      because it carries properties of its own.
+    primaryKey: [lineId, direction, dayType, atcoCode]
+    titleProperty: atcoCode
+    backingDatasets:
+      - contract: marts
+        object: mart_line_stops
+    properties:
+      - apiName: lineId
+        valueType: ServiceNumber
+        binding: {contract: marts, object: mart_line_stops, property: line}
+      - apiName: direction
+        valueType: Direction
+        binding: {contract: marts, object: mart_line_stops, property: direction}
+      - apiName: dayType
+        valueType: DayType
+        binding: {contract: marts, object: mart_line_stops, property: day_type}
+      - apiName: atcoCode
+        valueType: AtcoCode
+        binding: {contract: marts, object: mart_line_stops, property: atco_code}
+      - apiName: sequence
+        valueType: Integer
+        binding: {contract: marts, object: mart_line_stops, property: seq}
+      - apiName: medianSecondsFromOrigin
+        valueType: Double
+        binding: {contract: marts, object: mart_line_stops, property: median_secs_from_origin}
+        description: Anchored on the start of tracking, so only differences between two stops carry meaning.
+      - apiName: observations
+        valueType: Long
+        binding: {contract: marts, object: mart_line_stops, property: n_obs}
+
+  - apiName: Locality
+    displayName: Locality
+    pluralDisplayName: Localities
+    icon: map
+    status: active
+    description: A settlement with at least one bus stop. The unit the user searches by.
+    primaryKey: [localityNorm]
+    titleProperty: localityName
+    backingDatasets:
+      - contract: marts
+        object: mart_localities
+    properties:
+      - apiName: localityNorm
+        valueType: LocalityNorm
+        binding: {contract: marts, object: mart_localities, property: locality_norm}
+      - apiName: localityName
+        valueType: String
+        binding: {contract: marts, object: mart_localities, property: locality}
+      - apiName: latitude
+        valueType: Double
+        binding: {contract: marts, object: mart_localities, property: lat}
+      - apiName: longitude
+        valueType: Double
+        binding: {contract: marts, object: mart_localities, property: lon}
+      - apiName: stopCount
+        valueType: Long
+        binding: {contract: marts, object: mart_localities, property: n_stops}
+
+  - apiName: TravelTimeModel
+    displayName: Travel time model
+    pluralDisplayName: Travel time models
+    icon: trending-up
+    status: active
+    description: >-
+      A fitted linear regression of remaining seconds on remaining kilometres for
+      one temporal grain. The coefficients are the model; there is no artefact.
+    primaryKey: [lineId, direction, dayType, hourBand]
+    titleProperty: lineId
+    backingDatasets:
+      - contract: marts
+        object: mart_eta_model
+    properties:
+      - apiName: lineId
+        valueType: ServiceNumber
+        binding: {contract: marts, object: mart_eta_model, property: line}
+      - apiName: direction
+        valueType: Direction
+        binding: {contract: marts, object: mart_eta_model, property: direction}
+      - apiName: dayType
+        valueType: DayType
+        binding: {contract: marts, object: mart_eta_model, property: day_type}
+      - apiName: hourBand
+        valueType: HourBand
+        binding: {contract: marts, object: mart_eta_model, property: hour_band}
+      - apiName: slopeSecondsPerKm
+        valueType: Double
+        binding: {contract: marts, object: mart_eta_model, property: slope_s_per_km}
+      - apiName: interceptSeconds
+        valueType: Double
+        binding: {contract: marts, object: mart_eta_model, property: intercept_s}
+        description: Absorbs terminus dwell. The reason this model may not be used to compute lateness.
+      - apiName: rSquared
+        valueType: Double
+        binding: {contract: marts, object: mart_eta_model, property: r2}
+      - apiName: observations
+        valueType: Long
+        binding: {contract: marts, object: mart_eta_model, property: n_obs}
+      - apiName: meanSpeedKmh
+        valueType: Double
+        binding: {contract: marts, object: mart_eta_model, property: mean_speed_kmh}
+
+  - apiName: PunctualityProfile
+    displayName: Punctuality profile
+    pluralDisplayName: Punctuality profiles
+    icon: clock
+    status: proposed
+    description: >-
+      Observed lateness at journey end for a line and temporal grain. Proposed
+      rather than active: it needs aimed times, which have only been captured
+      since 2026-09-12, so it is legitimately empty on a fresh install.
+    primaryKey: [lineId, direction, dayType, hourBand]
+    titleProperty: lineId
+    backingDatasets:
+      - contract: marts
+        object: mart_line_punctuality
+    properties:
+      - apiName: lineId
+        valueType: ServiceNumber
+        binding: {contract: marts, object: mart_line_punctuality, property: line}
+      - apiName: direction
+        valueType: Direction
+        binding: {contract: marts, object: mart_line_punctuality, property: direction}
+      - apiName: dayType
+        valueType: DayType
+        binding: {contract: marts, object: mart_line_punctuality, property: day_type}
+      - apiName: hourBand
+        valueType: HourBand
+        binding: {contract: marts, object: mart_line_punctuality, property: hour_band}
+      - apiName: medianDelaySeconds
+        valueType: DelaySeconds
+        binding: {contract: marts, object: mart_line_punctuality, property: median_delay_s}
+      - apiName: p90DelaySeconds
+        valueType: DelaySeconds
+        binding: {contract: marts, object: mart_line_punctuality, property: p90_delay_s}
+      - apiName: journeyCount
+        valueType: Long
+        binding: {contract: marts, object: mart_line_punctuality, property: n_journeys}
+
+# ---------------------------------------------------------------------------
+# Link types
+# ---------------------------------------------------------------------------
+linkTypes:
+  - apiName: vehicleOperatedBy
+    displayName: operated by
+    cardinality: MANY_TO_ONE
+    from: {objectType: Vehicle, property: operatorRef}
+    to: {objectType: Operator, property: operatorRef}
+
+  - apiName: vehicleWorking
+    displayName: currently working
+    reverseDisplayName: worked by
+    cardinality: MANY_TO_ONE
+    from: {objectType: Vehicle, property: journeyRef}
+    to: {objectType: Journey, property: journeyRef}
+    description: >-
+      Known-weak link. The feed leaves a vehicle logged on to a completed
+      journey while it starts the next one, so this can point at a working the
+      bus finished an hour ago. Consumers sanity-check the aimed times before
+      trusting it.
+
+  - apiName: journeyOnLine
+    displayName: runs on
+    cardinality: MANY_TO_ONE
+    from: {objectType: Journey, property: lineId}
+    to: {objectType: Line, property: lineId}
+
+  - apiName: journeyStartsAt
+    displayName: starts at
+    cardinality: MANY_TO_ONE
+    from: {objectType: Journey, property: originRef}
+    to: {objectType: Stop, property: atcoCode}
+
+  - apiName: journeyEndsAt
+    displayName: ends at
+    cardinality: MANY_TO_ONE
+    from: {objectType: Journey, property: destinationRef}
+    to: {objectType: Stop, property: atcoCode}
+
+  - apiName: lineCallsAt
+    displayName: calls at
+    reverseDisplayName: served by
+    cardinality: ONE_TO_MANY
+    from: {objectType: Line, property: lineId}
+    to: {objectType: LineStop, property: lineId}
+    orderBy: sequence
+    description: The ordered running order. Traversing it in sequence yields the route geometry the map draws.
+
+  - apiName: lineStopIsStop
+    displayName: is
+    cardinality: MANY_TO_ONE
+    from: {objectType: LineStop, property: atcoCode}
+    to: {objectType: Stop, property: atcoCode}
+
+  - apiName: lineServesLocality
+    displayName: serves
+    reverseDisplayName: served by
+    cardinality: MANY_TO_MANY
+    from: {objectType: Line, property: lineId}
+    to: {objectType: Locality, property: localityNorm}
+    through:
+      contract: marts
+      object: mart_line_localities
+      fromProperty: line
+      toProperty: locality_norm
+      properties: [n_pings, first_seen, last_seen]
+    description: >-
+      Observed, not published: a line serves a locality because its buses were
+      seen there at least 20 times, not because a timetable says so. This is the
+      link the place-search feature traverses.
+
+  - apiName: lineHasTravelTimeModel
+    displayName: modelled by
+    cardinality: ONE_TO_MANY
+    from: {objectType: Line, property: lineId}
+    to: {objectType: TravelTimeModel, property: lineId}
+
+  - apiName: lineHasPunctualityProfile
+    displayName: punctuality
+    cardinality: ONE_TO_MANY
+    from: {objectType: Line, property: lineId}
+    to: {objectType: PunctualityProfile, property: lineId}
+
+# ---------------------------------------------------------------------------
+# Functions -- read-only derivations, implemented in backend/app.py
+# ---------------------------------------------------------------------------
+functions:
+  - apiName: rateVehicle
+    displayName: Rate a vehicle's punctuality
+    implementation: backend/app.py::predict
+    inputs: [{objectType: Vehicle}]
+    outputs: [delaySeconds, delaySource, ragStatus]
+    description: >-
+      Measures schedule adherence: how far along its route the vehicle is versus
+      how much of its scheduled time has elapsed. Tries distance progress first,
+      then the stop sequence. Returns unknown -- deliberately, not as a failure
+      -- for circular routes, arrived vehicles, stale journey records, and any
+      delay exceeding a plausible fraction of the scheduled duration.
+
+  - apiName: predictArrival
+    displayName: Predict arrival time
+    implementation: backend/app.py::predict
+    inputs: [{objectType: Vehicle}, {objectType: TravelTimeModel}]
+    outputs: [predictedArrival, remainingKm]
+    description: >-
+      Aimed arrival plus the measured delay where a delay is known; otherwise the
+      regression, which is the only option for a vehicle with no timetable.
+      Resolves the model over a six-rung fallback chain from the finest grain to
+      a global fit.
+
+  - apiName: searchLocalities
+    displayName: Search places
+    implementation: backend/app.py::search
+    inputs: [{valueType: LocalityNorm}]
+    outputs: [{objectType: Locality}, {objectType: Line}, {objectType: Vehicle}]
+    description: Exact then prefix then substring match, traversing lineServesLocality to the lines and on to the vehicles working them.
+
+  - apiName: routeGeometry
+    displayName: Route geometry
+    implementation: backend/app.py::route
+    inputs: [{objectType: Line}, {valueType: Direction}, {valueType: DayType}]
+    outputs: [{objectType: LineStop}]
+    description: >-
+      Traverses lineCallsAt in sequence order to produce the polyline the map
+      draws. Straight lines between consecutive stops, not the road geometry,
+      and subject to the merged-route caveat on ServiceNumber.
+
+# ---------------------------------------------------------------------------
+# Action types
+# ---------------------------------------------------------------------------
+actionTypes: []
+actionTypesNote: >-
+  Intentionally empty. This ontology is read-only: nothing a user does through
+  the map writes back to any object. The only writer in the system is the
+  ingestor appending to bus_positions, which is a pipeline, not a user action,
+  and is governed by contracts/bus-positions.odcs.yaml rather than modelled here.
+  If write-back is ever added -- a user correcting a wrong stop sequence, say --
+  it belongs here as a proper action type with its own validation.

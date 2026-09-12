@@ -1,6 +1,7 @@
 import os
 import time
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 
 import requests
 
@@ -20,6 +21,77 @@ def clean(sym):
     return sym.replace(" ", "_").replace(",", "_") if sym else "UKN"
 
 
+def esc_tag(val):
+    """ILP tag values cannot carry spaces, commas or equals signs unescaped."""
+    return val.replace(" ", "_").replace(",", "_").replace("=", "_")
+
+
+def esc_str(val):
+    """ILP string field values are double-quoted; escape quotes and backslashes."""
+    return val.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def text(el, path):
+    node = el.find(path, NS)
+    return node.text.strip() if node is not None and node.text else None
+
+
+def epoch_ms(stamp):
+    """SIRI timestamps are ISO8601, usually with a +00:00 offset."""
+    if not stamp:
+        return None
+    try:
+        return int(datetime.fromisoformat(stamp).timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+# SIRI element -> ILP string field. Tags and numerics are handled separately
+# because ILP needs a different syntax for each.
+STRING_FIELDS = (
+    ("journey_ref", ".//siri:FramedVehicleJourneyRef/siri:DatedVehicleJourneyRef"),
+    ("published_line", ".//siri:PublishedLineName"),
+    ("origin_ref", ".//siri:OriginRef"),
+    ("origin_name", ".//siri:OriginName"),
+    ("dest_ref", ".//siri:DestinationRef"),
+    ("dest_name", ".//siri:DestinationName"),
+    ("block_ref", ".//siri:BlockRef"),
+)
+TIME_FIELDS = (
+    ("origin_aimed_dep", ".//siri:OriginAimedDepartureTime"),
+    ("dest_aimed_arr", ".//siri:DestinationAimedArrivalTime"),
+    ("recorded_at", "./siri:RecordedAtTime"),
+)
+
+
+def build_line(v):
+    """One ILP line per VehicleActivity, or None if it lacks a usable position."""
+    ref = clean(text(v, ".//siri:VehicleRef"))
+    lat = float(text(v, ".//siri:Latitude"))
+    lon = float(text(v, ".//siri:Longitude"))
+    line = clean(text(v, ".//siri:LineRef"))
+
+    # Tags are indexed SYMBOLs in QuestDB, so only low-cardinality values go here.
+    tags = [f"bus_id={ref}", f"line={line}"]
+    for name, path in (("operator", ".//siri:OperatorRef"), ("direction", ".//siri:DirectionRef")):
+        val = text(v, path)
+        if val:
+            tags.append(f"{name}={esc_tag(val)}")
+
+    bearing = text(v, ".//siri:Bearing")
+    fields = [f"lat={lat}", f"lon={lon}", f"bearing={float(bearing) if bearing else 0.0}"]
+    for name, path in STRING_FIELDS:
+        val = text(v, path)
+        if val:
+            fields.append(f'{name}="{esc_str(val)}"')
+    for name, path in TIME_FIELDS:
+        ms = epoch_ms(text(v, path))
+        if ms is not None:
+            fields.append(f"{name}={ms}i")
+
+    return "bus_positions," + ",".join(tags) + " " + ",".join(fields)
+
+
 def ingest():
     try:
         response = requests.get(AVL_URL, timeout=60)
@@ -31,17 +103,8 @@ def ingest():
         lines = []
         for v in root.findall(".//siri:VehicleActivity", NS):
             try:
-                ref = clean(v.find(".//siri:VehicleRef", NS).text)
-                lat = float(v.find(".//siri:Latitude", NS).text)
-                lon = float(v.find(".//siri:Longitude", NS).text)
-                line = clean(v.find(".//siri:LineRef", NS).text)
-                bearing_el = v.find(".//siri:Bearing", NS)
-                bearing = float(bearing_el.text) if bearing_el is not None else 0.0
-                lines.append(
-                    f"bus_positions,bus_id={ref},line={line} "
-                    f"lat={lat},lon={lon},bearing={bearing}"
-                )
-            except (AttributeError, ValueError):
+                lines.append(build_line(v))
+            except (AttributeError, TypeError, ValueError):
                 continue
 
         if lines:

@@ -1,0 +1,161 @@
+version: 2
+
+models:
+  - name: stg_bus_pings
+    description: >
+      Every usable bus position observation, one row per vehicle per 3-minute
+      bucket. This is the grain the whole project is built on. Staging does
+      rename, cast and per-row derivation only -- no joins and no aggregation --
+      so that when a number downstream looks wrong there is exactly one place
+      where a type or a unit could have gone astray.
+      Rows outside the Great Britain bounding box or at (0, 0) are dropped here
+      rather than downstream, because a single unfixed-GPS ping adds thousands
+      of kilometres to a journey's measured path.
+    columns:
+      - name: bus_id
+        description: >
+          The operator's own vehicle reference. NOT a key and NOT globally
+          unique -- operators mint these independently, so '3104' is fifteen
+          different physical buses in fifteen different towns. int_bus_journeys
+          has to defend against that.
+        tests: [not_null]
+      - name: line
+        description: >
+          Public service number as shown on the blind. Also not globally unique:
+          dozens of operators run a route called '1'. Treat a line here as "a
+          service number", not "a route".
+        tests: [not_null]
+      - name: feed_direction
+        description: >
+          The feed's own DirectionRef, normalised to a known token, or NULL when
+          the feed did not give one -- which is every row collected before
+          2026-09-12. Deliberately left NULL rather than defaulted, so that
+          int_journey_shape can tell "the operator says inbound" apart from "we
+          guessed inbound", and so that a coalesce to '*' cannot quietly
+          collapse every journey into one direction bucket.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['inbound', 'outbound', 'clockwise', 'anticlockwise']
+      - name: operator
+        description: NOC of the operating company. NULL before 2026-09-12; the only thing that could disambiguate colliding bus_ids.
+      - name: journey_ref
+        description: >
+          DatedVehicleJourneyRef -- the operator's identifier for this specific
+          scheduled run. When present it is the authoritative journey boundary
+          and int_bus_journeys prefers it over any heuristic. NULL before
+          2026-09-12.
+      - name: origin_ref
+        description: NaPTAN ATCOCode of the scheduled origin stop; joins directly to stg_naptan_stops.atco_code.
+      - name: dest_ref
+        description: NaPTAN ATCOCode of the scheduled destination stop.
+      - name: origin_name
+        description: Free-text origin as the operator publishes it, for display only -- never matched on.
+      - name: dest_name
+        description: Free-text destination as shown on the blind, for display only.
+      - name: ping_ts
+        description: >
+          End of the 3-minute sample bucket in UTC, as a naive TIMESTAMP. The
+          canonical instant: everything that is compared, differenced or
+          published uses this. Obtained with an explicit AT TIME ZONE 'UTC' so
+          the build does not depend on the host's time zone.
+        tests: [not_null]
+      - name: ping_local_ts
+        description: >
+          The same instant as Europe/London wall-clock time. Exists because
+          every temporal BUCKET has to be local: the UK runs UTC+1 from late
+          March to late October, so bucketing on UTC puts the morning peak an
+          hour early and files a 00:30 Saturday ping under Friday. hour_of_day,
+          hour_band, day_type and ping_local_date all derive from this column
+          and never from ping_ts.
+        tests: [not_null]
+      - name: ping_date
+        description: Calendar date of the ping, used only for eyeballing coverage per extracted day.
+      - name: ping_local_date
+        description: Local calendar date. The date a passenger would call it, which is the one that matters for day_type.
+      - name: hour_of_day
+        description: LOCAL hour 0-23. Kept alongside hour_band so an analysis can re-band without re-deriving.
+      - name: hour_band
+        description: >
+          Traffic-regime bucket, derived from LOCAL time. Buses behave
+          completely differently at 08:00 and at 02:00, so the ETA regression is
+          fitted per band rather than pooled. FROZEN to match backend/app.py --
+          see macros/hour_band.sql.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['night', 'am_peak', 'inter', 'pm_peak', 'evening']
+      - name: day_type
+        description: >
+          Service pattern of the local date: 'weekday', 'sat' or 'sun'. Weekend
+          bus operation differs from Mon-Fri in frequency, stops served and
+          traffic, so it is the third dimension of the ETA model's grain.
+          Bank holidays are filed as 'weekday' -- see macros/day_type.sql. The
+          one bank holiday inside the current extract window (2026-08-31) is
+          excluded outright in this model rather than mislabelled.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['weekday', 'sat', 'sun']
+      - name: lat
+        description: WGS84 latitude, guaranteed inside the GB bounding box.
+        tests: [not_null]
+      - name: lon
+        description: WGS84 longitude, guaranteed inside the GB bounding box.
+        tests: [not_null]
+      - name: bearing
+        description: Compass heading reported by the vehicle. Carried for the map arrow only -- it is the instantaneous heading, not the direction of the journey, so it is useless for direction inference.
+      - name: origin_aimed_dep_ts
+        description: Scheduled departure from origin, converted from the feed's epoch MILLIS. NULL before 2026-09-12.
+      - name: dest_aimed_arr_ts
+        description: Scheduled arrival at destination, converted from epoch MILLIS. The only input to mart_line_punctuality, and NULL before 2026-09-12.
+
+  - name: stg_naptan_stops
+    description: >
+      NaPTAN narrowed to active bus stops with usable coordinates, and typed.
+      Everything that needs a stop joins here rather than to the raw CSV, so the
+      "what counts as a bus stop" decision lives in exactly one place.
+      About 344k of NaPTAN's 435k rows survive; the rest are rail, ferry, air
+      and metro nodes, or stops marked deleted.
+    columns:
+      - name: atco_code
+        description: National stop identifier. The join key to the feed's origin_ref and dest_ref, and the primary key here.
+        tests: [not_null, unique]
+      - name: stop_name
+        description: CommonName as published. Not unique -- both sides of a road share a name and differ only by ATCOCode.
+      - name: stop_type
+        description: NaPTAN StopType, constrained to the four bus varieties. Kept so a future filter change is auditable against what was actually let through.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['BCT', 'BCS', 'BCQ', 'BST']
+      - name: timing_status
+        description: Whether the stop is a timing point on the published timetable. Not used yet; the natural input if stop sequences ever need anchoring to real schedule times.
+      - name: status
+        description: NaPTAN lifecycle status, always 'active' here by construction.
+      - name: lat
+        description: WGS84 latitude, non-null and inside the GB bounding box.
+        tests: [not_null]
+      - name: lon
+        description: WGS84 longitude, non-null and inside the GB bounding box.
+        tests: [not_null]
+      - name: locality
+        description: >
+          Human-readable place, coalesced down NaPTAN's three-level locality
+          hierarchy (LocalityName, then Town, then ParentLocalityName). The
+          coalesce matters: a stop in an unnamed hamlet still has to resolve to
+          a place a user would plausibly type.
+        tests: [not_null]
+      - name: locality_norm
+        description: >
+          The search key. Uppercased, punctuation stripped, spaces collapsed, so
+          that "ASHTON UNDER LYNE" typed into the box matches
+          "Ashton-under-Lyne" in the register. Frozen in CONTRACT.md s2 because
+          backend/app.py normalises the query the same way.
+        tests: [not_null]
+      - name: lat_cell
+        description: Integer grid cell index (0.002 deg) used by int_ping_stop_match to turn the nearest-stop search into a hash join. Meaningless on its own.
+      - name: lon_cell
+        description: Longitude half of the same grid cell index.
