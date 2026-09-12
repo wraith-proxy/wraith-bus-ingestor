@@ -1,5 +1,5 @@
--- Every (line, direction) that has a stop sequence at all must also have one at
--- day_type = '*'.
+-- Every (operator, line, direction) that has a stop sequence at all must also
+-- have one at day_type = '*'.
 --
 -- The API prefers the live day pattern and falls back to '*'. Without the
 -- fallback, a line that only runs Monday-Friday would return nothing at all
@@ -9,7 +9,7 @@
 
 with real_grains as (
 
-    select distinct line, direction
+    select distinct operator, line, direction
     from {{ ref('mart_line_stops') }}
     where day_type <> '*'
 
@@ -17,17 +17,19 @@ with real_grains as (
 
 fallback_grains as (
 
-    select distinct line, direction
+    select distinct operator, line, direction
     from {{ ref('mart_line_stops') }}
     where day_type = '*'
 
 )
 
 select
+    r.operator,
     r.line,
     r.direction
 from real_grains r
 left join fallback_grains f
-    on r.line = f.line
+    on r.operator = f.operator
+   and r.line = f.line
    and r.direction = f.direction
 where f.line is null

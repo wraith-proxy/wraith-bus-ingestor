@@ -8,16 +8,26 @@ models:
 
       There is no model artefact to ship and no Python at inference time -- the
       coefficients ARE the table, and Flask predicts with one multiply and one
-      add. Four grains are emitted, each refitted from the underlying pings
-      rather than averaged from the finer rows, so that a lookup can fall back
-      from (line, direction, band) through (line, direction, '*') and
-      (line, '*', '*') to ('*', '*', '*') and is guaranteed a hit.
+      add. Eleven grains are emitted, each refitted from the underlying pings
+      rather than averaged from the finer rows: five operator-specific grains
+      (operator joined the key 2026-09-12, since a line number alone is not a
+      route -- see mart_line_stops) fall back to the original six line-only
+      grains, from (operator, line, direction, band) all the way down to
+      ('*', '*', '*', '*', '*'), and are guaranteed a hit.
 
       A grain is only published if it has at least 200 observations, a positive
       slope, and an implied mean speed between 3 and 90 km/h. A grain that fails
       is omitted so the API falls through to a coarser row: no model is better
       than a wrong model.
     columns:
+      - name: operator
+        description: >
+          National Operator Code, or '*' for a fit pooled across every
+          operator. Part of the primary key. Null in the source feed before
+          2026-09-12, so every pre-patch ping can only ever feed the '*' rows
+          -- there is no operator-specific rung for historical data, only the
+          six-grain chain this table used to be in full.
+        tests: [not_null]
       - name: line
         description: Service number, or '*' for the global fallback row. Part of the primary key.
         tests: [not_null]
@@ -158,8 +168,22 @@ models:
 
   - name: mart_line_stops
     description: >
-      The observed stop sequence per (line, direction) -- what the API answers
-      "what was the last stop" and "what is the next stop" from.
+      The observed stop sequence per (operator, line, direction) -- what the
+      API answers "what was the last stop" and "what is the next stop" from.
+
+      OPERATOR JOINED THE GRAIN 2026-09-12. This section used to end with a
+      KNOWN LIMITATION saying a line number is not a route and operator would
+      fix it once the feed supplied one; that day arrived and the fix is in.
+      A stop sequence is now emitted both under its real operator AND pooled
+      as operator = '*' (the old, merged behaviour), exactly like day_type
+      already was, so the API can prefer the operator-specific sequence and
+      still resolve for a line it has no operator-tagged history for -- which
+      is most lines, for a while yet, since operator is null on every ping
+      before 2026-09-12. The measured-reliability numbers below predate this
+      change and describe the pooled ('*') rows; a real-operator row for a
+      line only one operator runs was already clean, and for a genuinely
+      shared number should now score close to the single-operator case
+      instead of the 200-480x figure quoted below.
 
       There is no timetable in this project, so the sequence is reconstructed
       from behaviour: the median number of seconds into a journey at which each
@@ -191,25 +215,19 @@ models:
       case from 9.0x to 6.1x and ordering by distance rather than time gives
       9.0x to 8.6x, so neither is a fix -- this is not a tuning problem.
 
-      WHAT WOULD FIX IT: journey_ref and DirectionRef from the post-2026-09-12
-      feed give real journey boundaries and a real route identity, and operator
-      in the mart grain separates the merged line numbers. Both are contract
-      changes. Failing that, the published timetable (BODS/NaPTAN) has the stop
-      order directly and does not need to be inferred at all.
+      operator now separates the merged line numbers (see above) wherever the
+      feed has supplied one, which fixes cause 1 for post-2026-09-12 data.
+      Causes 2 and 3 remain: journey_ref/DirectionRef from the post-2026-09-12
+      feed would give real journey boundaries, and 3-minute sampling still
+      quantises the median regardless of grain. Failing that, the published
+      timetable (BODS/NaPTAN) has the stop order directly and does not need to
+      be inferred at all.
 
-      Until then seq is usable as a rough "roughly how far along the route is
-      this stop" and NOT as a next-stop oracle. In particular it is not a sound
-      basis for rating circular routes.
-
-      KNOWN LIMITATION -- a line number is not a route. Operators pick service
-      numbers independently, so '88' is a Sheffield cross-city route AND a
-      Wilmslow-Hale route AND something in rural Lancashire, and this table
-      merges all of them into one sequence. Well-known numbers that only one
-      operator uses (the 192, the 82) read as a clean geographic progression;
-      shared numbers do not. The key in CONTRACT.md s2 has no operator column,
-      so this cannot be fixed here -- it needs `operator` added to the mart
-      grain once post-2026-09-12 data makes it available. Until then the API
-      should be more cautious about next-stop answers on low-numbered lines.
+      Until journey_ref-based journeys and finer sampling arrive, seq on a
+      pooled ('*'-operator) row is usable as a rough "roughly how far along
+      the route is this stop" and NOT as a next-stop oracle, and is not a
+      sound basis for rating circular routes. A real-operator row does not
+      carry cause 1's error at all.
 
       Known artefact: 3-minute sampling quantises the median to multiples of
       180 s, so a dozen consecutive stops tie and are separated only by a
@@ -217,8 +235,16 @@ models:
       stops on both sides of a road can both appear, because a bus passing one
       is within 120 m of the other.
     columns:
+      - name: operator
+        description: >
+          National Operator Code, or '*' for the sequence pooled across every
+          operator (the original, merged behaviour, kept as a fallback grain).
+          Part of the primary key. Null in the source feed before
+          2026-09-12; a row can only be operator-specific for journeys
+          observed after that date.
+        tests: [not_null]
       - name: line
-        description: Service number. Part of the primary key (line, direction, atco_code).
+        description: Service number. Part of the primary key (operator, line, direction, atco_code).
         tests: [not_null]
       - name: direction
         description: >

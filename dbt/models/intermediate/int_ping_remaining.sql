@@ -24,6 +24,7 @@ with journeys as (
     select
         journey_key,
         direction,
+        operator,
         end_ts,
         path_km,
         start_cum_km,
@@ -53,6 +54,7 @@ joined as (
         p.journey_key,
         p.line,
         j.direction,
+        j.operator,
         -- The band of THIS ping, not of the journey. The API looks the model up
         -- by the band of the current clock time, so the training rows have to be
         -- bucketed the same way; a journey that starts at 09:50 contributes its
@@ -83,6 +85,7 @@ final as (
         journey_key,
         line,
         direction,
+        operator,
         day_type,
         hour_band,
         ping_ts,

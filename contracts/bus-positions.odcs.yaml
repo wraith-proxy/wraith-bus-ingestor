@@ -20,9 +20,9 @@ tags: ['transit', 'bus', 'realtime', 'questdb', 'siri-vm']
 
 description:
   purpose: >-
-    Raw vehicle position and journey records for buses in the north of England,
-    one row per vehicle per feed poll, appended every 30 seconds and retained as
-    a time series.
+    Raw vehicle position and journey records for buses across mainland Great
+    Britain, one row per vehicle per feed poll, appended every 60 seconds and
+    retained as a time series.
   usage: >-
     Two consumers with different needs. The API reads only the newest row per
     vehicle within a five-minute window. dbt extracts a rolling 21-day window
@@ -228,7 +228,7 @@ schema:
 
 slaProperties:
   - property: frequency
-    value: 30
+    value: 60
     unit: s
     driver: operational
     description: Poll interval of the ingest loop.
@@ -241,10 +241,27 @@ slaProperties:
       Maximum age of recorded_at for a vehicle to count as live. Beyond this the
       consuming API drops the vehicle entirely rather than drawing a frozen bus.
   - property: retention
-    value: 0
+    value: 35
     unit: d
     driver: analytics
-    description: Currently unbounded. Roughly 17M rows per day; a retention policy is owed before the disk is.
+    description: >-
+      Archived, not deleted. The archiver service (archiver/archive.py)
+      DETACHes any day partition older than 35 days and copies it to a
+      separate drive (ARCHIVE_PATH, currently a 3.5" SATA disk at
+      /mnt/archive), verified byte-for-byte before the local copy is freed --
+      QuestDB's own DROP-based TTL was considered and rejected for this
+      table specifically because it destroys data outright. bus_positions
+      itself also carries a QuestDB-native `SET TTL 90 DAYS` as a backstop
+      only: at 35-day archival the table should never actually reach 90
+      days old, so that TTL firing at all means the archiver has been
+      broken for two months, and disk protection wins over data loss at
+      that point. Sized to the host SSD, not to any analytical need: at the
+      ~14M rows/day this feed's current north-of-England bounding box
+      produces (~46 bytes/row on disk), a full year would be ~237GB, more
+      than that SSD's entire volume. Widening the bounding box multiplies
+      both figures -- a same-instant measurement against the full Great
+      Britain extent on 2026-09-12 showed 4.72x the vehicle count of the
+      current box.
 
 support:
   - channel: ghost-stack-ops
@@ -263,7 +280,14 @@ customProperties:
   - property: upstreamSource
     value: https://data.bus-data.dft.gov.uk/api/v1/datafeed/ (DfT Bus Open Data Service, SIRI-VM)
   - property: boundingBox
-    value: '-4.0,53.0,-1.0,54.6'
+    value: >-
+      -6.3,49.9,1.8,58.75 (mainland Great Britain; widened from the original
+      north-of-England box '-4.0,53.0,-1.0,54.6' on 2026-09-12). Excludes
+      Northern Ireland, Isle of Man and the Channel Islands (not in BODS
+      regardless) and Orkney, Shetland, the Outer Hebrides and the Scillies
+      (rectangular bbox, so Isle of Wight still sneaks in against the
+      mainland south coast). A same-instant measurement showed those
+      exclusions cost 129 of 24,536 GB-wide vehicles, ~0.5%.
   - property: downstreamContract
     value: contracts/bus-marts.odcs.yaml
   - property: knownFeedOutage

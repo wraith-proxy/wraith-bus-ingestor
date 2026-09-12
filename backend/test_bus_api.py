@@ -4,6 +4,7 @@ No pytest, no fixtures. Intended to run inside the api container, where flask
 and duckdb are installed:  docker compose exec api python test_bus_api.py
 """
 
+import json
 from datetime import datetime, timezone
 
 import app
@@ -45,26 +46,29 @@ def test_rag_boundaries():
 
 
 def test_model_fallback_chain():
-    """The 6-rung grain walk: (line, direction, day_type, hour_band) down to the
-    global row, with the direction and day rungs both allowed to miss."""
+    """The 11-rung grain walk: five operator-specific rungs, from
+    (operator, line, direction, day_type, hour_band) down to (operator, line),
+    then the original six line-only rungs from (line, direction, day_type,
+    hour_band) down to the global row -- direction and day are allowed to
+    miss throughout, operator only ever narrows or is skipped entirely."""
     row = lambda tag: {'slope_s_per_km': 1.0, 'intercept_s': 0.0, 'r2': 0.5, 'n_obs': 10, 'tag': tag}
     full = {
-        ('88', 'inbound', 'weekday', 'am_peak'): row('exact'),
-        ('88', 'inbound', 'weekday', '*'): row('dir_day'),
-        ('88', 'inbound', '*', 'am_peak'): row('dir_band'),
-        ('88', 'inbound', '*', '*'): row('dir'),
-        ('88', '*', '*', '*'): row('line'),
-        ('*', '*', '*', '*'): row('global'),
+        ('*', '88', 'inbound', 'weekday', 'am_peak'): row('exact'),
+        ('*', '88', 'inbound', 'weekday', '*'): row('dir_day'),
+        ('*', '88', 'inbound', '*', 'am_peak'): row('dir_band'),
+        ('*', '88', 'inbound', '*', '*'): row('dir'),
+        ('*', '88', '*', '*', '*'): row('line'),
+        ('*', '*', '*', '*', '*'): row('global'),
     }
-    pick = lambda models: app.pick_model(models, '88', 'inbound', 'weekday', 'am_peak')
+    pick = lambda models: app.pick_model(models, None, '88', 'inbound', 'weekday', 'am_peak')
 
     for key, source, tag in (
-        (('88', 'inbound', 'weekday', 'am_peak'), 'line+direction+day+hour_band', 'exact'),
-        (('88', 'inbound', 'weekday', '*'), 'line+direction+day', 'dir_day'),
-        (('88', 'inbound', '*', 'am_peak'), 'line+direction+hour_band', 'dir_band'),
-        (('88', 'inbound', '*', '*'), 'line+direction', 'dir'),
-        (('88', '*', '*', '*'), 'line', 'line'),
-        (('*', '*', '*', '*'), 'global', 'global'),
+        (('*', '88', 'inbound', 'weekday', 'am_peak'), 'line+direction+day+hour_band', 'exact'),
+        (('*', '88', 'inbound', 'weekday', '*'), 'line+direction+day', 'dir_day'),
+        (('*', '88', 'inbound', '*', 'am_peak'), 'line+direction+hour_band', 'dir_band'),
+        (('*', '88', 'inbound', '*', '*'), 'line+direction', 'dir'),
+        (('*', '88', '*', '*', '*'), 'line', 'line'),
+        (('*', '*', '*', '*', '*'), 'global', 'global'),
     ):
         m = pick(full)
         assert m['source'] == source and m['tag'] == tag, (m, source)
@@ -74,41 +78,64 @@ def test_model_fallback_chain():
     # A day miss alone must not cost the hour_band grain: a Saturday bus on
     # marts that only fitted weekdays still gets the line+direction+hour_band
     # row rather than dropping all the way to the line.
-    dayless = {('88', 'inbound', 'weekday', 'am_peak'): row('weekday_only'),
-               ('88', 'inbound', '*', 'am_peak'): row('any_day'),
-               ('88', '*', '*', '*'): row('line')}
-    m = app.pick_model(dayless, '88', 'inbound', 'sat', 'am_peak')
+    dayless = {('*', '88', 'inbound', 'weekday', 'am_peak'): row('weekday_only'),
+               ('*', '88', 'inbound', '*', 'am_peak'): row('any_day'),
+               ('*', '88', '*', '*', '*'): row('line')}
+    m = app.pick_model(dayless, None, '88', 'inbound', 'sat', 'am_peak')
     assert m['source'] == 'line+direction+hour_band' and m['tag'] == 'any_day'
 
     # Old-shape marts: every row filed under day_type '*'. Every lookup, on any
     # day, must still resolve -- just at the day-agnostic grain.
-    old_shape = {('88', 'inbound', '*', 'am_peak'): row('old_band'),
-                 ('88', 'inbound', '*', '*'): row('old_dir'),
-                 ('*', '*', '*', '*'): row('old_global')}
+    old_shape = {('*', '88', 'inbound', '*', 'am_peak'): row('old_band'),
+                 ('*', '88', 'inbound', '*', '*'): row('old_dir'),
+                 ('*', '*', '*', '*', '*'): row('old_global')}
     for day in ('weekday', 'sat', 'sun'):
-        m = app.pick_model(old_shape, '88', 'inbound', day, 'am_peak')
+        m = app.pick_model(old_shape, None, '88', 'inbound', day, 'am_peak')
         assert m['source'] == 'line+direction+hour_band' and m['tag'] == 'old_band', day
-        m = app.pick_model(old_shape, '88', 'inbound', day, 'night')
+        m = app.pick_model(old_shape, None, '88', 'inbound', day, 'night')
         assert m['source'] == 'line+direction' and m['tag'] == 'old_dir', day
 
     # The marts' inferred direction may disagree with the feed's, and a bus may
     # carry no direction at all. Both fall through to the direction-agnostic
     # rungs rather than yielding nothing.
-    mismatched = {('88', 'outbound', 'weekday', 'am_peak'): row('marts_dir'),
-                  ('88', '*', '*', '*'): row('line')}
-    assert app.pick_model(mismatched, '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'line'
-    assert app.pick_model(mismatched, '88', None, 'weekday', 'am_peak')['tag'] == 'line'
+    mismatched = {('*', '88', 'outbound', 'weekday', 'am_peak'): row('marts_dir'),
+                  ('*', '88', '*', '*', '*'): row('line')}
+    assert app.pick_model(mismatched, None, '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'line'
+    assert app.pick_model(mismatched, None, '88', None, 'weekday', 'am_peak')['tag'] == 'line'
 
     # Unknown line still lands on the global row, and the picker never mutates
     # the marts it was handed.
-    glob = {('*', '*', '*', '*'): row('global')}
-    assert app.pick_model(glob, '999', 'outbound', 'sun', 'night')['source'] == 'global'
-    assert 'source' not in glob[('*', '*', '*', '*')]
+    glob = {('*', '*', '*', '*', '*'): row('global')}
+    assert app.pick_model(glob, None, '999', 'outbound', 'sun', 'night')['source'] == 'global'
+    assert 'source' not in glob[('*', '*', '*', '*', '*')]
+
+    # Operator-specific rungs: a bus with a real operator prefers its own
+    # fitted model over the pooled ('*') one, at every width, and a bus with
+    # no operator (every ping before 2026-09-12) skips those rungs entirely
+    # rather than matching an unrelated operator's row.
+    by_op = {
+        ('BEVC', '88', 'inbound', 'weekday', 'am_peak'): row('bevc_exact'),
+        ('BEVC', '88', '*', '*', '*'): row('bevc_line'),
+        ('*', '88', 'inbound', 'weekday', 'am_peak'): row('pooled_exact'),
+        ('*', '*', '*', '*', '*'): row('global'),
+    }
+    assert app.pick_model(by_op, 'BEVC', '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'bevc_exact'
+    # This operator's exact grain is missing, but ITS OWN line-wide rung
+    # exists and must win over the pooled operator's exact-grain row.
+    del by_op[('BEVC', '88', 'inbound', 'weekday', 'am_peak')]
+    assert app.pick_model(by_op, 'BEVC', '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'bevc_line'
+    # An operator with no fitted rows at all falls through to the pooled chain.
+    assert app.pick_model(by_op, 'ANEA', '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'pooled_exact'
+    # No operator on the bus at all (historical data): go straight to pooled,
+    # never try an operator rung (there is nothing to try it against).
+    assert app.pick_model(by_op, None, '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'pooled_exact'
+    assert app.pick_model(by_op, '', '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'pooled_exact'
 
 
 def test_stops_for_day_and_direction_fallback():
-    """stops_for prefers the live day_type, then '*', then the opposite
-    direction, then every stop on the line."""
+    """stops_for prefers the bus's own operator, then '*', then the live
+    day_type, then '*', then the opposite direction, then every stop on the
+    line."""
     stop = lambda atco, lat: {'atco': atco, 'name': atco, 'locality': 'L',
                               'lat': lat, 'lon': -2.2, 'seq': 1}
     wk = [stop('WK', 53.40)]
@@ -116,23 +143,33 @@ def test_stops_for_day_and_direction_fallback():
     outb = [stop('OUT', 53.42)]
     marts = dict(app.EMPTY_MARTS)
 
-    # Exact day wins over the '*' set.
-    marts['stops'] = {('88', 'inbound', 'weekday'): wk, ('88', 'inbound', '*'): star}
-    assert app.stops_for(marts, '88', 'inbound', 'weekday') == wk
+    # Exact day wins over the '*' set. No operator on the bus, so operator is
+    # irrelevant here -- both rows are pooled ('*') operator.
+    marts['stops'] = {('*', '88', 'inbound', 'weekday'): wk, ('*', '88', 'inbound', '*'): star}
+    assert app.stops_for(marts, None, '88', 'inbound', 'weekday') == wk
     # A day the marts never fitted falls to '*', not to nothing.
-    assert app.stops_for(marts, '88', 'inbound', 'sun') == star
+    assert app.stops_for(marts, None, '88', 'inbound', 'sun') == star
     # Old-shape marts carry only '*': every day resolves there.
-    marts['stops'] = {('88', 'inbound', '*'): star}
+    marts['stops'] = {('*', '88', 'inbound', '*'): star}
     for day in ('weekday', 'sat', 'sun'):
-        assert app.stops_for(marts, '88', 'inbound', day) == star, day
+        assert app.stops_for(marts, None, '88', 'inbound', day) == star, day
     # Direction miss -> the opposite direction, preferring its exact day.
-    marts['stops'] = {('88', 'outbound', 'weekday'): outb}
-    assert app.stops_for(marts, '88', 'inbound', 'weekday') == outb
+    marts['stops'] = {('*', '88', 'outbound', 'weekday'): outb}
+    assert app.stops_for(marts, None, '88', 'inbound', 'weekday') == outb
     # Neither direction vocabulary matches -> every stop on the line.
-    marts['stops'] = {('88', 'up', 'weekday'): wk, ('88', 'down', 'sat'): outb}
-    assert len(app.stops_for(marts, '88', 'inbound', 'weekday')) == 2
+    marts['stops'] = {('*', '88', 'up', 'weekday'): wk, ('*', '88', 'down', 'sat'): outb}
+    assert len(app.stops_for(marts, None, '88', 'inbound', 'weekday')) == 2
     # Nothing for the line at all.
-    assert app.stops_for(marts, '999', 'inbound', 'weekday') == []
+    assert app.stops_for(marts, None, '999', 'inbound', 'weekday') == []
+
+    # Operator preference: a bus's own operator sequence wins over the pooled
+    # one when both exist, and a different/unknown operator falls back to
+    # pooled rather than matching nothing.
+    marts['stops'] = {('BEVC', '88', 'inbound', 'weekday'): wk,
+                       ('*', '88', 'inbound', 'weekday'): star}
+    assert app.stops_for(marts, 'BEVC', '88', 'inbound', 'weekday') == wk
+    assert app.stops_for(marts, 'ANEA', '88', 'inbound', 'weekday') == star
+    assert app.stops_for(marts, None, '88', 'inbound', 'weekday') == star
 
 
 def test_marts_age_and_staleness():
@@ -244,8 +281,8 @@ def test_bus_id_whitelist():
 def test_predict_guards():
     """Absurd distances and journey remainders must degrade to 'unknown'."""
     marts = dict(app.EMPTY_MARTS)
-    marts['eta'] = {('*', '*', '*', '*'): {'slope_s_per_km': 120.0, 'intercept_s': 60.0,
-                                           'r2': 0.4, 'n_obs': 99}}
+    marts['eta'] = {('*', '*', '*', '*', '*'): {'slope_s_per_km': 120.0, 'intercept_s': 60.0,
+                                                'r2': 0.4, 'n_obs': 99}}
     # Destination stop 200 km away -> beyond MAX_REMAINING_KM.
     marts['stop_by_atco'] = {'FAR': {'atco': 'FAR', 'name': 'Far', 'locality': 'X',
                                      'lat': 55.3, 'lon': -2.2, 'seq': 1}}
@@ -278,7 +315,7 @@ def test_predict_guards():
 
     # Same distance, a slope that pushes the remainder past 4 hours: the
     # regression is rejected, but adherence still answers, so the status stands.
-    marts['eta'][('*', '*', '*', '*')]['slope_s_per_km'] = 400.0
+    marts['eta'][('*', '*', '*', '*', '*')]['slope_s_per_km'] = 400.0
     frag, _m, _p = app.predict(row, marts, now)
     assert frag['status'] == 'late' and frag['delay_source'] == 'progress_distance'
     # Drop the timetable and the regression alone cannot colour the map.
@@ -356,7 +393,7 @@ def _grid_marts():
          'lon': -2.200, 'seq': 2, 'secs_from_origin': 450.0}
     b = {'atco': 'B', 'name': 'Bravo', 'locality': 'Ashton', 'lat': 53.510,
          'lon': -2.200, 'seq': 3, 'secs_from_origin': 600.0}
-    marts['stops'] = {('88', 'outbound', 'weekday'): [a, m, b]}
+    marts['stops'] = {('*', '88', 'outbound', 'weekday'): [a, m, b]}
     marts['stop_grid'] = {}
     marts['stop_by_line_atco'] = {}
     for key, stops in marts['stops'].items():
@@ -370,17 +407,21 @@ def _grid_marts():
 
 def test_nearest_stop_grid():
     marts, a, _m, _b = _grid_marts()
-    got, km = app.nearest_stop(marts, '88', 'outbound', 'weekday', 53.5001, -2.2001)
+    got, km = app.nearest_stop(marts, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)
     assert got is a and km is not None and km < 0.05
     # Beyond the match radius -> no stop rather than a wrong one.
-    got, km = app.nearest_stop(marts, '88', 'outbound', 'weekday', 53.9, -2.2)
+    got, km = app.nearest_stop(marts, None, '88', 'outbound', 'weekday', 53.9, -2.2)
     assert got is None and km is None
     # Unknown direction falls through to the opposite one.
-    got, _km = app.nearest_stop(marts, '88', 'inbound', 'weekday', 53.5001, -2.2001)
+    got, _km = app.nearest_stop(marts, None, '88', 'inbound', 'weekday', 53.5001, -2.2001)
     assert got is a
     # Unknown line, and missing coordinates, are both survivable.
-    assert app.nearest_stop(marts, 'NOPE', 'outbound', 'weekday', 53.5, -2.2) == (None, None)
-    assert app.nearest_stop(marts, '88', 'outbound', 'weekday', None, None) == (None, None)
+    assert app.nearest_stop(marts, None, 'NOPE', 'outbound', 'weekday', 53.5, -2.2) == (None, None)
+    assert app.nearest_stop(marts, None, '88', 'outbound', 'weekday', None, None) == (None, None)
+    # A real operator on the bus still resolves through the pooled ('*') row
+    # this fixture only has -- the operator rung misses, and it falls through.
+    got, _km = app.nearest_stop(marts, 'BEVC', '88', 'outbound', 'weekday', 53.5001, -2.2001)
+    assert got is a
 
 
 def test_progress_delay():
@@ -398,20 +439,20 @@ def test_progress_delay():
 
     # Sitting at the origin: fraction 0, so expected elapsed 0 but 600 s gone.
     row = dict(base)
-    delay, stop = app.progress_delay(row, marts, now, '88', 'outbound', 'weekday',
+    delay, stop = app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday',
                                      53.5001, -2.2001)
     assert stop['atco'] == 'A' and delay == 600
     assert app.classify_status(delay) == 'late'
 
     # Halfway along at the halfway point of the timetable: bang on time.
-    delay, stop = app.progress_delay(row, marts, now, '88', 'outbound', 'weekday',
+    delay, stop = app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday',
                                      53.5051, -2.2001)
     assert stop['atco'] == 'M' and delay == 0
     assert app.classify_status(delay) == 'on_time'
 
     # At the destination the journey is over: no honest reading is possible, so
     # None rather than a delay that keeps growing while the bus sits there.
-    delay, stop = app.progress_delay(row, marts, now, '88', 'outbound', 'weekday',
+    delay, stop = app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday',
                                      53.5101, -2.2001)
     assert stop['atco'] == 'B' and delay is None
     assert app.classify_status(delay) == 'unknown'
@@ -420,7 +461,7 @@ def test_progress_delay():
     # not change the answer, since only the fraction between them is used.
     for st in (a, m, b):
         st['secs_from_origin'] += 1000
-    shifted, _stop = app.progress_delay(row, marts, now, '88', 'outbound', 'weekday',
+    shifted, _stop = app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday',
                                         53.5051, -2.2001)
     assert shifted == 0
     for st in (a, m, b):
@@ -428,17 +469,17 @@ def test_progress_delay():
 
     # Guards, each returning nothing rather than a wrong number.
     row = dict(base, origin_aimed_dep=(now + 600) * 1000)   # not departed yet
-    assert app.progress_delay(row, marts, now, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
+    assert app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
     row = dict(base, origin_aimed_dep=(now - 86400) * 1000)  # yesterday's journey
-    assert app.progress_delay(row, marts, now, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
+    assert app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
     row = dict(base, dest_aimed_arr=None)                    # no arrival time
-    assert app.progress_delay(row, marts, now, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
+    assert app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
     row = dict(base, origin_ref='NOSUCH')                    # origin not on the line
-    assert app.progress_delay(row, marts, now, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
+    assert app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
     row = dict(base, dest_ref='A')                           # zero-length span
-    assert app.progress_delay(row, marts, now, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
+    assert app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
     # Nowhere near a stop -> no reading, so predict() falls back to the model.
-    assert app.progress_delay(dict(base), marts, now, '88', 'outbound', 'weekday', 53.9, -2.9)[0] is None
+    assert app.progress_delay(dict(base), marts, now, None, '88', 'outbound', 'weekday', 53.9, -2.9)[0] is None
 
 
 def test_arrived_vehicles_stop_accruing_delay():
@@ -559,7 +600,7 @@ def test_implausible_delay_is_refused():
 def test_detour_factor_applied():
     """predict() must hand the model along-route km, not the straight line."""
     marts = dict(app.EMPTY_MARTS)
-    marts['eta'] = {('*', '*', '*', '*'): {'line': '*', 'direction': '*',
+    marts['eta'] = {('*', '*', '*', '*', '*'): {'line': '*', 'direction': '*',
                                            'day_type': '*', 'hour_band': '*',
                                       'slope_s_per_km': 100.0, 'intercept_s': 0.0,
                                       'r2': 0.5, 'n_obs': 1000, 'source': 'global'}}
@@ -661,7 +702,7 @@ def test_delay_never_comes_from_the_regression():
     must supply eta_iso and never delay_s/status."""
     now = 1789200000.0
     marts = dict(app.EMPTY_MARTS)
-    marts['eta'] = {('*', '*', '*', '*'): {'line': '*', 'direction': '*',
+    marts['eta'] = {('*', '*', '*', '*', '*'): {'line': '*', 'direction': '*',
                                            'day_type': '*', 'hour_band': '*',
                                       'slope_s_per_km': 180.0, 'intercept_s': 750.0,
                                       'r2': 0.7, 'n_obs': 5000, 'source': 'global'}}
@@ -756,8 +797,9 @@ def test_marts_state_distinguishes_locked_from_missing():
 
 def test_load_marts_tolerates_both_shapes():
     """The dbt marts are rebuilt independently, so for a while ghost_bus.duckdb
-    still has the pre-day_type columns. Both shapes must load; the old one just
-    files everything under day_type '*'."""
+    still has the pre-day_type, pre-operator columns. Both the oldest shape and
+    the current one must load; a shape missing a column just files everything
+    under that column's '*'."""
     if app.duckdb is None:                      # pragma: no cover
         print('   (skipped: no duckdb driver)')
         return
@@ -767,21 +809,25 @@ def test_load_marts_tolerates_both_shapes():
     def build(path, with_day):
         con = app.duckdb.connect(path)
         if with_day:
-            con.execute('CREATE TABLE mart_eta_model(line VARCHAR, direction VARCHAR, '
-                        'day_type VARCHAR, hour_band VARCHAR, slope_s_per_km DOUBLE, '
-                        'intercept_s DOUBLE, r2 DOUBLE, n_obs BIGINT)')
+            # Current shape: day_type AND operator both present.
+            con.execute('CREATE TABLE mart_eta_model(operator VARCHAR, line VARCHAR, '
+                        'direction VARCHAR, day_type VARCHAR, hour_band VARCHAR, '
+                        'slope_s_per_km DOUBLE, intercept_s DOUBLE, r2 DOUBLE, n_obs BIGINT)')
             con.execute("INSERT INTO mart_eta_model VALUES "
-                        "('88','outbound','weekday','am_peak',150,90,0.7,400),"
-                        "('88','outbound','sat','*',160,80,0.6,300),"
-                        "('*','*','*','*',170,70,0.5,9000)")
-            con.execute('CREATE TABLE mart_line_stops(line VARCHAR, direction VARCHAR, '
-                        'day_type VARCHAR, atco_code VARCHAR, stop_name VARCHAR, '
-                        'locality VARCHAR, lat DOUBLE, lon DOUBLE, seq INTEGER, '
-                        'median_secs_from_origin DOUBLE, n_obs BIGINT)')
+                        "('BEVC','88','outbound','weekday','am_peak',140,60,0.8,250),"
+                        "('*','88','outbound','weekday','am_peak',150,90,0.7,400),"
+                        "('*','88','outbound','sat','*',160,80,0.6,300),"
+                        "('*','*','*','*','*',170,70,0.5,9000)")
+            con.execute('CREATE TABLE mart_line_stops(operator VARCHAR, line VARCHAR, '
+                        'direction VARCHAR, day_type VARCHAR, atco_code VARCHAR, '
+                        'stop_name VARCHAR, locality VARCHAR, lat DOUBLE, lon DOUBLE, '
+                        'seq INTEGER, median_secs_from_origin DOUBLE, n_obs BIGINT)')
             con.execute("INSERT INTO mart_line_stops VALUES "
-                        "('88','outbound','weekday','A','Alpha_Street','Ashton',53.5,-2.2,1,0,40),"
-                        "('88','outbound','*','A','Alpha_Street','Ashton',53.5,-2.2,1,0,90)")
+                        "('BEVC','88','outbound','weekday','A','Alpha_Street','Ashton',53.5,-2.2,1,0,40),"
+                        "('*','88','outbound','weekday','A','Alpha_Street','Ashton',53.5,-2.2,1,0,40),"
+                        "('*','88','outbound','*','A','Alpha_Street','Ashton',53.5,-2.2,1,0,90)")
         else:
+            # Oldest shape: neither day_type nor operator.
             con.execute('CREATE TABLE mart_eta_model(line VARCHAR, direction VARCHAR, '
                         'hour_band VARCHAR, slope_s_per_km DOUBLE, intercept_s DOUBLE, '
                         'r2 DOUBLE, n_obs BIGINT)')
@@ -798,33 +844,39 @@ def test_load_marts_tolerates_both_shapes():
 
     tmp = tempfile.mkdtemp()
     try:
-        # --- new shape ---------------------------------------------------
+        # --- current shape (day_type + operator) --------------------------
         new_path = tmp + '/new.duckdb'
         build(new_path, with_day=True)
         marts = app._load_marts(new_path)
-        assert marts['ok'] and marts['n_models'] == 3
+        assert marts['ok'] and marts['n_models'] == 4
         assert marts['day_types'] == ['*', 'sat', 'weekday'], marts['day_types']
-        m = app.pick_model(marts['eta'], '88', 'outbound', 'weekday', 'am_peak')
+        # This operator's own fit wins over the pooled one.
+        m = app.pick_model(marts['eta'], 'BEVC', '88', 'outbound', 'weekday', 'am_peak')
+        assert m['source'] == 'operator+line+direction+day+hour_band' and m['n_obs'] == 250
+        # A different/unknown operator falls through to the pooled chain.
+        m = app.pick_model(marts['eta'], 'ANEA', '88', 'outbound', 'weekday', 'am_peak')
         assert m['source'] == 'line+direction+day+hour_band' and m['n_obs'] == 400
-        m = app.pick_model(marts['eta'], '88', 'outbound', 'sat', 'am_peak')
+        m = app.pick_model(marts['eta'], None, '88', 'outbound', 'sat', 'am_peak')
         assert m['source'] == 'line+direction+day' and m['n_obs'] == 300
-        assert ('88', 'outbound', 'weekday') in marts['stops']
-        assert app.stops_for(marts, '88', 'outbound', 'sun')[0]['atco'] == 'A'
+        assert ('*', '88', 'outbound', 'weekday') in marts['stops']
+        assert app.stops_for(marts, None, '88', 'outbound', 'sun')[0]['atco'] == 'A'
+        assert app.stops_for(marts, 'BEVC', '88', 'outbound', 'weekday')[0]['atco'] == 'A'
 
-        # --- old shape ---------------------------------------------------
+        # --- oldest shape (neither day_type nor operator) -----------------
         old_path = tmp + '/old.duckdb'
         build(old_path, with_day=False)
         marts = app._load_marts(old_path)
         # Loads rather than throwing and disabling predictions.
         assert marts['ok'] and marts['n_models'] == 2
         assert marts['day_types'] == ['*'], marts['day_types']
-        # Every key is filed under '*', so the day rungs miss and the chain
-        # resolves one grain coarser -- on every day of the week.
+        # Every key is filed under '*' for both columns, so the day and
+        # operator rungs miss and the chain resolves one grain coarser --
+        # on every day of the week, for any operator.
         for day in ('weekday', 'sat', 'sun'):
-            m = app.pick_model(marts['eta'], '88', 'outbound', day, 'am_peak')
+            m = app.pick_model(marts['eta'], 'BEVC', '88', 'outbound', day, 'am_peak')
             assert m is not None and m['source'] == 'line+direction+hour_band', (day, m)
-            assert app.stops_for(marts, '88', 'outbound', day)[0]['atco'] == 'A', day
-            stop, _km = app.nearest_stop(marts, '88', 'outbound', day, 53.5001, -2.2001)
+            assert app.stops_for(marts, 'BEVC', '88', 'outbound', day)[0]['atco'] == 'A', day
+            stop, _km = app.nearest_stop(marts, 'BEVC', '88', 'outbound', day, 53.5001, -2.2001)
             assert stop is not None and stop['atco'] == 'A', day
         # Stop names are still de-underscored on the old shape.
         assert marts['stop_by_atco']['A']['name'] == 'Alpha Street'
@@ -838,25 +890,33 @@ def test_route_stops_resolver_matches_stops_for():
     math is using -- the two would silently disagree about the route."""
     marts, a, m, b = _grid_marts()
 
-    stops, direction, day, source = app.route_stops_for_line(marts, '88', 'outbound', 'weekday')
-    assert stops == [a, m, b] and direction == 'outbound' and day == 'weekday'
+    stops, operator, direction, day, source = app.route_stops_for_line(
+        marts, None, '88', 'outbound', 'weekday')
+    assert stops == [a, m, b] and operator == '*' and direction == 'outbound' and day == 'weekday'
     assert source == 'exact'
-    assert stops == app.stops_for(marts, '88', 'outbound', 'weekday')
+    assert stops == app.stops_for(marts, None, '88', 'outbound', 'weekday')
 
     # Day misses, falls back to the '*' row set the marts always emit... except
     # this fixture only has 'weekday', so it should fall through to the merge.
-    stops2, _d, _day, source2 = app.route_stops_for_line(marts, '88', 'outbound', 'sun')
+    stops2, _op, _d, _day, source2 = app.route_stops_for_line(marts, None, '88', 'outbound', 'sun')
     assert source2 == 'line_merged_all_directions'
     assert stops2 == [a, m, b]   # same three stops, just not via a day-specific key
 
     # Opposite direction: the mart only knows 'outbound', request 'inbound'.
-    stops3, direction3, _day, source3 = app.route_stops_for_line(marts, '88', 'inbound', 'weekday')
+    stops3, _op, direction3, _day, source3 = app.route_stops_for_line(
+        marts, None, '88', 'inbound', 'weekday')
     assert direction3 == 'outbound'
     assert source3 in ('opposite_direction', 'opposite_direction_day_agnostic')
     assert stops3 == [a, m, b]
 
+    # A real operator the mart has never fitted still resolves through the
+    # pooled ('*') row, reported as 'pooled_operator' rather than 'exact'.
+    stops5, op5, _d, _day, source5 = app.route_stops_for_line(
+        marts, 'BEVC', '88', 'outbound', 'weekday')
+    assert stops5 == [a, m, b] and op5 == '*' and source5 == 'pooled_operator'
+
     # Unknown line entirely.
-    stops4, _d, _day, source4 = app.route_stops_for_line(marts, 'NOPE', None, 'weekday')
+    stops4, _op, _d, _day, source4 = app.route_stops_for_line(marts, None, 'NOPE', None, 'weekday')
     assert stops4 == [] and source4 == 'no_data'
 
 
@@ -876,6 +936,11 @@ def test_route_endpoint_validates_input():
     # day_type IS a closed enum (app.DAY_TYPES), unlike direction, because
     # the marts only ever emit these four literal values.
     r = client.get('/route', query_string={'line': '88', 'day_type': 'friday'})
+    assert r.status_code == 400
+    # operator is a character/length whitelist too, same discipline.
+    r = client.get('/route', query_string={'line': '88', 'operator': 'BEVC'})
+    assert r.status_code == 200
+    r = client.get('/route', query_string={'line': '88', 'operator': "BEVC'; DROP"})
     assert r.status_code == 400
 
 
@@ -898,8 +963,8 @@ def test_route_truncation_and_merged_route_detection():
     good = [{'atco': 'S%d' % i, 'name': 'Stop %d' % i, 'locality': 'X',
              'lat': 53.0 + i * 0.009, 'lon': -2.2, 'seq': i,
              'secs_from_origin': float(i * 60)} for i in range(n)]
-    marts['stops'] = {('LONG', 'outbound', 'weekday'): good}
-    stops, _d, _day, _s = app.route_stops_for_line(marts, 'LONG', 'outbound', 'weekday')
+    marts['stops'] = {('*', 'LONG', 'outbound', 'weekday'): good}
+    stops, _op, _d, _day, _s = app.route_stops_for_line(marts, None, 'LONG', 'outbound', 'weekday')
     assert len(stops) == n   # resolver itself does not truncate
 
     usable = stops[:app.MAX_ROUTE_STOPS]
@@ -912,11 +977,52 @@ def test_route_truncation_and_merged_route_detection():
     bad = list(good[:5])
     bad.append({'atco': 'FAR', 'name': 'Another Town Entirely', 'locality': 'Y',
                 'lat': 54.5, 'lon': -3.5, 'seq': 5, 'secs_from_origin': 300.0})
-    marts['stops'] = {('MERGED', 'outbound', 'weekday'): bad}
-    stops2, _d, _day, _s = app.route_stops_for_line(marts, 'MERGED', 'outbound', 'weekday')
+    marts['stops'] = {('*', 'MERGED', 'outbound', 'weekday'): bad}
+    stops2, _op, _d, _day, _s = app.route_stops_for_line(marts, None, 'MERGED', 'outbound', 'weekday')
     flagged = any(app.haversine_km(a['lat'], a['lon'], b['lat'], b['lon']) > app.MERGED_ROUTE_HOP_KM
                   for a, b in zip(stops2, stops2[1:]))
     assert flagged
+
+
+def test_road_snapped_geometry_falls_back_on_osrm_failure():
+    """OSRM unreachable, timing out, or refusing the request must come back
+    as None -- never raise -- so the /route caller can fall back to the
+    straight stop-to-stop line instead of breaking the map."""
+    real_urlopen = app.urllib.request.urlopen
+    stops = [{'lat': 53.40, 'lon': -2.20}, {'lat': 53.45, 'lon': -2.25}]
+    try:
+        def boom(*a, **k):
+            raise OSError('connection refused')
+        app.urllib.request.urlopen = boom
+        assert app.road_snapped_geometry(stops) is None
+
+        class NoRouteResp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return json.dumps({'code': 'NoRoute', 'routes': []}).encode()
+        app.urllib.request.urlopen = lambda *a, **k: NoRouteResp()
+        assert app.road_snapped_geometry(stops) is None
+    finally:
+        app.urllib.request.urlopen = real_urlopen
+
+
+def test_road_snapped_geometry_parses_osrm_response():
+    real_urlopen = app.urllib.request.urlopen
+    fake_coords = [[-2.20, 53.40], [-2.22, 53.42], [-2.25, 53.45]]
+    body = json.dumps({'code': 'Ok',
+                        'routes': [{'geometry': {'coordinates': fake_coords}}]}).encode()
+
+    class FakeResp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return body
+    try:
+        app.urllib.request.urlopen = lambda *a, **k: FakeResp()
+        result = app.road_snapped_geometry(
+            [{'lat': 53.40, 'lon': -2.20}, {'lat': 53.45, 'lon': -2.25}])
+        assert result == fake_coords
+    finally:
+        app.urllib.request.urlopen = real_urlopen
 
 
 if __name__ == '__main__':

@@ -64,7 +64,7 @@ schema:
       Ordinary least squares fit of remaining journey seconds on remaining
       kilometres, one row per temporal grain. The fitted coefficients ARE the
       model -- there is no serialised artefact and no inference service.
-    dataGranularityDescription: One row per (line, direction, day_type, hour_band), plus coarser fallback rows using '*'.
+    dataGranularityDescription: One row per (operator, line, direction, day_type, hour_band), plus coarser fallback rows using '*'.
     tags: ['model']
     quality:
       - id: eta_model_has_rows
@@ -81,18 +81,19 @@ schema:
         severity: error
         description: The consumer looks up by this key and takes the first hit; duplicates make the answer arbitrary.
         arguments:
-          properties: ['line', 'direction', 'day_type', 'hour_band']
+          properties: ['operator', 'line', 'direction', 'day_type', 'hour_band']
       - id: eta_model_global_fallback_exists
         type: sql
         dimension: completeness
         severity: error
         businessImpact: operational
         description: >-
-          The consumer walks a six-rung fallback chain ending at the global row.
-          Without it a line the model has never seen yields no prediction at all.
+          The consumer walks an eleven-rung fallback chain ending at the global
+          row. Without it a line the model has never seen yields no prediction
+          at all.
         query: |
           SELECT COUNT(*) FROM {object}
-          WHERE line = '*' AND direction = '*' AND day_type = '*' AND hour_band = '*'
+          WHERE operator = '*' AND line = '*' AND direction = '*' AND day_type = '*' AND hour_band = '*'
         mustBe: 1
       - id: eta_model_speeds_plausible
         type: sql
@@ -107,6 +108,19 @@ schema:
           WHERE mean_speed_kmh IS NULL OR mean_speed_kmh < 3 OR mean_speed_kmh > 90
         mustBe: 0
     properties:
+      - id: eta_operator
+        name: operator
+        businessName: Operator
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 1
+        description: >-
+          National Operator Code, or '*' for a fit pooled across every
+          operator. Added 2026-09-12; null in the source feed before that
+          date, so every historical ping can only ever feed the '*' rows.
+        examples: ['BEVC', 'ANEA', '*']
       - id: eta_line
         name: line
         businessName: Service number
@@ -114,7 +128,7 @@ schema:
         physicalType: VARCHAR
         required: true
         primaryKey: true
-        primaryKeyPosition: 1
+        primaryKeyPosition: 2
         description: Published service number as the operator advertises it, or '*' for the global fallback row.
         examples: ['192', 'X66', '*']
       - id: eta_direction
@@ -123,7 +137,7 @@ schema:
         physicalType: VARCHAR
         required: true
         primaryKey: true
-        primaryKeyPosition: 2
+        primaryKeyPosition: 3
         description: >-
           Direction of travel. Inferred from journey geometry for historical
           pings that predate the feed's DirectionRef, so the label is a
@@ -140,7 +154,7 @@ schema:
         physicalType: VARCHAR
         required: true
         primaryKey: true
-        primaryKeyPosition: 3
+        primaryKeyPosition: 4
         description: >-
           Service day class, derived from the LOCAL (Europe/London) date.
           Saturday and Sunday timetables differ from Monday-Friday in both
@@ -159,7 +173,7 @@ schema:
         physicalType: VARCHAR
         required: true
         primaryKey: true
-        primaryKeyPosition: 4
+        primaryKeyPosition: 5
         description: >-
           Local-time band. night 22:00-05:59, am_peak 06:00-09:59,
           inter 10:00-15:59, pm_peak 16:00-18:59, evening 19:00-21:59.
@@ -248,7 +262,7 @@ schema:
       The stops each line is observed to call at, in order, with the median time
       from the start of the journey to each one. Answers "what was the last stop
       and what is the next one", and is the only way to rate a circular route.
-    dataGranularityDescription: One row per (line, direction, day_type, atco_code).
+    dataGranularityDescription: One row per (operator, line, direction, day_type, atco_code).
     quality:
       - id: line_stops_has_rows
         metric: rowCount
@@ -261,7 +275,7 @@ schema:
         dimension: uniqueness
         severity: error
         arguments:
-          properties: ['line', 'direction', 'day_type', 'atco_code']
+          properties: ['operator', 'line', 'direction', 'day_type', 'atco_code']
       - id: line_stops_day_agnostic_rows_exist
         type: sql
         dimension: completeness
@@ -269,28 +283,51 @@ schema:
         description: The consumer falls back to '*' whenever a day-specific sequence is missing.
         query: SELECT COUNT(*) FROM {object} WHERE day_type = '*'
         mustBeGreaterThan: 0
+      - id: line_stops_operator_agnostic_rows_exist
+        type: sql
+        dimension: completeness
+        severity: error
+        description: >-
+          The consumer falls back to operator = '*' whenever a bus has no
+          operator, or an operator-specific sequence is missing. Every
+          pre-2026-09-12 observation can only ever land here.
+        query: SELECT COUNT(*) FROM {object} WHERE operator = '*'
+        mustBeGreaterThan: 0
     properties:
+      - id: stops_operator
+        name: operator
+        businessName: Operator
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 1
+        description: >-
+          National Operator Code, or '*' for the sequence pooled across every
+          operator (the original, merged behaviour, kept as a fallback grain).
+          Added 2026-09-12; null in the source feed before that date.
+        examples: ['BEVC', 'ANEA', '*']
       - id: stops_line
         name: line
         logicalType: string
         physicalType: VARCHAR
         required: true
         primaryKey: true
-        primaryKeyPosition: 1
+        primaryKeyPosition: 2
       - id: stops_direction
         name: direction
         logicalType: string
         physicalType: VARCHAR
         required: true
         primaryKey: true
-        primaryKeyPosition: 2
+        primaryKeyPosition: 3
       - id: stops_day_type
         name: day_type
         logicalType: string
         physicalType: VARCHAR
         required: true
         primaryKey: true
-        primaryKeyPosition: 3
+        primaryKeyPosition: 4
         enum:
           - value: weekday
           - value: sat
@@ -303,7 +340,7 @@ schema:
         physicalType: VARCHAR
         required: true
         primaryKey: true
-        primaryKeyPosition: 4
+        primaryKeyPosition: 5
         description: National stop identifier. Joins to NaPTAN and to the OriginRef/DestinationRef the live feed publishes.
         examples: ['1800STIN0P1', '0600MA6154']
       - id: stops_name

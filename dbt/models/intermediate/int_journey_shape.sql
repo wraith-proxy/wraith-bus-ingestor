@@ -201,18 +201,30 @@ line_shape as (
 
     -- How loop-like is this line? straight_km / path_km near 1 is an A-to-B
     -- run; near 0 is a circuit that comes back to where it started.
+    --
+    -- Grained on operator too, not just line: '88' is a genuinely different
+    -- route per operator, and pooling them the way this used to would (and,
+    -- for historical data, still does) treat a Sheffield cross-city route and
+    -- a Wilmslow-Hale route as one shape. operator is coalesced to a sentinel
+    -- rather than left NULL because SQL joins never match NULL to NULL --
+    -- see int_bus_journeys' prev_operator for the same trick. Every row
+    -- before 2026-09-12 has operator_key = '~none~' for everything, so this
+    -- is a no-op on historical data: it only starts disambiguating once the
+    -- feed actually supplies an operator.
     select
+        coalesce(operator, '~none~') as operator_key,
         line,
         median(straight_km / path_km) as median_linearity,
         count(*)                      as n_journeys
     from observed_to_completion
-    group by line
+    group by operator_key, line
 
 ),
 
 line_is_circular as (
 
     select
+        operator_key,
         line,
         median_linearity,
         median_linearity < 0.35 as is_circular_line
@@ -226,6 +238,7 @@ line_bearing_bins as (
     -- opposed halves of the compass a journey belongs to, and coarse bins are
     -- far more stable against a few wandering journeys than a mean would be.
     select
+        coalesce(operator, '~none~')                 as operator_key,
         line,
         cast(floor(journey_bearing / 45) as integer) as bearing_bin,
         count(*)                                     as n_journeys,
@@ -234,20 +247,21 @@ line_bearing_bins as (
         (degrees(atan2(avg(sin(radians(journey_bearing))),
                        avg(cos(radians(journey_bearing))))) + 360) % 360 as bin_mean_bearing
     from observed_to_completion
-    group by line, bearing_bin
+    group by operator_key, line, bearing_bin
 
 ),
 
 line_reference_bearing as (
 
     select
+        operator_key,
         line,
         bin_mean_bearing as reference_bearing
     from line_bearing_bins
     -- Tie-break on bearing_bin so the choice is deterministic across rebuilds;
     -- otherwise two equally-busy bins could swap 'outbound' and 'inbound'
     -- between runs and the API's stop sequences would flip.
-    qualify row_number() over (partition by line order by n_journeys desc, bearing_bin) = 1
+    qualify row_number() over (partition by operator_key, line order by n_journeys desc, bearing_bin) = 1
 
 ),
 
@@ -267,9 +281,15 @@ directed as (
             when {{ bearing_delta('p.journey_bearing', 'r.reference_bearing') }} < 90 then 'outbound'
             else 'inbound'
         end as direction_inferred
+    -- Explicit null-safe join rather than `using`: p.operator is genuinely
+    -- NULL for all pre-2026-09-12 journeys, and `using`/`=` never matches
+    -- NULL to NULL, which would silently drop the reference bearing for
+    -- every historical journey.
     from observed_to_completion p
-    left join line_reference_bearing r using (line)
-    left join line_is_circular       c using (line)
+    left join line_reference_bearing r
+        on r.operator_key = coalesce(p.operator, '~none~') and r.line = p.line
+    left join line_is_circular c
+        on c.operator_key = coalesce(p.operator, '~none~') and c.line = p.line
 
 ),
 

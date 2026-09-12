@@ -1,11 +1,12 @@
 -- seq must be 1..n with no gaps and no repeats within each
--- (line, direction, day_type).
+-- (operator, line, direction, day_type).
 -- The API walks the sequence to find "the stop after this one"; a gap makes it
 -- skip a stop, a repeat makes it loop.
 
 with per_line_direction as (
 
     select
+        operator,
         line,
         direction,
         day_type,
@@ -14,7 +15,7 @@ with per_line_direction as (
         min(seq)              as min_seq,
         max(seq)              as max_seq
     from {{ ref('mart_line_stops') }}
-    group by line, direction, day_type
+    group by operator, line, direction, day_type
 
 )
 

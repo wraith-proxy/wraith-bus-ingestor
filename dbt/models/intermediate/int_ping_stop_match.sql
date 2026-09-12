@@ -48,6 +48,7 @@ with journeys as (
         line,
         direction,
         day_type,
+        operator,
         start_ts,
         start_ping_seq,
         end_ping_seq
@@ -64,6 +65,7 @@ pings as (
         -- The day pattern of the JOURNEY (the day it set off, local time), not
         -- of the individual ping. A stop sequence belongs to a whole run.
         j.day_type,
+        j.operator,
         j.start_ts as journey_start_ts,
         p.ping_seq,
         p.ping_ts,
@@ -111,6 +113,7 @@ candidates as (
         p.line,
         p.direction,
         p.day_type,
+        p.operator,
         p.journey_start_ts,
         p.ping_seq,
         p.ping_ts,
@@ -145,6 +148,7 @@ select
     line,
     direction,
     day_type,
+    operator,
     journey_start_ts,
     ping_seq,
     ping_ts,

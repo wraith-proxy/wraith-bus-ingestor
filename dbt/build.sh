@@ -31,7 +31,7 @@ cd "$(dirname "$0")"          # every path below -- and every source in
 
 PY=".venv/bin/python"
 : "${QUESTDB_HTTP:=http://localhost:9001}"
-: "${EXTRACT_DAYS:=21}"
+: "${EXTRACT_DAYS:=22}"
 : "${SKIP_EXTRACT:=0}"
 : "${KEEP_BUILD:=0}"
 

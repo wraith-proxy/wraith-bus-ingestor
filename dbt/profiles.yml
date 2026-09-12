@@ -22,10 +22,17 @@ ghost_bus:
       # serving 504s. A slower rebuild is fine, a website that falls over is not.
       threads: 3
       settings:
-        # 6 GB of 15, leaving headroom for QuestDB, the ingestor and the API.
-        # The corpus is ~45M pings; the window functions in int_bus_journeys
-        # exceed this and spill to disk, which is the intended behaviour.
-        memory_limit: '6GB'
+        # Was 6 GB of 15. Cut to 3 GB on 2026-09-12 after two host-level OOM
+        # events during int_bus_journeys, even with ghost-osrm (a new
+        # container added the same day, 1.8 GB resident) stopped for the
+        # duration. DuckDB's memory_limit bounds its own tracked buffers, not
+        # process RSS during a heavy spill -- the actual spike was a fast
+        # transient that outran a 15 s polling watchdog, not a steady climb,
+        # so the fix is a lower ceiling, not closer monitoring. The corpus is
+        # ~45M pings; the window functions in int_bus_journeys exceed even 3
+        # GB and spill to disk, which is the intended behaviour and just
+        # makes the rebuild slower, not wrong.
+        memory_limit: '3GB'
         # DO NOT set temp_directory here. dbt-duckdb replays every `settings:`
         # entry on each new connection it opens, and DuckDB refuses to change
         # the temp directory once it has spilled to the current one -- so the

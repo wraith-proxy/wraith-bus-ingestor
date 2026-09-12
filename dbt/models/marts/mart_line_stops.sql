@@ -1,6 +1,18 @@
 {#
-  The observed stop sequence for each (line, direction, day_type) -- what the
-  API answers "what was the last stop" and "what is the next stop" from.
+  The observed stop sequence for each (operator, line, direction, day_type) --
+  what the API answers "what was the last stop" and "what is the next stop"
+  from.
+
+  operator joined the grain on 2026-09-12, the day it first became available
+  (see the KNOWN LIMITATION this docstring used to carry, and CONTRACT.md /
+  bus-marts.odcs.yaml). A line number is not a route: '88' is a Sheffield
+  cross-city route AND a Wilmslow-Hale route AND something in rural
+  Lancashire, and grouping on line alone merged all of them into one
+  zig-zagging sequence. operator is emitted both ways -- real value AND
+  pooled as '*' -- exactly like day_type already was, so the API's fallback
+  chain can prefer the operator-specific sequence and still resolve for a
+  line it has never seen an operator for (all pre-2026-09-12 data, which is
+  most of the training window for a while yet).
 
   There is no timetable in this project, so the sequence is reconstructed from
   behaviour. For every journey that passed within 120 m of a stop we know how
@@ -59,28 +71,49 @@ first_visit_per_journey as (
     -- per (journey, stop): the earliest time the journey reached it.
     select
         journey_key,
+        operator,
         line,
         direction,
         day_type,
         atco_code,
         min(secs_from_origin) as secs_from_origin
     from matches
-    group by journey_key, line, direction, day_type, atco_code
+    group by journey_key, operator, line, direction, day_type, atco_code
 
 ),
 
--- The same observations counted twice: once under their own day_type, and once
--- under '*'. Doing it as a union of the observation rows (rather than merging
--- finished aggregates) means the '*' medians are true medians over every
--- journey, not medians of medians.
+-- The same observations counted up to four times: real-operator/real-day,
+-- real-operator/'*'-day, '*'-operator/real-day, '*'-operator/'*'-day. Doing it
+-- as a union of the observation rows (rather than merging finished
+-- aggregates) means every pooled median is a true median over every journey
+-- in the pool, not a median of medians.
+--
+-- The real-operator branches drop rows with no operator at all (everything
+-- before 2026-09-12) rather than group them under a literal NULL: a NULL-
+-- operator "real" grain would never be looked up by anything -- a live bus
+-- either reports a real operator (and would look for that) or none (and the
+-- API skips straight to the '*' rungs) -- so keeping it would only be dead
+-- weight in the mart.
 observations as (
 
-    select journey_key, line, direction, day_type, atco_code, secs_from_origin
+    select journey_key, operator, line, direction, day_type, atco_code, secs_from_origin
+    from first_visit_per_journey
+    where operator is not null
+
+    union all
+
+    select journey_key, operator, line, direction, '*' as day_type, atco_code, secs_from_origin
+    from first_visit_per_journey
+    where operator is not null
+
+    union all
+
+    select journey_key, '*' as operator, line, direction, day_type, atco_code, secs_from_origin
     from first_visit_per_journey
 
     union all
 
-    select journey_key, line, direction, '*' as day_type, atco_code, secs_from_origin
+    select journey_key, '*' as operator, line, direction, '*' as day_type, atco_code, secs_from_origin
     from first_visit_per_journey
 
 ),
@@ -102,6 +135,7 @@ stop_identity as (
 by_grain as (
 
     select
+        operator,
         line,
         direction,
         day_type,
@@ -114,13 +148,14 @@ by_grain as (
         avg(secs_from_origin)                         as mean_secs_from_origin,
         cast(count(distinct journey_key) as bigint)   as n_obs
     from observations
-    group by line, direction, day_type, atco_code
+    group by operator, line, direction, day_type, atco_code
 
 ),
 
 sequenced as (
 
     select
+        s.operator,
         s.line,
         s.direction,
         s.day_type,
@@ -131,7 +166,7 @@ sequenced as (
         -- median journey reaches first. Ties broken on atco_code so a rebuild
         -- never silently renumbers the route.
         cast(row_number() over (
-            partition by s.line, s.direction, s.day_type
+            partition by s.operator, s.line, s.direction, s.day_type
             order by s.median_secs_from_origin, s.mean_secs_from_origin, s.atco_code
         ) as integer) as seq
     from by_grain s
@@ -144,6 +179,7 @@ sequenced as (
 )
 
 select
+    q.operator,
     q.line,
     q.direction,
     q.day_type,

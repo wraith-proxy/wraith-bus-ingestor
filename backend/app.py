@@ -144,14 +144,30 @@ GRID = 2  # decimal places for the stop lookup grid (~1.1 km cells)
 BUS_ID_RE = re.compile(r'^[A-Za-z0-9_:.\-]{1,64}$')
 LINE_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9 ._:\-]{0,31}$')
 DIRECTION_RE = re.compile(r'^[A-Za-z_]{1,16}$')
+OPERATOR_RE = re.compile(r'^[A-Za-z0-9_]{1,16}$')
 DAY_TYPES = ('weekday', 'sat', 'sun', '*')
 
 # A service number is not a route. '88' is several unrelated routes in different
 # towns that happen to share a number, and mart_line_stops keys on the number
 # alone, so a low-numbered line's merged stop set can zig-zag between counties.
-# Cap what we will draw, and flag the shape rather than pretending it is a road.
+# Cap what we will draw either way -- riders only board at a stop, never on
+# the road between two, so a plausible road-snapped guess through even a
+# merged stop list is fine; MERGED_ROUTE_HOP_KM still splits it into
+# disconnected segments at the implausible jumps so one bad number does not
+# draw a single line across half the country, and geometry_quality still
+# tells the map this stop sequence itself is suspect.
 MAX_ROUTE_STOPS = 400
 MERGED_ROUTE_HOP_KM = 15.0   # consecutive stops further apart than this are suspect
+
+# Self-hosted OSRM (car profile -- there is no bus profile, and a bus mostly
+# drives the same streets a car does), used to snap the /api/route LineString
+# to real roads instead of straight lines between stops. Anything can make
+# this call fail -- OSRM down, a stop pair with no drivable path, a slow
+# graph query -- and none of it should ever turn into a broken map, so every
+# caller of road_snapped_geometry() must treat None as "draw the straight
+# line instead", never as an error.
+OSRM_URL = os.getenv('OSRM_URL', 'http://osrm:5000')
+OSRM_TIMEOUT_S = 5.0
 
 EARTH_RADIUS_KM = 6371.0088
 
@@ -320,26 +336,40 @@ def hour_band(dt):
     return 'evening'
 
 
-def pick_model(models, line, direction, day, band):
+def pick_model(models, operator, line, direction, day, band):
     """Best-matching mart_eta_model row, most specific grain first.
 
-    Grain is (line, direction, day_type, hour_band); each fallback row is
-    refitted at its own grain rather than averaged.
+    Grain is (operator, line, direction, day_type, hour_band); each fallback
+    row is refitted at its own grain rather than averaged.
 
-    Both the direction and the day rungs are allowed to miss. The marts'
-    'inbound'/'outbound' is inferred from journey geometry over history that
-    predates the schedule columns, so it need not agree with the live feed; and
-    while the marts are being rebuilt they may carry no day_type at all, in
-    which case every row is filed under '*'. Either mismatch must fall through
-    to a coarser grain rather than yield no prediction."""
-    for key, source in (
-        ((line, direction, day, band), 'line+direction+day+hour_band'),
-        ((line, direction, day, '*'), 'line+direction+day'),
-        ((line, direction, '*', band), 'line+direction+hour_band'),
-        ((line, direction, '*', '*'), 'line+direction'),
-        ((line, '*', '*', '*'), 'line'),
-        (('*', '*', '*', '*'), 'global'),
-    ):
+    Operator, direction and day are all allowed to miss. operator is NULL on
+    every ping before 2026-09-12, so the operator-specific rungs are skipped
+    entirely (not merely tried and missed) whenever the live bus has none --
+    trying them anyway would only ever hit a '*'-operator row, uselessly
+    labelled as if it were operator-specific. The marts' 'inbound'/'outbound'
+    is inferred from journey geometry over history that predates the schedule
+    columns, so it need not agree with the live feed; and while the marts are
+    being rebuilt they may carry no day_type at all, in which case every row
+    is filed under '*'. Any mismatch must fall through to a coarser grain
+    rather than yield no prediction."""
+    rungs = []
+    if operator:
+        rungs.extend([
+            ((operator, line, direction, day, band), 'operator+line+direction+day+hour_band'),
+            ((operator, line, direction, day, '*'), 'operator+line+direction+day'),
+            ((operator, line, direction, '*', band), 'operator+line+direction+hour_band'),
+            ((operator, line, direction, '*', '*'), 'operator+line+direction'),
+            ((operator, line, '*', '*', '*'), 'operator+line'),
+        ])
+    rungs.extend([
+        (('*', line, direction, day, band), 'line+direction+day+hour_band'),
+        (('*', line, direction, day, '*'), 'line+direction+day'),
+        (('*', line, direction, '*', band), 'line+direction+hour_band'),
+        (('*', line, direction, '*', '*'), 'line+direction'),
+        (('*', line, '*', '*', '*'), 'line'),
+        (('*', '*', '*', '*', '*'), 'global'),
+    ])
+    for key, source in rungs:
         row = models.get(key)
         if row:
             out = dict(row)
@@ -403,7 +433,7 @@ EMPTY_MARTS = {
     'state': MARTS_MISSING, 'error': None,
     'reload_state': None, 'reload_error': None,
     'eta': {}, 'localities': [], 'line_loc': {}, 'stops': {}, 'stop_by_atco': {},
-    'stop_grid': {}, 'stop_by_line_atco': {},
+    'stop_grid': {}, 'stop_by_line_atco': {}, 'route_geom': {},
 }
 
 _marts_lock = threading.Lock()
@@ -438,6 +468,11 @@ def _load_marts(path):
     marts.update({'eta': {}, 'localities': [], 'line_loc': {}, 'stops': {},
                   'stop_by_atco': {}, 'stop_grid': {},
                   'stop_by_line_atco': {}, 'day_types': [],
+                  # Lazily filled by road_snapped_geometry()'s caller, keyed by
+                  # (line, direction, day). A fresh dict every reload, so a
+                  # rebuilt marts file (new stop sequences) can never serve a
+                  # road geometry cached against the old ones.
+                  'route_geom': {},
                   'state': MARTS_MISSING, 'error': None,
                   'reload_state': None, 'reload_error': None})
 
@@ -467,19 +502,25 @@ def _load_marts(path):
         return marts
 
     try:
-        # Old-shape marts have no day_type column; select a literal '*' in its
-        # place so every row lands on the day-agnostic rungs of the chain.
+        # Old-shape marts have no day_type (or operator) column; select a
+        # literal '*' in its place so every row lands on the agnostic rungs
+        # of the chain rather than failing to load at all.
         eta_cols = _table_columns(con, 'mart_eta_model')
         day_expr = 'day_type' if 'day_type' in eta_cols else "'*'"
+        eta_op_expr = 'operator' if 'operator' in eta_cols else "'*'"
         if day_expr != 'day_type':
             log_once('marts-noday-eta',
                      'mart_eta_model has no day_type column; treating every model '
                      'as day_type "*" until the marts are rebuilt')
-        for line, direction, day, band, slope, intercept, r2, n_obs in _fetch(
+        if eta_op_expr != 'operator':
+            log_once('marts-noop-eta',
+                     'mart_eta_model has no operator column; treating every model '
+                     'as operator "*" until the marts are rebuilt')
+        for operator, line, direction, day, band, slope, intercept, r2, n_obs in _fetch(
             con,
-            'SELECT line, direction, %s, hour_band, slope_s_per_km, intercept_s, '
-            'r2, n_obs FROM mart_eta_model' % day_expr, 'eta_model'):
-            marts['eta'][(line, direction, day, band)] = {
+            'SELECT %s, line, direction, %s, hour_band, slope_s_per_km, intercept_s, '
+            'r2, n_obs FROM mart_eta_model' % (eta_op_expr, day_expr), 'eta_model'):
+            marts['eta'][(operator, line, direction, day, band)] = {
                 'slope_s_per_km': slope, 'intercept_s': intercept,
                 'r2': r2, 'n_obs': n_obs,
             }
@@ -499,20 +540,25 @@ def _load_marts(path):
 
         stop_cols = _table_columns(con, 'mart_line_stops')
         sday_expr = 'day_type' if 'day_type' in stop_cols else "'*'"
+        sop_expr = 'operator' if 'operator' in stop_cols else "'*'"
         if sday_expr != 'day_type':
             log_once('marts-noday-stops',
                      'mart_line_stops has no day_type column; treating every stop '
                      'sequence as day_type "*" until the marts are rebuilt')
-        for line, direction, day, atco, name, locality, lat, lon, seq, secs in _fetch(
+        if sop_expr != 'operator':
+            log_once('marts-noop-stops',
+                     'mart_line_stops has no operator column; treating every stop '
+                     'sequence as operator "*" until the marts are rebuilt')
+        for operator, line, direction, day, atco, name, locality, lat, lon, seq, secs in _fetch(
             con,
-            'SELECT line, direction, %s, atco_code, stop_name, locality, lat, lon, '
-            'seq, median_secs_from_origin FROM mart_line_stops' % sday_expr,
+            'SELECT %s, line, direction, %s, atco_code, stop_name, locality, lat, lon, '
+            'seq, median_secs_from_origin FROM mart_line_stops' % (sop_expr, sday_expr),
             'line_stops'):
             stop = {
                 'atco': atco, 'name': display_name(name), 'locality': locality,
                 'lat': lat, 'lon': lon, 'seq': seq, 'secs_from_origin': secs,
             }
-            marts['stops'].setdefault((line, direction, day), []).append(stop)
+            marts['stops'].setdefault((operator, line, direction, day), []).append(stop)
             if atco and atco not in marts['stop_by_atco']:
                 marts['stop_by_atco'][atco] = stop
     finally:
@@ -538,7 +584,10 @@ def _load_marts(path):
     marts['ok'] = True
     marts['state'] = MARTS_OK
     marts['n_models'] = len(marts['eta'])
-    days = {k[2] for k in marts['eta']} | {k[2] for k in marts['stops']}
+    # Keys are (operator, line, direction, day_type, ...) for eta and
+    # (operator, line, direction, day_type) for stops -- day_type is index 3
+    # in both since operator joined the front of the key.
+    days = {k[3] for k in marts['eta']} | {k[3] for k in marts['stops']}
     marts['day_types'] = sorted(d for d in days if d)
     try:
         marts['built_at'] = iso_from_epoch_s(os.path.getmtime(path))
@@ -666,29 +715,33 @@ def schedule_epoch_s(millis, now_s, max_age_s, max_ahead_s):
     return secs
 
 
-def stops_index_key(index, line, direction, day):
-    """Resolve a (line, direction, day_type) key against a stops index.
+def stops_index_key(index, operator, line, direction, day):
+    """Resolve an (operator, line, direction, day_type) key against a stops
+    index.
 
-    Prefers the live day_type, then the '*' row set the marts always emit; and
-    the feed's direction, then its opposite (the marts' direction is inferred
-    from geometry and may be the other way round for a given line). All three
-    stop indexes are built from the same keys, so this resolves identically for
-    each and they never mix day sets."""
-    for d in (direction, OPPOSITE.get(direction)):
-        for dt in (day, '*'):
-            key = (line, d, dt)
-            if index.get(key):
-                return key
+    Prefers the bus's own operator, then the '*' row pooled across every
+    operator (every pre-2026-09-12 observation can only ever live there); then
+    the live day_type, then the '*' row set the marts always emit; and the
+    feed's direction, then its opposite (the marts' direction is inferred from
+    geometry and may be the other way round for a given line). All three stop
+    indexes are built from the same keys, so this resolves identically for
+    each and they never mix operator or day sets."""
+    for op in (operator, '*'):
+        for d in (direction, OPPOSITE.get(direction)):
+            for dt in (day, '*'):
+                key = (op, line, d, dt)
+                if index.get(key):
+                    return key
     return None
 
 
-def nearest_stop(marts, line, direction, day, lat, lon):
+def nearest_stop(marts, operator, line, direction, day, lat, lon):
     """Closest stop on this line to a position, within STOP_MATCH_KM.
 
     Checks only the bus's own grid cell and its eight neighbours."""
     if lat is None or lon is None:
         return None, None
-    key = stops_index_key(marts['stop_grid'], line, direction, day)
+    key = stops_index_key(marts['stop_grid'], operator, line, direction, day)
     cells = marts['stop_grid'].get(key) if key else None
     if not cells:
         return None, None
@@ -712,7 +765,7 @@ def _secs(stops_by_atco, atco):
     return None if val is None else float(val)
 
 
-def progress_delay(row, marts, now_s, line, direction, day, lat, lon):
+def progress_delay(row, marts, now_s, operator, line, direction, day, lat, lon):
     """Delay from schedule adherence rather than from the ETA regression.
 
     The feed gives aimed times for the journey's origin and destination only --
@@ -744,14 +797,14 @@ def progress_delay(row, marts, now_s, line, direction, day, lat, lon):
     if scheduled < MIN_SCHEDULED_JOURNEY_S or scheduled > MAX_REMAINING_S:
         return None, None
 
-    stop, _km = nearest_stop(marts, line, direction, day, lat, lon)
+    stop, _km = nearest_stop(marts, operator, line, direction, day, lat, lon)
     if stop is None:
         return None, None
     here = stop.get('secs_from_origin')
     if here is None:
         return None, None
 
-    akey = stops_index_key(marts['stop_by_line_atco'], line, direction, day)
+    akey = stops_index_key(marts['stop_by_line_atco'], operator, line, direction, day)
     by_atco = (marts['stop_by_line_atco'].get(akey) or {}) if akey else {}
     s_origin = _secs(by_atco, row.get('origin_ref'))
     s_dest = _secs(by_atco, row.get('dest_ref'))
@@ -854,7 +907,7 @@ def position_is_live(row, now_s):
     """Is this vehicle actually reporting, or is the feed replaying a dead record?
 
     Freshness has to be judged on the SIRI RecordedAtTime, not on when we
-    ingested the row: a stale record is re-served to us every 30 seconds and so
+    ingested the row: a stale record is re-served to us every 60 seconds and so
     always looks new. Vehicles with no recorded_at at all (pre-patch rows, and
     operators that omit it) are let through -- the five-minute ingest window is
     the only freshness signal available for those."""
@@ -872,6 +925,7 @@ def predict(row, marts, now_s):
     """Return (properties-fragment, model, predicted_epoch_s)."""
     line = row.get('line')
     direction = row.get('direction')
+    operator = row.get('operator')
     lat, lon = row.get('lat'), row.get('lon')
 
     straight_km = None
@@ -883,7 +937,7 @@ def predict(row, marts, now_s):
 
     local = local_dt(now_s)          # Europe/London, never UTC -- see local_zone()
     day = day_type(local)
-    model = pick_model(marts['eta'], line, direction, day, hour_band(local))
+    model = pick_model(marts['eta'], operator, line, direction, day, hour_band(local))
 
     eta_iso = None
     predicted = None
@@ -912,14 +966,19 @@ def predict(row, marts, now_s):
     # buses sitting at their destination stop, it lands within a couple of
     # seconds of the truth (median +98 s vs +96 s observed). The stop-sequence
     # version is in principle better -- it knows where a route actually dawdles
-    # -- but mart_line_stops keys on line number alone, and a number like '88'
-    # is several unrelated routes merged, so in practice it reads ~6 minutes
-    # late. Keep it only for the circular routes the geometric one cannot
-    # measure, and revisit once the marts key on operator too.
+    # -- but mart_line_stops used to key on line number alone, where a number
+    # like '88' is several unrelated routes merged, so in practice it read ~6
+    # minutes late. operator joined the mart grain 2026-09-12 (see
+    # mart_line_stops), which fixes that for a bus whose operator has enough
+    # observed history to fit its own sequence; for everything else this
+    # still falls back to the same merged, pooled ('*') sequence as before.
+    # Keeping this as the fallback for circular routes only, rather than
+    # promoting it above the geometric method generally, is a separate
+    # accuracy call this fix does not make on its own.
     delay_s = None if arrived else geometric_progress_delay(row, marts, now_s)
     delay_source = 'progress_distance' if delay_s is not None else None
     if delay_s is None and not arrived:
-        delay_s, _stop = progress_delay(row, marts, now_s, line, direction, day, lat, lon)
+        delay_s, _stop = progress_delay(row, marts, now_s, operator, line, direction, day, lat, lon)
         delay_source = 'progress_stops' if delay_s is not None else None
 
     # With a delay in hand, the timetable plus that delay beats the regression.
@@ -958,20 +1017,23 @@ def bus_properties(row, marts, now_s):
 
 
 
-def stops_for(marts, line, direction, day):
-    """Stop sequence for a line, preferring the live day_type then '*', and the
-    feed's direction then its opposite.
+def stops_for(marts, operator, line, direction, day):
+    """Stop sequence for a line, preferring the bus's own operator then '*',
+    the live day_type then '*', and the feed's direction then its opposite.
 
     Known approximation: mart_line_stops directions are inferred from journey
     geometry over historical pings that carried no direction column, so the
     mart's 'outbound' may be the feed's 'inbound' for any given line. Last
-    resort is every stop on the line regardless of direction or day, so a
-    vocabulary mismatch degrades the answer instead of deleting it."""
-    key = stops_index_key(marts['stops'], line, direction, day)
+    resort is every stop on the line regardless of operator, direction or day,
+    so a vocabulary mismatch degrades the answer instead of deleting it --
+    this only triggers for a line mart_line_stops has never observed under
+    any grain at all, since the '*'/'*' row stops_index_key already falls
+    back to exists for every line the mart has any data for."""
+    key = stops_index_key(marts['stops'], operator, line, direction, day)
     if key:
         return marts['stops'][key]
     merged = []
-    for (l, _d, _day), rows in marts['stops'].items():
+    for (_op, l, _d, _day), rows in marts['stops'].items():
         if l == line:
             merged.extend(rows)
     merged.sort(key=lambda s: (s['seq'] is None, s['seq']))
@@ -1058,7 +1120,7 @@ def bus_detail(bus_id):
         'next_stop': None,
     })
 
-    stops = stops_for(marts, row.get('line'), row.get('direction'),
+    stops = stops_for(marts, row.get('operator'), row.get('line'), row.get('direction'),
                       day_type(local_dt(now_s)))
     if stops:
         try:
@@ -1114,31 +1176,56 @@ def bus_detail(bus_id):
     return jsonify(props)
 
 
-def route_stops_for_line(marts, line, direction, day):
+def road_snapped_geometry(stops):
+    """[[lon, lat], ...] following real roads through these stops in order,
+    via the self-hosted OSRM car profile (overview=full for the detailed
+    shape, not OSRM's default simplified one). None on any failure --
+    unreachable OSRM, a stop pair with no drivable path, a timeout -- so the
+    caller can fall back to the straight stop-to-stop line rather than
+    breaking the map."""
+    coords = ';'.join('%.6f,%.6f' % (s['lon'], s['lat']) for s in stops)
+    path = urllib.parse.quote(coords, safe=',;')
+    url = '%s/route/v1/driving/%s?overview=full&geometries=geojson&steps=false' % (
+        OSRM_URL, path)
+    try:
+        with urllib.request.urlopen(url, timeout=OSRM_TIMEOUT_S) as resp:
+            data = json.load(resp)
+    except Exception as exc:
+        log_once('osrm-route', 'OSRM unavailable, falling back to straight lines: %s' % exc)
+        return None
+    routes = data.get('routes') or []
+    if data.get('code') != 'Ok' or not routes:
+        return None
+    return routes[0]['geometry']['coordinates']
+
+
+def route_stops_for_line(marts, operator, line, direction, day):
     """Stop sequence plus how it was resolved, for /api/route.
 
     Reuses stops_index_key so the reported provenance always describes the
     SAME fallback stops_for() actually took -- there is no second, slightly
     different, resolution path to drift out of sync with it."""
-    key = stops_index_key(marts['stops'], line, direction, day)
+    key = stops_index_key(marts['stops'], operator, line, direction, day)
     if key:
-        resolved_direction, resolved_day = key[1], key[2]
-        if direction and resolved_direction != direction:
+        resolved_operator, resolved_direction, resolved_day = key[0], key[2], key[3]
+        if operator and resolved_operator != operator:
+            source = 'pooled_operator'
+        elif direction and resolved_direction != direction:
             source = 'opposite_direction' if resolved_day == day else 'opposite_direction_day_agnostic'
         elif day and resolved_day != day:
             source = 'day_agnostic'
         else:
             source = 'exact'
-        return marts['stops'][key], resolved_direction, resolved_day, source
+        return marts['stops'][key], resolved_operator, resolved_direction, resolved_day, source
 
     merged = []
-    for (l, _d, _day), rows in marts['stops'].items():
+    for (_op, l, _d, _day), rows in marts['stops'].items():
         if l == line:
             merged.extend(rows)
     if not merged:
-        return [], direction, day, 'no_data'
+        return [], operator, direction, day, 'no_data'
     merged.sort(key=lambda s: (s['seq'] is None, s['seq']))
-    return merged, None, None, 'line_merged_all_directions'
+    return merged, None, None, None, 'line_merged_all_directions'
 
 
 @app.route('/route', methods=['GET'])
@@ -1154,20 +1241,23 @@ def route():
     line = request.args.get('line', '')
     direction = request.args.get('direction') or None
     day = request.args.get('day_type') or None
+    operator = request.args.get('operator') or None
     if not LINE_RE.match(line):
         return jsonify({"error": "invalid line"}), 400
     if direction is not None and not DIRECTION_RE.match(direction):
         return jsonify({"error": "invalid direction"}), 400
     if day is not None and day not in DAY_TYPES:
         return jsonify({"error": "invalid day_type"}), 400
+    if operator is not None and not OPERATOR_RE.match(operator):
+        return jsonify({"error": "invalid operator"}), 400
 
     marts = get_marts()
     now_s = time.time()
     if day is None:
         day = day_type(local_dt(now_s))
 
-    stops, resolved_direction, resolved_day, source = route_stops_for_line(
-        marts, line, direction, day)
+    stops, resolved_operator, resolved_direction, resolved_day, source = route_stops_for_line(
+        marts, operator, line, direction, day)
 
     features = []
     route_note = None
@@ -1179,22 +1269,47 @@ def route():
         truncated = len(usable) > MAX_ROUTE_STOPS
         usable = usable[:MAX_ROUTE_STOPS]
 
-        quality = 'stop_to_stop_straight_lines'
-        for a, b in zip(usable, usable[1:]):
-            if haversine_km(a['lat'], a['lon'], b['lat'], b['lon']) > MERGED_ROUTE_HOP_KM:
-                quality = 'suspect_merged_routes'
-                break
+        gap_after = [i for i, (a, b) in enumerate(zip(usable, usable[1:]))
+                     if haversine_km(a['lat'], a['lon'], b['lat'], b['lon']) > MERGED_ROUTE_HOP_KM]
+        merged_suspect = bool(gap_after)
 
-        if len(usable) >= 2:
+        # A merged, reused line number draws as several disconnected runs,
+        # split at the implausible gaps, rather than one line spanning every
+        # town that number has ever been seen in. Each run is still fair game
+        # for road-snapping below -- riders only board at a stop, never on
+        # the road between two, so the exact path through even a merged stop
+        # list is safe to estimate. merged_suspect (not geometry_quality)
+        # is what tells the map this stop sequence itself is untrusted.
+        segments = []
+        start = 0
+        for i in gap_after:
+            segments.append(usable[start:i + 1])
+            start = i + 1
+        segments.append(usable[start:])
+        segments = [seg for seg in segments if len(seg) >= 2]
+
+        for seg_i, seg in enumerate(segments):
+            seg_coords = [[s['lon'], s['lat']] for s in seg]
+            seg_quality = 'stop_to_stop_straight_lines'
+
+            cache_key = (resolved_operator, line, resolved_direction, resolved_day, seg_i)
+            cache = marts['route_geom']
+            if cache_key not in cache:
+                cache[cache_key] = road_snapped_geometry(seg)
+            road_coords = cache[cache_key]
+            if road_coords:
+                seg_coords = road_coords
+                seg_quality = 'road_snapped'
+
             features.append({
                 "type": "Feature",
-                "geometry": {"type": "LineString",
-                             "coordinates": [[s['lon'], s['lat']] for s in usable]},
+                "geometry": {"type": "LineString", "coordinates": seg_coords},
                 "properties": {
-                    "kind": "route", "line": line,
+                    "kind": "route", "line": line, "operator": resolved_operator,
                     "direction": resolved_direction, "day_type": resolved_day,
-                    "n_stops": len(usable), "source": source,
-                    "geometry_quality": quality,
+                    "n_stops": len(seg), "source": source,
+                    "geometry_quality": seg_quality,
+                    "merged_suspect": merged_suspect,
                     "truncated": truncated,
                 },
             })

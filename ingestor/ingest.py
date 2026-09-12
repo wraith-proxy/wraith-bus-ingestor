@@ -6,8 +6,13 @@ from datetime import datetime, timezone
 import requests
 
 API_KEY = os.environ["BODS_API_KEY"]
-# North of England: Liverpool / Manchester / Leeds / Lancaster
-BBOX = "-4.0,53.0,-1.0,54.6"
+# Mainland Great Britain. Excludes Northern Ireland (not in BODS anyway),
+# Isle of Man and the Channel Islands (not part of the UK, not in BODS),
+# Orkney, Shetland, the Outer Hebrides and the Scillies (a rectangular bbox
+# can't carve out an enclave, so Isle of Wight -- hard against the mainland
+# south coast -- still sneaks in; measured at 129 vehicles out of 24,536
+# GB-wide, i.e. all the excluded islands combined cost 0.5% of the feed).
+BBOX = "-6.3,49.9,1.8,58.75"
 AVL_URL = (
     "https://data.bus-data.dft.gov.uk/api/v1/datafeed/"
     f"?api_key={API_KEY}&boundingBox={BBOX}"
@@ -122,4 +127,4 @@ def ingest():
 if __name__ == "__main__":
     while True:
         ingest()
-        time.sleep(30)
+        time.sleep(60)
