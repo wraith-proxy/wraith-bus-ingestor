@@ -38,6 +38,7 @@ dev = [
     "mkdocs-material",
     "poethepoet",
     "typer",
+    "genbadge[coverage]",
 ]
 
 [project.urls]

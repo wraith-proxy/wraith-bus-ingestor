@@ -26,6 +26,8 @@ osrm_data/*
 .ruff_cache/
 .pytest_cache/
 .coverage
+coverage.xml
+docs/coverage.svg
 site/
 dist/
 .venv/

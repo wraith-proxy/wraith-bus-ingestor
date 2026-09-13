@@ -1,16 +1,26 @@
-# wraith-bus-ingestor
+[![Documentation](https://img.shields.io/badge/docs-live-brightgreen)](https://www.thomaspeoples.com/gitea-repos/wraith-bus-ingestor/)
+![PyPI - Version](https://img.shields.io/pypi/v/wraith-bus-ingestor)
+![PyPI - License](https://img.shields.io/pypi/l/wraith-bus-ingestor)
+![PyPI - Python Version](https://img.shields.io/pypi/pyversions/wraith-bus-ingestor)
+![Coverage](https://www.thomaspeoples.com/gitea-repos/wraith-bus-ingestor/coverage.svg)
 
-A live UK bus tracking data platform, running end to end on a home NAS: a
-BODS SIRI-VM feed polled every 60 seconds, landed in QuestDB, turned into
-DuckDB marts by a nightly dbt build, and served by a Flask API. Extracted
-out of `ghost-site` (which now holds only the nginx front door and the
-static sites) into its own repo, with full history preserved.
+# 👻 wraith-bus-ingestor
+### *Live UK Bus Tracking for the Ghost Stack*
+
+**wraith-bus-ingestor** is a live UK bus tracking data platform, running
+end to end on a home NAS: a BODS SIRI-VM feed polled every 60 seconds,
+landed in QuestDB, turned into DuckDB marts by a nightly dbt build, and
+served by a Flask API. Extracted out of `ghost-site` (which now holds only
+the nginx front door and the static sites) into its own repo, with full
+history preserved.
 
 The map that consumes this API — `www/slaycoach/bus-map/` — lives in
 `ghost-site`; the two repos share a Docker network (`ghost-net`), not a
 directory.
 
-## The data flow
+---
+
+## 🌐 The Data Flow
 
 ```
 BODS SIRI-VM feed (every 60s, mainland GB bbox)
@@ -59,7 +69,7 @@ The build also runs at low priority (`nice -n 15`) because DuckDB will
 steal every core it can get. Unconstrained, it drove load past 10 on a
 6-core box and broke the API's response times.
 
-### The ETA model
+### The ETA Model
 
 One regression per `(operator, line, direction, day_type, hour_band)` grain:
 
@@ -80,7 +90,7 @@ See [`dbt/README.md`](dbt/README.md) for the hard parts (direction inference
 from bearing, detecting journeys cut mid-stream, stop sequence limitations,
 stale distance chords, etc.).
 
-## Data contracts and ontology
+## 📜 Data Contracts and Ontology
 
 The boundary between the ingestor and everything downstream is documented
 in `contracts/bus-positions.odcs.yaml` — an Open Data Contract Standard
@@ -93,7 +103,7 @@ The marts contract is in `contracts/bus-marts.odcs.yaml`. The ontology in
 `ServiceNumber`, `Direction`, `HourBand`, etc.) and proves it has not
 drifted from the data. Run `uv run python contracts/validate.py` to check.
 
-## Quickstart
+## 🚀 Quickstart
 
 ```bash
 git clone https://git.thomaspeoples.com/thomaspeoples/wraith-bus-ingestor.git
@@ -116,7 +126,7 @@ SKIP_EXTRACT=1 ./build.sh   # reuse the parquet already in data/, skip the Quest
 FULL_REFRESH=1 ./build.sh   # rebuild from scratch (schema change, suspected drift)
 ```
 
-## Layout
+## 🗂️ Layout
 
 ```
 .
@@ -129,7 +139,7 @@ FULL_REFRESH=1 ./build.sh   # rebuild from scratch (schema change, suspected dri
 └── contracts/           — ODCS data contracts + ontology
 ```
 
-## The hard decisions baked in
+## 🧩 The Hard Decisions Baked In
 
 **Partitions are archived, not deleted.** QuestDB's native `SET TTL` drops
 data outright; this keeps 22 days hot on fast SSD and moves older
@@ -160,6 +170,18 @@ as a next-stop oracle.
 often the bus sitting still at the stand. Trimming them moved the
 regression's r² from 0.52 to 0.69.
 
+## 🔒 Security Posture
+
+* **No public ingress:** `api`, `osrm`, `archiver` and `ingestor` are reachable only from inside `ghost-net`; only `tiles` and `db` expose host ports, both configurable in `.env`.
+* **Secrets stay in `.env`:** the BODS API key and QuestDB credentials are never committed; `.env.example` documents the shape.
+* **Contract-gated publish:** `build.sh` refuses to publish new marts if `contracts/validate.py` finds a violation — a broken contract leaves the previous good marts serving.
+
 ## License
 
 MIT. See LICENSE.
+
+---
+
+<div align="center">
+<sub><i>"Sovereignty is found in the Source."</i></sub>
+</div>
