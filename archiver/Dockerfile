@@ -6,7 +6,8 @@ COPY pyproject.toml uv.lock ./
 # archive.py is stdlib-only (urllib, glob, shutil, json) and needs no
 # third-party packages -- uv sync still runs so this image is built the same
 # way as the other two, not because archive.py depends on anything in the
-# lockfile.
+# lockfile. duckdb/dbt-core are their own optional extras and not requested
+# here either way.
 RUN uv sync --frozen --no-dev --no-install-project
 COPY archiver/archive.py .
 

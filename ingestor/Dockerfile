@@ -6,9 +6,10 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 # Only `requests` is needed here (plus stdlib xml.etree) -- the ingestor used
 # to also install protobuf and gtfs-realtime-bindings, which ingest.py never
-# imported. uv sync pulls the full project dependency set regardless, same as
-# the other two images; the point of pinning here is reproducibility, not a
-# minimal image.
+# imported. duckdb/dbt-core are their own optional extras now and not
+# requested here, so this only pulls the small base dependency set flask/
+# flask-cors/tzdata/requests/pyyaml -- still more than this script strictly
+# needs, but built the same way as the other two images for consistency.
 RUN uv sync --frozen --no-dev --no-install-project
 COPY ingestor/ingest.py .
 

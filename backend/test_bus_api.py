@@ -759,9 +759,11 @@ def test_marts_state_distinguishes_locked_from_missing():
     import tempfile
 
     # No file, and the directory Docker creates when you bind-mount a file that
-    # does not exist yet: both 'missing'.
-    assert app._load_marts('/no/such/marts.duckdb')['state'] == app.MARTS_MISSING
-    assert app._load_marts('/')['state'] == app.MARTS_MISSING
+    # does not exist yet: both 'missing' -- but only once a driver is present
+    # to even ask; without one, 'no_driver' wins regardless of the path.
+    expect_missing = app.MARTS_MISSING if app.duckdb is not None else app.MARTS_NO_DRIVER
+    assert app._load_marts('/no/such/marts.duckdb')['state'] == expect_missing
+    assert app._load_marts('/')['state'] == expect_missing
 
     if app.duckdb is not None:
         # Something that is not a DuckDB database at all: 'unreadable', which is

@@ -5,7 +5,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock ./
 # tzdata: zoneinfo is stdlib but python:3.12-slim ships no zone database, and
 # hour_band/day_type must resolve Europe/London to agree with the dbt marts.
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --extra duckdb --no-install-project
 COPY backend/ .
 RUN mkdir -p /data
 

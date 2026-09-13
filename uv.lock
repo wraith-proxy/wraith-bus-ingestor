@@ -2303,7 +2303,6 @@ name = "wraith-bus-ingestor"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "duckdb" },
     { name = "flask" },
     { name = "flask-cors" },
     { name = "pyyaml" },
@@ -2331,6 +2330,9 @@ dev = [
     { name = "ty" },
     { name = "typer" },
 ]
+duckdb = [
+    { name = "duckdb" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -2338,7 +2340,7 @@ requires-dist = [
     { name = "dbt-core", marker = "extra == 'dbt'", specifier = "==1.12.4" },
     { name = "dbt-duckdb", marker = "extra == 'dbt'", specifier = "==1.11.0" },
     { name = "detect-secrets", marker = "extra == 'dev'" },
-    { name = "duckdb" },
+    { name = "duckdb", marker = "extra == 'duckdb'" },
     { name = "flask" },
     { name = "flask-cors" },
     { name = "genbadge", extras = ["coverage"], marker = "extra == 'dev'" },
@@ -2356,7 +2358,7 @@ requires-dist = [
     { name = "typer", marker = "extra == 'dev'" },
     { name = "tzdata" },
 ]
-provides-extras = ["dbt", "dev"]
+provides-extras = ["duckdb", "dbt", "dev"]
 
 [[package]]
 name = "wrapt"

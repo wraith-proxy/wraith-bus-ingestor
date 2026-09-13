@@ -1,4 +1,4 @@
-"""Ghost site backend: the live bus API.
+"""wraith-bus-ingestor backend: the live bus API.
 
 Serves GeoJSON straight off QuestDB and enriches it with ETA regressions read
 out of the dbt marts (a DuckDB file built by a separate job). The marts are

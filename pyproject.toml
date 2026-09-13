@@ -15,7 +15,6 @@ requires-python = ">=3.12"
 dependencies = [
     "flask",
     "flask-cors",
-    "duckdb",
     # zoneinfo (Europe/London, used for hour_band/day_type) ships without data
     # on slim/minimal Python images; tzdata backfills it.
     "tzdata",
@@ -24,11 +23,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Its own group, not a base dependency: dbt-core pulls in
-# dbt-core-experimental-parser, a Rust wheel with no musllinux build --
-# uninstallable on ghost-runner's Alpine/musl. backend/'s Flask API never
-# imports dbt at all, so CI's test job (uv sync --extra dev) never needs
-# this group; only dbt/build.sh does, run against `uv sync --all-extras`.
+# duckdb ships no musllinux wheel and can't build from source on
+# ghost-runner either (no C++ compiler) -- see ROADMAP.md for baking a real
+# image. backend/app.py already treats a missing duckdb driver as a
+# degraded-but-running state (marts_state stays "unknown"), and the test
+# suite skips its duckdb-dependent assertions the same way, so CI's test job
+# (uv sync --extra dev) is fine without this. Real deployment (Debian-based,
+# see backend/Dockerfile) and local dev (--all-extras) both still get it.
+duckdb = [
+    "duckdb",
+]
+# Same story, plus dbt-core pulls in dbt-core-experimental-parser, a Rust
+# wheel with no musllinux build at all -- a second, independent reason this
+# can't install on ghost-runner. Only dbt/build.sh needs this group.
 dbt = [
     "dbt-core==1.12.4",
     "dbt-duckdb==1.11.0",
@@ -65,7 +72,16 @@ test-ci = "pytest --cov=backend --cov-report=term-missing --cov-fail-under=80"
 lint = "ruff check ."
 format = "ruff format ."
 tidy = ["lint", "format"]
-docs-build = "mkdocs build"
+# Regenerates docs/api.md from backend/app.py's own docstrings.
+docs-api = { shell = "printf '# Python API\\n\\n' > docs/api.md && pydoc-markdown pydoc-markdown.yml >> docs/api.md" }
+# dbt docs generate needs the `dbt` extra and a duckdb file to introspect --
+# an empty one is fine, it just means catalog data is sparse until a real
+# build has run. --static inlines manifest+catalog into one HTML file, since
+# this gets served under /dbt/ (a subpath), not domain root, and the default
+# multi-file output's internal fetches assume the latter.
+docs-dbt = { shell = "cd dbt && ../.venv/bin/dbt docs generate --profiles-dir . --static && mkdir -p ../docs/dbt && cp target/static_index.html ../docs/dbt/index.html" }
+docs-mkdocs = "mkdocs build"
+docs-build = ["docs-api", "docs-dbt", "docs-mkdocs"]
 docs-serve = "mkdocs serve"
 # dbt runs under this same project-root venv now (see dbt/build.sh) -- build.sh
 # just wraps the existing entry point.
