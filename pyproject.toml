@@ -21,11 +21,18 @@ dependencies = [
     "tzdata",
     "requests",
     "pyyaml",
-    "dbt-core==1.12.4",
-    "dbt-duckdb==1.11.0",
 ]
 
 [project.optional-dependencies]
+# Its own group, not a base dependency: dbt-core pulls in
+# dbt-core-experimental-parser, a Rust wheel with no musllinux build --
+# uninstallable on ghost-runner's Alpine/musl. backend/'s Flask API never
+# imports dbt at all, so CI's test job (uv sync --extra dev) never needs
+# this group; only dbt/build.sh does, run against `uv sync --all-extras`.
+dbt = [
+    "dbt-core==1.12.4",
+    "dbt-duckdb==1.11.0",
+]
 dev = [
     "ruff",
     "ty",
@@ -39,6 +46,7 @@ dev = [
     "poethepoet",
     "typer",
     "genbadge[coverage]",
+    "pydoc-markdown",
 ]
 
 [project.urls]
