@@ -100,7 +100,7 @@ class DuckDBEngine:
         return self.con.execute(sql).fetchone()[0]
 
     def quote(self, ident):
-        return '"%s"' % ident.replace('"', '""')
+        return '"{}"'.format(ident.replace('"', '""'))
 
     def scope(self, table):
         return self.quote(table)
@@ -141,8 +141,8 @@ class QuestDBEngine:
         return ident
 
     def scope(self, table):
-        return ("(SELECT * FROM %s WHERE timestamp > dateadd('m', -%d, now()))"
-                % (table, self.window_minutes))
+        return (f"(SELECT * FROM {table} "
+                f"WHERE timestamp > dateadd('m', -{self.window_minutes}, now()))")
 
     def close(self):
         pass
@@ -215,7 +215,7 @@ def check_quality(engine, res, rule, table, prop=None):
                 if valid is None:
                     res.skip(label, "invalidValues without validValues")
                     return
-                lst = ", ".join("'%s'" % str(v).replace("'", "''") for v in valid)
+                lst = ", ".join("'{}'".format(str(v).replace("'", "''")) for v in valid)
                 value = engine.scalar(f"SELECT count(*) FROM {t} WHERE {col} NOT IN ({lst})")
             else:
                 res.skip(label, f"metric '{metric}' not implemented")
@@ -260,7 +260,8 @@ def validate_contract(path, engines, res):
         for prop in obj.get("properties", []):
             col = prop.get("physicalName") or prop["name"]
             if col not in actual:
-                res.fail(f"{table}.{col}", "property declared in contract but absent from the data")
+                res.fail(f"{table}.{col}",
+                         "property declared in contract but absent from the data")
                 continue
             declared = prop.get("physicalType")
             if declared and not types_compatible(declared, actual[col]):
@@ -352,7 +353,8 @@ def validate_ontology(path, contracts, res):
             if onto_enum and c_enum:
                 extra = onto_enum - c_enum
                 if extra:
-                    res.fail(ref, f"valueType {vt} allows {sorted(extra)} which the contract does not")
+                    res.fail(ref,
+                             f"valueType {vt} allows {sorted(extra)} which the contract does not")
                     broken += 1
 
         for key in obj.get("primaryKey", []):
@@ -369,12 +371,14 @@ def validate_ontology(path, contracts, res):
             spec = link[side]
             ot = object_types.get(spec["objectType"])
             if ot is None:
-                res.fail(link["apiName"], f"{side} references unknown objectType {spec['objectType']!r}")
+                res.fail(link["apiName"],
+                         f"{side} references unknown objectType {spec['objectType']!r}")
                 broken += 1
             elif spec.get("property") and spec["property"] not in {
                     p["apiName"] for p in ot.get("properties", [])}:
                 res.fail(link["apiName"],
-                         f"{side} references {spec['objectType']}.{spec['property']} which does not exist")
+                         f"{side} references {spec['objectType']}.{spec['property']} "
+                         "which does not exist")
                 broken += 1
 
     if not broken:

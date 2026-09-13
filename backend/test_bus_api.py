@@ -5,7 +5,7 @@ and duckdb are installed:  docker compose exec api python test_bus_api.py
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import app
 
@@ -51,7 +51,8 @@ def test_model_fallback_chain():
     then the original six line-only rungs from (line, direction, day_type,
     hour_band) down to the global row -- direction and day are allowed to
     miss throughout, operator only ever narrows or is skipped entirely."""
-    row = lambda tag: {'slope_s_per_km': 1.0, 'intercept_s': 0.0, 'r2': 0.5, 'n_obs': 10, 'tag': tag}
+    def row(tag):
+        return {'slope_s_per_km': 1.0, 'intercept_s': 0.0, 'r2': 0.5, 'n_obs': 10, 'tag': tag}
     full = {
         ('*', '88', 'inbound', 'weekday', 'am_peak'): row('exact'),
         ('*', '88', 'inbound', 'weekday', '*'): row('dir_day'),
@@ -60,7 +61,8 @@ def test_model_fallback_chain():
         ('*', '88', '*', '*', '*'): row('line'),
         ('*', '*', '*', '*', '*'): row('global'),
     }
-    pick = lambda models: app.pick_model(models, None, '88', 'inbound', 'weekday', 'am_peak')
+    def pick(models):
+        return app.pick_model(models, None, '88', 'inbound', 'weekday', 'am_peak')
 
     for key, source, tag in (
         (('*', '88', 'inbound', 'weekday', 'am_peak'), 'line+direction+day+hour_band', 'exact'),
@@ -119,25 +121,31 @@ def test_model_fallback_chain():
         ('*', '88', 'inbound', 'weekday', 'am_peak'): row('pooled_exact'),
         ('*', '*', '*', '*', '*'): row('global'),
     }
-    assert app.pick_model(by_op, 'BEVC', '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'bevc_exact'
+    assert app.pick_model(
+        by_op, 'BEVC', '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'bevc_exact'
     # This operator's exact grain is missing, but ITS OWN line-wide rung
     # exists and must win over the pooled operator's exact-grain row.
     del by_op[('BEVC', '88', 'inbound', 'weekday', 'am_peak')]
-    assert app.pick_model(by_op, 'BEVC', '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'bevc_line'
+    assert app.pick_model(
+        by_op, 'BEVC', '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'bevc_line'
     # An operator with no fitted rows at all falls through to the pooled chain.
-    assert app.pick_model(by_op, 'ANEA', '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'pooled_exact'
+    assert app.pick_model(
+        by_op, 'ANEA', '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'pooled_exact'
     # No operator on the bus at all (historical data): go straight to pooled,
     # never try an operator rung (there is nothing to try it against).
-    assert app.pick_model(by_op, None, '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'pooled_exact'
-    assert app.pick_model(by_op, '', '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'pooled_exact'
+    assert app.pick_model(
+        by_op, None, '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'pooled_exact'
+    assert app.pick_model(
+        by_op, '', '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'pooled_exact'
 
 
 def test_stops_for_day_and_direction_fallback():
     """stops_for prefers the bus's own operator, then '*', then the live
     day_type, then '*', then the opposite direction, then every stop on the
     line."""
-    stop = lambda atco, lat: {'atco': atco, 'name': atco, 'locality': 'L',
-                              'lat': lat, 'lon': -2.2, 'seq': 1}
+    def stop(atco, lat):
+        return {'atco': atco, 'name': atco, 'locality': 'L',
+                                  'lat': lat, 'lon': -2.2, 'seq': 1}
     wk = [stop('WK', 53.40)]
     star = [stop('STAR', 53.41)]
     outb = [stop('OUT', 53.42)]
@@ -196,7 +204,8 @@ def test_query_normalisation():
 
 
 def test_hour_band():
-    band = lambda h: app.hour_band(datetime(2026, 9, 12, h, 0, tzinfo=timezone.utc))
+    def band(h):
+        return app.hour_band(datetime(2026, 9, 12, h, 0, tzinfo=UTC))
     assert band(3) == 'night'
     assert band(7) == 'am_peak'
     assert band(12) == 'inter'
@@ -227,7 +236,7 @@ def test_local_time_grain_under_bst_and_gmt():
     d = app.local_dt(1783143000)
     assert d.hour == 6
     assert app.hour_band(d) == 'am_peak'
-    assert app.hour_band(datetime.fromtimestamp(1783143000, tz=timezone.utc)) == 'night'
+    assert app.hour_band(datetime.fromtimestamp(1783143000, tz=UTC)) == 'night'
 
     # Sunday 23:30 UTC is Monday 00:30 local -> 'weekday', not 'sun'.
     d = app.local_dt(1783294200)
@@ -250,7 +259,7 @@ def test_local_time_grain_under_bst_and_gmt():
 
     # Bank holidays are deliberately not modelled: they file as 'weekday'.
     boxing_day = app.local_dt(datetime(2026, 12, 28, 12, 0,
-                                       tzinfo=timezone.utc).timestamp())
+                                       tzinfo=UTC).timestamp())
     assert app.day_type(boxing_day) == 'weekday'
 
 
@@ -401,7 +410,8 @@ def _grid_marts():
         by_atco = marts['stop_by_line_atco'].setdefault(key, {})
         for st in stops:
             by_atco.setdefault(st['atco'], st)
-            cells.setdefault((round(st['lat'], app.GRID), round(st['lon'], app.GRID)), []).append(st)
+            cells.setdefault(
+                (round(st['lat'], app.GRID), round(st['lon'], app.GRID)), []).append(st)
     return marts, a, m, b
 
 
@@ -469,17 +479,23 @@ def test_progress_delay():
 
     # Guards, each returning nothing rather than a wrong number.
     row = dict(base, origin_aimed_dep=(now + 600) * 1000)   # not departed yet
-    assert app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
+    assert app.progress_delay(
+        row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
     row = dict(base, origin_aimed_dep=(now - 86400) * 1000)  # yesterday's journey
-    assert app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
+    assert app.progress_delay(
+        row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
     row = dict(base, dest_aimed_arr=None)                    # no arrival time
-    assert app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
+    assert app.progress_delay(
+        row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
     row = dict(base, origin_ref='NOSUCH')                    # origin not on the line
-    assert app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
+    assert app.progress_delay(
+        row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
     row = dict(base, dest_ref='A')                           # zero-length span
-    assert app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
+    assert app.progress_delay(
+        row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
     # Nowhere near a stop -> no reading, so predict() falls back to the model.
-    assert app.progress_delay(dict(base), marts, now, None, '88', 'outbound', 'weekday', 53.9, -2.9)[0] is None
+    assert app.progress_delay(
+        dict(base), marts, now, None, '88', 'outbound', 'weekday', 53.9, -2.9)[0] is None
 
 
 def test_arrived_vehicles_stop_accruing_delay():
@@ -552,9 +568,11 @@ def test_implausible_delay_is_refused():
     working; its QuestDB track shows it finished that working and is part-way
     through a later one, with the old journey's aimed times still attached."""
     now = 1789200000.0
-    limit = lambda sched: max(app.STALE_JOURNEY_FLOOR_S, app.STALE_JOURNEY_FRACTION * sched)
+    def limit(sched):
+        return max(app.STALE_JOURNEY_FLOOR_S, app.STALE_JOURNEY_FRACTION * sched)
     # fraction 0 means the reported delay is exactly the time since departure.
-    at_origin = lambda delay, sched: app._delay_from_fraction(0.0, now - delay, sched, now)
+    def at_origin(delay, sched):
+        return app._delay_from_fraction(0.0, now - delay, sched, now)
 
     # A long working: the fraction binds, the floor does not.
     sched = 5520.0                       # 92 minutes, as on the live example
@@ -625,8 +643,10 @@ def test_position_is_live():
     re-ingested every 30 s and so always looks newly arrived."""
     now = 1789200000.0
     assert app.position_is_live({'recorded_at': (now - 30) * 1000}, now) is True
-    assert app.position_is_live({'recorded_at': (now - app.MAX_POSITION_AGE_S + 30) * 1000}, now) is True
-    assert app.position_is_live({'recorded_at': (now - app.MAX_POSITION_AGE_S - 30) * 1000}, now) is False
+    assert app.position_is_live(
+        {'recorded_at': (now - app.MAX_POSITION_AGE_S + 30) * 1000}, now) is True
+    assert app.position_is_live(
+        {'recorded_at': (now - app.MAX_POSITION_AGE_S - 30) * 1000}, now) is False
     assert app.position_is_live({'recorded_at': (now - 86400) * 1000}, now) is False
     # No recorded_at, or junk: fall back to the ingest window rather than drop.
     assert app.position_is_live({}, now) is True
@@ -960,7 +980,7 @@ def test_route_truncation_and_merged_route_detection():
     # A long, straight, well-behaved route: N stops 1 km apart. Must NOT be
     # flagged as merged even though it is long enough to be truncated.
     n = app.MAX_ROUTE_STOPS + 20
-    good = [{'atco': 'S%d' % i, 'name': 'Stop %d' % i, 'locality': 'X',
+    good = [{'atco': f'S{i}', 'name': f'Stop {i}', 'locality': 'X',
              'lat': 53.0 + i * 0.009, 'lon': -2.2, 'seq': i,
              'secs_from_origin': float(i * 60)} for i in range(n)]
     marts['stops'] = {('*', 'LONG', 'outbound', 'weekday'): good}
@@ -978,9 +998,11 @@ def test_route_truncation_and_merged_route_detection():
     bad.append({'atco': 'FAR', 'name': 'Another Town Entirely', 'locality': 'Y',
                 'lat': 54.5, 'lon': -3.5, 'seq': 5, 'secs_from_origin': 300.0})
     marts['stops'] = {('*', 'MERGED', 'outbound', 'weekday'): bad}
-    stops2, _op, _d, _day, _s = app.route_stops_for_line(marts, None, 'MERGED', 'outbound', 'weekday')
-    flagged = any(app.haversine_km(a['lat'], a['lon'], b['lat'], b['lon']) > app.MERGED_ROUTE_HOP_KM
-                  for a, b in zip(stops2, stops2[1:]))
+    stops2, _op, _d, _day, _s = app.route_stops_for_line(
+        marts, None, 'MERGED', 'outbound', 'weekday')
+    flagged = any(
+        app.haversine_km(a['lat'], a['lon'], b['lat'], b['lon']) > app.MERGED_ROUTE_HOP_KM
+        for a, b in zip(stops2, stops2[1:]))
     assert flagged
 
 
@@ -1029,5 +1051,5 @@ if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_') and callable(v)]
     for fn in tests:
         fn()
-        print('ok   %s' % fn.__name__)
-    print('\n%d tests passed' % len(tests))
+        print(f'ok   {fn.__name__}')
+    print(f'\n{len(tests)} tests passed')

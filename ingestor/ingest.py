@@ -1,9 +1,18 @@
+import logging
 import os
-import time
+import signal
+import sys
+import threading
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime
 
 import requests
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s",
+    stream=sys.stdout,
+)
 
 API_KEY = os.environ["BODS_API_KEY"]
 # Mainland Great Britain. Excludes Northern Ireland (not in BODS anyway),
@@ -98,11 +107,13 @@ def build_line(v):
 
 
 def ingest():
+    """Returns True on success (an empty feed still counts), False on a
+    failure that should count toward the backoff in main()."""
     try:
         response = requests.get(AVL_URL, timeout=60)
         if response.status_code != 200:
-            print(f"Fetch failed with status: {response.status_code}")
-            return
+            logging.info("Fetch failed with status: %s", response.status_code)
+            return False
 
         root = ET.fromstring(response.content)
         lines = []
@@ -116,15 +127,46 @@ def ingest():
             r = requests.post(
                 QUESTDB_ILP_URL, data="\n".join(lines) + "\n", timeout=10
             )
-            print(f"Ingested {len(lines)} buses (questdb {r.status_code})")
+            logging.info("Ingested %d buses (questdb %s)", len(lines), r.status_code)
         else:
-            print("Feed returned no vehicles")
+            logging.info("Feed returned no vehicles")
+        return True
 
-    except Exception as e:
-        print(f"Ingest failed: {e}")
+    except Exception:
+        logging.exception("Ingest failed")
+        return False
+
+
+# Nominal poll rate stays 60s. On consecutive failures back off (doubling)
+# up to a ~15 minute ceiling so a dead upstream doesn't get hammered every
+# 60s; the first success resets straight back to 60s.
+POLL_S = 60
+MAX_BACKOFF_S = 15 * 60
+
+
+def main():
+    stop = threading.Event()
+
+    def handle_signal(signum, frame):
+        stop.set()
+
+    # So `docker stop` (SIGTERM) exits cleanly within the grace period
+    # instead of blocking in the wait and getting SIGKILLed.
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
+    consecutive_failures = 0
+    while not stop.is_set():
+        if ingest():
+            consecutive_failures = 0
+            interval = POLL_S
+        else:
+            consecutive_failures += 1
+            interval = min(POLL_S * (2 ** consecutive_failures), MAX_BACKOFF_S)
+        # Event.wait (not time.sleep) so a signal during the wait returns
+        # immediately instead of only being noticed on the next wake.
+        stop.wait(interval)
 
 
 if __name__ == "__main__":
-    while True:
-        ingest()
-        time.sleep(60)
+    main()

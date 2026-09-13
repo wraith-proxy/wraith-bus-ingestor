@@ -17,30 +17,48 @@ running this one narrowly-scoped maintenance container as root.
 """
 import glob
 import json
+import logging
 import os
 import shutil
+import signal
+import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 QUESTDB_URL = os.environ.get('QUESTDB_URL', 'http://db:9000')
 TABLE = 'bus_positions'
-RETENTION_DAYS = int(os.environ.get('RETENTION_DAYS', '35'))
+RETENTION_DAYS = int(os.environ.get('RETENTION_DAYS', '22'))
 QDB_DB_ROOT = '/questdb_data/db'
 ARCHIVE_ROOT = '/archive'
 SENTINEL = os.path.join(ARCHIVE_ROOT, '.this-is-vault2')
 POLL_S = 24 * 60 * 60
 
+# logging.raiseExceptions=False mirrors the old bare `except OSError: pass` on
+# the file write -- if the archive volume drops out from under the
+# FileHandler mid-run, stdout must keep getting every line rather than the
+# process taking a logging error to stderr on every call.
+logging.raiseExceptions = False
+_LOG_FMT = logging.Formatter('%(asctime)sZ %(message)s', datefmt='%Y-%m-%dT%H:%M:%S')
+_LOG_FMT.converter = time.gmtime
+
+_logger = logging.getLogger('archiver')
+_logger.setLevel(logging.INFO)
+_stream_handler = logging.StreamHandler(sys.stdout)
+_stream_handler.setFormatter(_LOG_FMT)
+_logger.addHandler(_stream_handler)
+try:
+    _file_handler = logging.FileHandler(os.path.join(ARCHIVE_ROOT, 'archive.log'))
+    _file_handler.setFormatter(_LOG_FMT)
+    _logger.addHandler(_file_handler)
+except OSError:
+    pass   # archive volume unreachable at startup -- stdout still has it
+
 
 def log(msg):
-    line = '%s %s' % (datetime.now(timezone.utc).isoformat(timespec='seconds'), msg)
-    print(line, flush=True)
-    try:
-        with open(os.path.join(ARCHIVE_ROOT, 'archive.log'), 'a') as f:
-            f.write(line + '\n')
-    except OSError:
-        pass   # archive volume unreachable -- stdout still has it
+    _logger.info(msg)
 
 
 def qdb_exec(query):
@@ -55,8 +73,8 @@ def attached_partitions():
     plain YYYY-MM-DD day partition is skipped -- this table is PARTITION BY
     DAY, so a name that doesn't parse as a date is not ours to touch."""
     result = qdb_exec(
-        "SELECT name, minTimestamp FROM table_partitions('%s') "
-        "WHERE attached = true ORDER BY minTimestamp" % TABLE)
+        f"SELECT name, minTimestamp FROM table_partitions('{TABLE}') "
+        "WHERE attached = true ORDER BY minTimestamp")
     out = []
     for name, min_ts in result.get('dataset', []):
         try:
@@ -82,7 +100,7 @@ def table_dir():
     bus_positions~N.lock file."""
     matches = [m for m in glob.glob(os.path.join(QDB_DB_ROOT, TABLE + '~*')) if os.path.isdir(m)]
     if len(matches) != 1:
-        raise RuntimeError('expected exactly one %s~* dir, found %r' % (TABLE, matches))
+        raise RuntimeError(f'expected exactly one {TABLE}~* dir, found {matches!r}')
     return matches[0]
 
 
@@ -102,34 +120,34 @@ def copy_and_finalize(name):
     anything before the copy is confirmed byte-identical."""
     src = os.path.join(table_dir(), name + '.detached')
     if not os.path.isdir(src):
-        log('ERROR: expected %s to exist -- stopping this run' % src)
+        log(f'ERROR: expected {src} to exist -- stopping this run')
         return False
 
     dest = os.path.join(ARCHIVE_ROOT, TABLE, name)
     if os.path.exists(dest):
-        log('ERROR: archive destination %s already exists -- stopping, needs a human' % dest)
+        log(f'ERROR: archive destination {dest} already exists -- stopping, needs a human')
         return False
 
     src_bytes = dir_size(src)
-    log('copying %s (%d bytes) -> %s' % (src, src_bytes, dest))
+    log(f'copying {src} ({src_bytes} bytes) -> {dest}')
     shutil.copytree(src, dest)
     dest_bytes = dir_size(dest)
 
     if dest_bytes != src_bytes:
-        log('ERROR: size mismatch after copy (%d local vs %d archived) -- '
-            'leaving both copies in place, needs a human' % (src_bytes, dest_bytes))
+        log(f'ERROR: size mismatch after copy ({src_bytes} local vs {dest_bytes} archived) -- '
+            'leaving both copies in place, needs a human')
         return False
 
     shutil.rmtree(src)
-    log('archived %s: %d bytes, freed from hot storage' % (name, src_bytes))
+    log(f'archived {name}: {src_bytes} bytes, freed from hot storage')
     return True
 
 
 def archive_one(name):
-    log('detaching partition %s' % name)
-    resp = qdb_exec("ALTER TABLE %s DETACH PARTITION LIST '%s'" % (TABLE, name))
+    log(f'detaching partition {name}')
+    resp = qdb_exec(f"ALTER TABLE {TABLE} DETACH PARTITION LIST '{name}'")
     if 'ddl' not in resp:
-        log('DETACH failed for %s: %r -- leaving it attached, will retry next run' % (name, resp))
+        log(f'DETACH failed for {name}: {resp!r} -- leaving it attached, will retry next run')
         return False
 
     # DETACH is sequenced through QuestDB's WAL and applied by a background
@@ -147,19 +165,19 @@ def archive_one(name):
 
 def run_once():
     if not os.path.isfile(SENTINEL):
-        log('ERROR: %s missing -- archive volume is not really mounted '
+        log(f'ERROR: {SENTINEL} missing -- archive volume is not really mounted '
             '(or the sentinel got deleted). Refusing to touch any partitions '
-            'this run rather than risk writing to the wrong disk.' % SENTINEL)
+            'this run rather than risk writing to the wrong disk.')
         return
 
     # Finish anything a previous, interrupted run only half-completed before
     # looking at what's newly eligible.
     for name in orphaned_detached_names():
-        log('resuming interrupted archive of %s' % name)
+        log(f'resuming interrupted archive of {name}')
         if not copy_and_finalize(name):
             return
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
+    cutoff = datetime.now(UTC) - timedelta(days=RETENTION_DAYS)
     for name, min_ts_str in attached_partitions():
         min_ts = datetime.fromisoformat(min_ts_str.replace('Z', '+00:00'))
         if min_ts >= cutoff:
@@ -168,10 +186,26 @@ def run_once():
             break   # stop on first failure rather than compounding it
 
 
-if __name__ == '__main__':
-    while True:
+def main():
+    stop = threading.Event()
+
+    def handle_signal(signum, frame):
+        stop.set()
+
+    # So `docker stop` (SIGTERM) exits cleanly within the grace period
+    # instead of blocking through the 24h wait and getting SIGKILLed.
+    signal.signal(signal.SIGTERM, handle_signal)
+    signal.signal(signal.SIGINT, handle_signal)
+
+    while not stop.is_set():
         try:
             run_once()
         except Exception as exc:
-            log('run failed: %r' % exc)
-        time.sleep(POLL_S)
+            log(f'run failed: {exc!r}')
+        # Event.wait (not time.sleep) so a signal during the 24h wait returns
+        # immediately instead of only being noticed on the next wake.
+        stop.wait(POLL_S)
+
+
+if __name__ == '__main__':
+    main()

@@ -1,22 +1,21 @@
-"""Ghost site backend: the dining-menu SQLite toy plus the live bus API.
+"""Ghost site backend: the live bus API.
 
-The bus half serves GeoJSON straight off QuestDB and enriches it with ETA
-regressions read out of the dbt marts (a DuckDB file built by a separate job).
-The marts are optional by design: if the file is missing, half-written or a
-table is absent the API still answers, with status "unknown" and null
-predictions, rather than 500ing.
+Serves GeoJSON straight off QuestDB and enriches it with ETA regressions read
+out of the dbt marts (a DuckDB file built by a separate job). The marts are
+optional by design: if the file is missing, half-written or a table is absent
+the API still answers, with status "unknown" and null predictions, rather
+than 500ing.
 """
 
 import json
 import math
 import os
 import re
-import sqlite3
 import threading
 import time
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 try:  # stdlib, but the zone DATA is a separate package on slim images
     from zoneinfo import ZoneInfo
@@ -26,16 +25,13 @@ except ImportError:  # pragma: no cover
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-try:  # duckdb is optional at import time so the menu routes never depend on it
+try:  # duckdb is optional at import time so a missing driver degrades, not crashes
     import duckdb
 except ImportError:  # pragma: no cover
     duckdb = None
 
 app = Flask(__name__)
 CORS(app)
-
-DB_PATH = '/data/menu.db'
-ADMIN_PASSWORD = os.getenv('CHEF_PASSWORD')
 
 QUESTDB_URL = os.getenv('QUESTDB_URL', '')
 QUESTDB_TIMEOUT = 8          # seconds; keeps any request under the ~10s budget
@@ -183,60 +179,7 @@ def log_once(key, message):
     """Complain about a broken dependency once, not once per request."""
     if key not in _logged:
         _logged.add(key)
-        print('[bus] %s' % message, flush=True)
-
-
-# --------------------------------------------------------------------------
-# Menu / dining feature (unchanged)
-# --------------------------------------------------------------------------
-
-def init_db():
-    if not os.path.exists('/data'):
-        os.makedirs('/data')
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute('CREATE TABLE IF NOT EXISTS choices (id INTEGER PRIMARY KEY AUTOINCREMENT, day TEXT, choice TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP)')
-        conn.execute('CREATE TABLE IF NOT EXISTS menu_items (item TEXT PRIMARY KEY)')
-
-        initial_items = ['Burger', 'Hot Dog', 'Pasta', 'Charcuterie', 'Jacket Potatoes', 'Ramen', 'Sushi']
-        for item in initial_items:
-            conn.execute("INSERT OR IGNORE INTO menu_items (item) VALUES (?)", (item,))
-        conn.commit()
-
-
-@app.route('/submit', methods=['POST'])
-def submit():
-    data = request.json
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("INSERT INTO choices (day, choice) VALUES (?, ?)", (data['day'], data['choice']))
-        conn.execute("INSERT OR IGNORE INTO menu_items (item) VALUES (?)", (data['choice'],))
-    return jsonify({"status": "success"})
-
-
-@app.route('/menu-options', methods=['GET'])
-def get_options():
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.execute("SELECT item FROM menu_items ORDER BY item ASC")
-        return jsonify([r[0] for r in cursor.fetchall()])
-
-
-@app.route('/history', methods=['GET'])
-def history():
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.execute("SELECT day, choice FROM choices ORDER BY id DESC LIMIT 20")
-        return jsonify([{"day": r[0], "choice": r[1]} for r in cursor.fetchall()])
-
-
-@app.route('/purge', methods=['POST'])
-def purge():
-    data = request.json
-    if data.get('password') == ADMIN_PASSWORD:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute("DELETE FROM choices")
-            conn.execute("DELETE FROM menu_items")
-            conn.commit()
-        init_db()  # Restore the hardcoded defaults
-        return jsonify({"status": "cleared"}), 200
-    return jsonify({"status": "unauthorized"}), 401
+        print(f'[bus] {message}', flush=True)
 
 
 # --------------------------------------------------------------------------
@@ -291,11 +234,11 @@ def local_zone():
             try:
                 _local_tz['zone'] = ZoneInfo(LOCAL_TZ_NAME)
             except Exception as exc:
-                log_once('tz', 'cannot load %s (%s); falling back to UTC -- hour_band '
-                               'and day_type will be an hour out during BST'
-                         % (LOCAL_TZ_NAME, exc))
+                log_once('tz', f'cannot load {LOCAL_TZ_NAME} ({exc}); falling back to UTC -- '
+                         'hour_band '
+                               'and day_type will be an hour out during BST')
         if _local_tz['zone'] is None:
-            _local_tz['zone'] = timezone.utc
+            _local_tz['zone'] = UTC
     return _local_tz['zone']
 
 
@@ -393,7 +336,7 @@ def display_name(value):
 def iso_from_epoch_s(seconds):
     if seconds is None:
         return None
-    return datetime.fromtimestamp(float(seconds), tz=timezone.utc).isoformat().replace('+00:00', 'Z')
+    return datetime.fromtimestamp(float(seconds), tz=UTC).isoformat().replace('+00:00', 'Z')
 
 
 def iso_from_millis(millis):
@@ -451,7 +394,7 @@ def _table_columns(con, table):
             'WHERE table_name = ?', [table]).fetchall()
         return {r[0] for r in rows}
     except Exception as exc:
-        log_once('marts-cols-' + table, 'cannot introspect %s: %s' % (table, exc))
+        log_once('marts-cols-' + table, f'cannot introspect {table}: {exc}')
         return set()
 
 
@@ -459,7 +402,7 @@ def _fetch(con, sql, key):
     try:
         return con.execute(sql).fetchall()
     except Exception as exc:
-        log_once('marts-' + key, 'mart %s unreadable: %s' % (key, exc))
+        log_once('marts-' + key, f'mart {key} unreadable: {exc}')
         return []
 
 
@@ -484,8 +427,8 @@ def _load_marts(path):
     # A bind mount of a not-yet-existing file makes Docker create a directory.
     if os.path.isdir(path) or not os.path.isfile(path):
         marts['state'] = MARTS_MISSING
-        marts['error'] = 'no file at %s' % path
-        log_once('marts-missing', 'marts not present at %s; predictions disabled' % path)
+        marts['error'] = f'no file at {path}'
+        log_once('marts-missing', f'marts not present at {path}; predictions disabled')
         return marts
 
     try:
@@ -498,7 +441,7 @@ def _load_marts(path):
         marts['state'] = MARTS_LOCKED if locked else MARTS_UNREADABLE
         marts['error'] = text.split('\n')[0][:200]
         log_once('marts-open-' + marts['state'],
-                 'cannot open marts %s (%s): %s' % (path, marts['state'], text))
+                 'cannot open marts {} ({}): {}'.format(path, marts['state'], text))
         return marts
 
     try:
@@ -518,8 +461,8 @@ def _load_marts(path):
                      'as operator "*" until the marts are rebuilt')
         for operator, line, direction, day, band, slope, intercept, r2, n_obs in _fetch(
             con,
-            'SELECT %s, line, direction, %s, hour_band, slope_s_per_km, intercept_s, '
-            'r2, n_obs FROM mart_eta_model' % (eta_op_expr, day_expr), 'eta_model'):
+            f'SELECT {eta_op_expr}, line, direction, {day_expr}, hour_band, '
+            'slope_s_per_km, intercept_s, r2, n_obs FROM mart_eta_model', 'eta_model'):
             marts['eta'][(operator, line, direction, day, band)] = {
                 'slope_s_per_km': slope, 'intercept_s': intercept,
                 'r2': r2, 'n_obs': n_obs,
@@ -551,8 +494,8 @@ def _load_marts(path):
                      'sequence as operator "*" until the marts are rebuilt')
         for operator, line, direction, day, atco, name, locality, lat, lon, seq, secs in _fetch(
             con,
-            'SELECT %s, line, direction, %s, atco_code, stop_name, locality, lat, lon, '
-            'seq, median_secs_from_origin FROM mart_line_stops' % (sop_expr, sday_expr),
+            f'SELECT {sop_expr}, line, direction, {sday_expr}, atco_code, stop_name, '
+            'locality, lat, lon, seq, median_secs_from_origin FROM mart_line_stops',
             'line_stops'):
             stop = {
                 'atco': atco, 'name': display_name(name), 'locality': locality,
@@ -665,7 +608,7 @@ def available_columns():
             payload = qdb_exec('SHOW COLUMNS FROM bus_positions')
             _columns_cache['cols'] = {row[0] for row in payload.get('dataset', [])}
         except Exception as exc:
-            log_once('qdb-columns', 'cannot read bus_positions columns: %s' % exc)
+            log_once('qdb-columns', f'cannot read bus_positions columns: {exc}')
             _columns_cache['cols'] = _columns_cache['cols'] or set(BASE_COLUMNS)
         _columns_cache['checked'] = now
     return _columns_cache['cols']
@@ -678,19 +621,19 @@ def select_columns():
 
 def live_buses(bus_id=None):
     cols = ', '.join(select_columns())
-    where = "timestamp > dateadd('m', -%d, now())" % FRESHNESS_MINUTES
+    where = f"timestamp > dateadd('m', -{FRESHNESS_MINUTES}, now())"
     if bus_id:
-        where = "bus_id = '%s' AND %s" % (bus_id, where)
+        where = f"bus_id = '{bus_id}' AND {where}"
     return qdb_rows(
-        "SELECT %s FROM bus_positions WHERE %s "
-        "LATEST ON timestamp PARTITION BY bus_id" % (cols, where))
+        f"SELECT {cols} FROM bus_positions WHERE {where} "
+        "LATEST ON timestamp PARTITION BY bus_id")
 
 
 def bus_history(bus_id):
     return qdb_rows(
-        "SELECT lat, lon, timestamp FROM bus_positions "
-        "WHERE bus_id = '%s' AND timestamp > dateadd('m', -%d, now()) "
-        "ORDER BY timestamp DESC LIMIT 500" % (bus_id, HISTORY_MINUTES))
+        f"SELECT lat, lon, timestamp FROM bus_positions "
+        f"WHERE bus_id = '{bus_id}' AND timestamp > dateadd('m', -{HISTORY_MINUTES}, now()) "
+        "ORDER BY timestamp DESC LIMIT 500")
 
 
 # --------------------------------------------------------------------------
@@ -942,7 +885,8 @@ def predict(row, marts, now_s):
     eta_iso = None
     predicted = None
     if remaining_km is not None and model and remaining_km <= MAX_REMAINING_KM:
-        secs = max(0.0, (model['slope_s_per_km'] or 0.0) * remaining_km + (model['intercept_s'] or 0.0))
+        secs = max(0.0, (model['slope_s_per_km'] or 0.0) * remaining_km
+                   + (model['intercept_s'] or 0.0))
         if secs <= MAX_REMAINING_S:
             predicted = now_s + secs
             eta_iso = iso_from_epoch_s(predicted)
@@ -978,7 +922,8 @@ def predict(row, marts, now_s):
     delay_s = None if arrived else geometric_progress_delay(row, marts, now_s)
     delay_source = 'progress_distance' if delay_s is not None else None
     if delay_s is None and not arrived:
-        delay_s, _stop = progress_delay(row, marts, now_s, operator, line, direction, day, lat, lon)
+        delay_s, _stop = progress_delay(
+            row, marts, now_s, operator, line, direction, day, lat, lon)
         delay_source = 'progress_stops' if delay_s is not None else None
 
     # With a delay in hand, the timetable plus that delay beats the regression.
@@ -1033,8 +978,8 @@ def stops_for(marts, operator, line, direction, day):
     if key:
         return marts['stops'][key]
     merged = []
-    for (_op, l, _d, _day), rows in marts['stops'].items():
-        if l == line:
+    for (_op, ln, _d, _day), rows in marts['stops'].items():
+        if ln == line:
             merged.extend(rows)
     merged.sort(key=lambda s: (s['seq'] is None, s['seq']))
     return merged
@@ -1067,7 +1012,7 @@ def buses():
     try:
         rows = live_buses()
     except Exception as exc:
-        log_once('qdb-buses', 'questdb unavailable: %s' % exc)
+        log_once('qdb-buses', f'questdb unavailable: {exc}')
         return jsonify({"type": "FeatureCollection", "features": []}), 503
 
     marts = get_marts()
@@ -1093,7 +1038,7 @@ def bus_detail(bus_id):
     try:
         rows = live_buses(bus_id)
     except Exception as exc:
-        log_once('qdb-bus', 'questdb unavailable: %s' % exc)
+        log_once('qdb-bus', f'questdb unavailable: {exc}')
         return jsonify({"error": "upstream unavailable"}), 503
     if not rows:
         return jsonify({"error": "bus not live"}), 404
@@ -1126,7 +1071,7 @@ def bus_detail(bus_id):
         try:
             pings = bus_history(bus_id)
         except Exception as exc:
-            log_once('qdb-history', 'questdb history unavailable: %s' % exc)
+            log_once('qdb-history', f'questdb history unavailable: {exc}')
             pings = []
         stop, ping_ts = find_last_stop(pings, stops)
         if stop:
@@ -1158,7 +1103,8 @@ def bus_detail(bus_id):
                     left = epoch_from_qdb_timestamp(ping_ts) if ping_ts else None
                     eta_iso = iso_from_epoch_s(max(now_s, (left or now_s) + hop))
                 elif model and row.get('lat') is not None and nxt.get('lat') is not None:
-                    km = haversine_km(row['lat'], row['lon'], nxt['lat'], nxt['lon']) * ROUTE_DETOUR_FACTOR
+                    km = (haversine_km(row['lat'], row['lon'], nxt['lat'], nxt['lon'])
+                          * ROUTE_DETOUR_FACTOR)
                     secs = max(0.0, (model['slope_s_per_km'] or 0.0) * km)
                     if km <= MAX_REMAINING_KM and secs <= MAX_REMAINING_S:
                         eta_iso = iso_from_epoch_s(now_s + secs)
@@ -1183,15 +1129,14 @@ def road_snapped_geometry(stops):
     unreachable OSRM, a stop pair with no drivable path, a timeout -- so the
     caller can fall back to the straight stop-to-stop line rather than
     breaking the map."""
-    coords = ';'.join('%.6f,%.6f' % (s['lon'], s['lat']) for s in stops)
+    coords = ';'.join('{:.6f},{:.6f}'.format(s['lon'], s['lat']) for s in stops)
     path = urllib.parse.quote(coords, safe=',;')
-    url = '%s/route/v1/driving/%s?overview=full&geometries=geojson&steps=false' % (
-        OSRM_URL, path)
+    url = f'{OSRM_URL}/route/v1/driving/{path}?overview=full&geometries=geojson&steps=false'
     try:
         with urllib.request.urlopen(url, timeout=OSRM_TIMEOUT_S) as resp:
             data = json.load(resp)
     except Exception as exc:
-        log_once('osrm-route', 'OSRM unavailable, falling back to straight lines: %s' % exc)
+        log_once('osrm-route', f'OSRM unavailable, falling back to straight lines: {exc}')
         return None
     routes = data.get('routes') or []
     if data.get('code') != 'Ok' or not routes:
@@ -1211,7 +1156,8 @@ def route_stops_for_line(marts, operator, line, direction, day):
         if operator and resolved_operator != operator:
             source = 'pooled_operator'
         elif direction and resolved_direction != direction:
-            source = 'opposite_direction' if resolved_day == day else 'opposite_direction_day_agnostic'
+            source = ('opposite_direction' if resolved_day == day
+                      else 'opposite_direction_day_agnostic')
         elif day and resolved_day != day:
             source = 'day_agnostic'
         else:
@@ -1219,8 +1165,8 @@ def route_stops_for_line(marts, operator, line, direction, day):
         return marts['stops'][key], resolved_operator, resolved_direction, resolved_day, source
 
     merged = []
-    for (_op, l, _d, _day), rows in marts['stops'].items():
-        if l == line:
+    for (_op, ln, _d, _day), rows in marts['stops'].items():
+        if ln == line:
             merged.extend(rows)
     if not merged:
         return [], operator, direction, day, 'no_data'
@@ -1262,8 +1208,8 @@ def route():
     features = []
     route_note = None
     if not stops:
-        route_note = ("no stop sequence known for line '%s'; the marts have "
-                       "never observed it, or they are not built yet" % line)
+        route_note = (f"no stop sequence known for line '{line}'; the marts have "
+                       "never observed it, or they are not built yet")
     else:
         usable = [s for s in stops if s.get('lat') is not None and s.get('lon') is not None]
         truncated = len(usable) > MAX_ROUTE_STOPS
@@ -1324,9 +1270,9 @@ def route():
                 },
             })
         if truncated:
-            route_note = ("line '%s' resolved to more than %d stops and was "
+            route_note = (f"line '{line}' resolved to more than {MAX_ROUTE_STOPS} stops and was "
                           "truncated; this is usually a reused service number "
-                          "merging unrelated routes" % (line, MAX_ROUTE_STOPS))
+                          "merging unrelated routes")
 
     try:
         for row in live_buses():
@@ -1344,7 +1290,7 @@ def route():
                 "properties": props,
             })
     except Exception as exc:
-        log_once('qdb-route-buses', 'questdb unavailable for /route: %s' % exc)
+        log_once('qdb-route-buses', f'questdb unavailable for /route: {exc}')
 
     payload = {"type": "FeatureCollection", "features": features}
     if route_note:
@@ -1390,7 +1336,7 @@ def search():
             wanted = set(lines)
             bus_ids = sorted({r['bus_id'] for r in live_buses() if r.get('line') in wanted})
         except Exception as exc:
-            log_once('qdb-search', 'questdb unavailable for search: %s' % exc)
+            log_once('qdb-search', f'questdb unavailable for search: {exc}')
 
     return jsonify({"query": raw, "matches": matches, "lines": lines, "bus_ids": bus_ids})
 
@@ -1428,12 +1374,11 @@ def model_info():
         note = MARTS_NOTES.get(marts.get('state'),
                                'marts unavailable at {path}').format(path=MARTS_PATH)
         if marts.get('error'):
-            note += ' (%s)' % marts['error']
+            note += ' ({})'.format(marts['error'])
     elif reload_state:
         # Serving the previous load because the newest one could not be read.
-        note = ('serving the last good marts: the refresh failed (%s%s). '
-                'Predictions continue from data built at %s.'
-                % (reload_state,
+        note = ('serving the last good marts: the refresh failed ({}{}). '
+                'Predictions continue from data built at {}.'.format(reload_state,
                    ': ' + marts['reload_error'] if marts.get('reload_error') else '',
                    marts['built_at']))
     elif not marts['n_models']:
@@ -1461,5 +1406,4 @@ def model_info():
 
 
 if __name__ == '__main__':
-    init_db()
     app.run(host='0.0.0.0', port=5000)
