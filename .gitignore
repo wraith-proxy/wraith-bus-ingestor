@@ -28,6 +28,8 @@ osrm_data/*
 .coverage
 coverage.xml
 docs/coverage.svg
+docs/api.md
+docs/dbt/
 requirements.txt
 site/
 dist/

@@ -22,6 +22,8 @@ nav:
   - Bus Platform: bus-platform.md
   - Contracts: contracts.md
   - Operations: operations.md
+  - Python API: api.md
+  - dbt Docs: dbt/index.html
 
 plugins:
   - search

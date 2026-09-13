@@ -17,13 +17,26 @@ jobs:
           version: "latest"
 
       - name: Install dependencies
-        run: uv sync --extra dev
+        # --all-extras, not --extra dev: this job (unlike test.yml's, which
+        # runs on ghost-runner's musl and can't install duckdb/dbt at all)
+        # runs on ubuntu-latest and needs the dbt extra to generate dbt docs.
+        run: uv sync --all-extras
 
       - name: Run Tests & Coverage
         run: uv run pytest --cov=backend --cov-report=xml
 
       - name: Generate Coverage Badge
         run: uv run genbadge coverage -i coverage.xml -o docs/coverage.svg
+
+      - name: Generate Python API docs
+        run: uv run poe docs-api
+
+      - name: Generate dbt docs
+        # No live QuestDB or built warehouse on this runner, so the catalog
+        # (real column data) is sparse -- but model descriptions, sources
+        # and the lineage graph all come from the parsed project, not a live
+        # connection, and are complete regardless.
+        run: uv run poe docs-dbt
 
       - name: Build Documentation
         run: uv run mkdocs build
