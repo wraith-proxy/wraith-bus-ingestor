@@ -141,6 +141,20 @@ con.execute("detach published")
 con.close()
 PYEOF
 
+# The contract gate. validate.py runs under ghost-site's own uv environment
+# (pyyaml/duckdb are real dependencies there now), not dbt's -- so this
+# subshell steps back to the repo root, where pyproject.toml lives, rather
+# than fighting dbt's own venv or `uv run`'s cwd handling from inside dbt/.
+# By default it checks BOTH contracts (bus-positions against live QuestDB,
+# bus-marts against $STAGED) plus the ontology cross-check -- exactly the
+# "gate a rebuild" mode its own docstring describes. QuestDB being briefly
+# unreachable degrades to a skip, not a failure, so this stays safe to run
+# even with SKIP_EXTRACT=1 and no live feed. `set -e` means a real failure
+# here stops the script before the mv below -- the previous good marts keep
+# serving rather than being replaced with something that broke a contract.
+echo "==> validating contracts against the candidate marts"
+(cd .. && uv run python3 contracts/validate.py --marts "dbt/$STAGED")
+
 # Atomic within a filesystem: readers never see a partial file. The old .wal
 # must go with the old file, or DuckDB will try to replay it against the new one.
 mv -f "$STAGED" "$SERVED"

@@ -20,11 +20,10 @@ import sys
 import urllib.parse
 import urllib.request
 
+import yaml
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-# dbt owns the only virtualenv in the repo; borrow its yaml and duckdb.
-sys.path.insert(0, os.path.join(ROOT, "dbt", ".venv", "lib", "python3.12", "site-packages"))
-import yaml  # noqa: E402
 
 DEFAULT_MARTS = os.path.join(ROOT, "dbt", "ghost_bus.duckdb")
 DEFAULT_QUESTDB = os.environ.get("QUESTDB_HTTP", "http://localhost:9001")
