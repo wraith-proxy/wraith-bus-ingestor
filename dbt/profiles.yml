@@ -22,17 +22,18 @@ ghost_bus:
       # serving 504s. A slower rebuild is fine, a website that falls over is not.
       threads: 3
       settings:
-        # Was 6 GB of 15. Cut to 3 GB on 2026-09-12 after two host-level OOM
-        # events during int_bus_journeys, even with ghost-osrm (a new
-        # container added the same day, 1.8 GB resident) stopped for the
-        # duration. DuckDB's memory_limit bounds its own tracked buffers, not
-        # process RSS during a heavy spill -- the actual spike was a fast
-        # transient that outran a 15 s polling watchdog, not a steady climb,
-        # so the fix is a lower ceiling, not closer monitoring. The corpus is
-        # ~45M pings; the window functions in int_bus_journeys exceed even 3
-        # GB and spill to disk, which is the intended behaviour and just
-        # makes the rebuild slower, not wrong.
-        memory_limit: '3GB'
+        # Cut to 3 GB on 2026-09-12 after two host-level OOM events during
+        # int_bus_journeys. Raised to 6 GB again on 2026-09-13 once a 16 GB
+        # swapfile was added: with swap as a backstop, int_bus_journeys now
+        # completes cleanly at 3 GB (724 s, no spill trouble) but the next
+        # model, mart_line_stops, hit DuckDB's own ceiling head-on --
+        # "Out of Memory Error: failed to pin block of size 256.0 KiB (2.7
+        # GiB/2.7 GiB used)" -- a clean DuckDB error, not a host OOM kill.
+        # That model grew a 4-way operator/day_type fallback union this same
+        # session, so it is legitimately heavier than when 3 GB was set. 6 GB
+        # leaves ~9 GB RAM plus 16 GB swap free for everything else on the
+        # box during a rebuild.
+        memory_limit: '6GB'
         # DO NOT set temp_directory here. dbt-duckdb replays every `settings:`
         # entry on each new connection it opens, and DuckDB refuses to change
         # the temp directory once it has spilled to the current one -- so the
