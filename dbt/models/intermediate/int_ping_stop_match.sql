@@ -1,4 +1,9 @@
-{{ config(materialized='table') }}
+{{ config(
+    materialized='incremental',
+    incremental_strategy='delete+insert',
+    unique_key='journey_local_date',
+    post_hook="delete from {{ this }} where journey_local_date < (select max(journey_local_date) from {{ this }}) - interval '{{ var('extract_days', 22) }} days'"
+) }}
 
 {#
   Snap every ping of every surviving journey to the nearest NaPTAN bus stop
@@ -39,6 +44,25 @@
   Ceiling: 120 m match radius. Tighten it if stops on opposite sides of a dual
   carriageway start cross-matching; loosen it if rural stops stop matching at
   all because the 3-minute sampling skipped straight past them.
+
+  ---------------------------------------------------------------------------
+  Incremental strategy
+  ---------------------------------------------------------------------------
+  Second most expensive model in the project (320s over the full window).
+  Incremental by journey_local_date (the journey's start date, Europe/London),
+  not ping_local_date -- a stop sequence belongs to a whole journey, and a
+  journey's pings must not be split across two incremental batches.
+
+  Unlike int_bus_journeys, no extra read-buffer day is needed: each journey's
+  stop-matching is independent of every other journey (no lag()-style
+  cross-boundary dependency), so read window = write window = the last 2
+  days. The `journeys` CTE below does both the incremental filter and the
+  effective "which journeys are new" join restriction in one place.
+
+  `delete+insert` with `unique_key='journey_local_date'` is the same
+  partition-replace pattern as int_bus_journeys: delete every existing row
+  whose journey_local_date appears in the new batch, then insert the batch.
+  The post-hook prunes to the same retention window as extract.py.
 #}
 
 with journeys as (
@@ -50,9 +74,14 @@ with journeys as (
         day_type,
         operator,
         start_ts,
+        cast(start_ts at time zone 'Europe/London' as date) as journey_local_date,
         start_ping_seq,
         end_ping_seq
     from {{ ref('int_journey_shape') }}
+    {% if is_incremental() %}
+    where cast(start_ts at time zone 'Europe/London' as date)
+        >= (select max(journey_local_date) from {{ this }}) - interval '2 days'
+    {% endif %}
 
 ),
 
@@ -67,6 +96,7 @@ pings as (
         j.day_type,
         j.operator,
         j.start_ts as journey_start_ts,
+        j.journey_local_date,
         p.ping_seq,
         p.ping_ts,
         p.lat,
@@ -115,6 +145,7 @@ candidates as (
         p.day_type,
         p.operator,
         p.journey_start_ts,
+        p.journey_local_date,
         p.ping_seq,
         p.ping_ts,
         s.atco_code,
@@ -150,6 +181,7 @@ select
     day_type,
     operator,
     journey_start_ts,
+    journey_local_date,
     ping_seq,
     ping_ts,
     atco_code,

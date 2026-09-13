@@ -5,9 +5,11 @@
 #
 #   ./build.sh                  extract, build, test, publish
 #   SKIP_EXTRACT=1 ./build.sh   reuse whatever is already in data/
-#   KEEP_BUILD=1   ./build.sh   keep the scratch warehouse for debugging
+#   FULL_REFRESH=1 ./build.sh   wipe the scratch warehouse and rebuild every
+#                               incremental model from scratch (schema change,
+#                               suspected drift -- not needed routinely)
 #
-# TWO THINGS THIS SCRIPT IS CAREFUL ABOUT, both learned the hard way:
+# THINGS THIS SCRIPT IS CAREFUL ABOUT, all learned the hard way:
 #
 #  1. It never lets dbt touch the file Flask is serving. DuckDB holds an
 #     exclusive lock for the whole run, so building in place made every
@@ -21,6 +23,15 @@
 #     leaves the previous good marts serving rather than replacing them with
 #     something known to be wrong.
 #
+#  3. ghost_bus_build.duckdb now PERSISTS across runs by default. The two
+#     most expensive models (int_bus_journeys, int_ping_stop_match) are
+#     incremental, and dbt's is_incremental() only takes the fast path when
+#     the target table already exists -- if this file never survived between
+#     runs, "incremental" would silently mean "full rebuild every time"
+#     anyway, which is exactly what happened until 2026-09-13 and is why
+#     fixing one stale test used to cost a 20-30 min rebuild. FULL_REFRESH=1
+#     is the deliberate escape hatch back to from-scratch.
+#
 # It also runs the whole thing at low priority: DuckDB will happily take every
 # core on the box, and the API shares it.
 #
@@ -33,7 +44,7 @@ PY=".venv/bin/python"
 : "${QUESTDB_HTTP:=http://localhost:9001}"
 : "${EXTRACT_DAYS:=22}"
 : "${SKIP_EXTRACT:=0}"
-: "${KEEP_BUILD:=0}"
+: "${FULL_REFRESH:=0}"
 
 export QUESTDB_HTTP EXTRACT_DAYS
 
@@ -50,6 +61,11 @@ if command -v ionice >/dev/null 2>&1 && ionice -c3 true >/dev/null 2>&1; then
     NICE=(nice -n 15 ionice -c3)
 fi
 DBT=("${NICE[@]}" .venv/bin/dbt)
+
+# extract_days is a dbt var, not just a shell/Python env var, because the
+# incremental models' retention post-hooks prune to this same window --
+# one number, not two to keep in sync with extract.py.
+DBT_VARS=(--vars "{extract_days: ${EXTRACT_DAYS}}")
 
 started=$(date +%s)
 
@@ -80,15 +96,24 @@ if [[ -f packages.yml ]]; then
     "${DBT[@]}" deps --profiles-dir .
 fi
 
-# Start the scratch warehouse from scratch. A stale write-ahead log from a
-# killed run will otherwise be replayed into the new build.
-rm -f "$BUILD" "$BUILD.wal" "$STAGED" "$STAGED.wal"
+# $STAGED is always a fresh per-run throwaway. $BUILD is now the persistent
+# incremental warehouse and is left alone unless FULL_REFRESH=1: dbt's
+# incremental models only take their fast path when the target table already
+# exists, so deleting this every run would make "incremental" a no-op.
+rm -f "$STAGED" "$STAGED.wal"
+
+RUN_FLAGS=("${DBT_VARS[@]}")
+if [[ "$FULL_REFRESH" == "1" ]]; then
+    echo "==> FULL_REFRESH=1: wiping $BUILD and forcing a from-scratch rebuild"
+    rm -f "$BUILD" "$BUILD.wal"
+    RUN_FLAGS+=(--full-refresh)
+fi
 
 echo "==> dbt run   (into $BUILD, at low priority)"
-"${DBT[@]}" run --profiles-dir .
+"${DBT[@]}" run --profiles-dir . "${RUN_FLAGS[@]}"
 
 echo "==> dbt test"
-"${DBT[@]}" test --profiles-dir .
+"${DBT[@]}" test --profiles-dir . "${DBT_VARS[@]}"
 
 # ---------------------------------------------------------------------------
 # Publish. Only the five marts are copied: the API reads nothing else, and the
@@ -121,13 +146,8 @@ PYEOF
 mv -f "$STAGED" "$SERVED"
 rm -f "$SERVED.wal"
 
-if [[ "$KEEP_BUILD" == "1" ]]; then
-    echo "==> keeping $BUILD (KEEP_BUILD=1)"
-else
-    rm -f "$BUILD" "$BUILD.wal"
-fi
-
 elapsed=$(( $(date +%s) - started ))
 echo
 echo "==> published $SERVED ($(du -h "$SERVED" | cut -f1)) in $((elapsed / 60))m $((elapsed % 60))s"
 echo "    the API can open it read-only; it was never locked during the build."
+echo "    $BUILD ($(du -h "$BUILD" | cut -f1)) kept as the incremental warehouse."

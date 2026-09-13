@@ -39,6 +39,12 @@ description:
     here. Day classification does not know about bank holidays, which are filed
     as 'weekday'. Fitted on a non-contiguous date range; a feed outage on
     2026-08-28..30 removed one weekend from the sample.
+  refresh: >-
+    Marts refresh nightly at 03:00 via cron (dbt/build.sh). The journey/stop-match
+    layer (int_bus_journeys, int_ping_stop_match) is incremental, reprocessing only
+    the trailing ~2 days each run; everything downstream, including every mart in
+    this contract, is still fully rebuilt each run from that incrementally-maintained
+    base.
 
 servers:
   - server: marts-prod

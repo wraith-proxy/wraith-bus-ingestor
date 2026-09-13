@@ -1,4 +1,9 @@
-{{ config(materialized='table') }}
+{{ config(
+    materialized='incremental',
+    incremental_strategy='delete+insert',
+    unique_key='ping_local_date',
+    post_hook="delete from {{ this }} where ping_local_date < (select max(ping_local_date) from {{ this }}) - interval '{{ var('extract_days', 22) }} days'"
+) }}
 
 {#
   Cut each vehicle's continuous ping stream into journeys.
@@ -43,9 +48,33 @@
   This is the standard "gaps and islands" pattern and it is worth knowing --
   it turns a row-by-row loop into one window function.
 
-  Materialised as a table: three downstream models scan it, and recomputing
-  seven window functions over 20M rows three times is the most expensive thing
-  this project could do.
+  ---------------------------------------------------------------------------
+  Incremental strategy
+  ---------------------------------------------------------------------------
+  This is the single most expensive model in the project (724s over the full
+  22-day, ~45M-row window) and the one three downstream models scan, so it is
+  incremental by ping_local_date rather than a full `table` rebuild every run.
+
+  Read window vs. write window: `lag() over (partition by bus_id order by
+  ping_ts)` needs real history at the edge of whatever window gets
+  reprocessed, or a bus mid-journey when local midnight ticks over looks like
+  it has no previous ping and gets wrongly flagged as a journey start. So the
+  `pings` CTE reads 3 days of history on an incremental run (2 days to
+  rewrite + 1 day of buffer purely for lag() context), every window function
+  below runs over that full 3-day read, and only the final `filtered` step
+  keeps the 2 days that actually get (re)written. The buffer size is fixed at
+  1 day, not a tuning knob -- it comes from the 20-minute gap / 9-minute
+  standing break conditions above, which need nowhere near a full day of
+  context to resolve correctly.
+
+  `delete+insert` with `unique_key='ping_local_date'` is dbt's standard
+  "partition replace" pattern even though the key repeats across many rows:
+  it deletes every existing row whose ping_local_date appears anywhere in the
+  new batch, then inserts the whole batch -- exactly "replace the last 2
+  days" semantics, with no need for a genuinely unique per-row key.
+
+  The post-hook prunes anything older than the retention window so this table
+  doesn't grow past what extract.py actually still has behind it.
 #}
 
 with pings as (
@@ -59,6 +88,7 @@ with pings as (
         origin_ref,
         dest_ref,
         ping_ts,
+        ping_local_date,
         hour_band,
         day_type,
         lat,
@@ -66,6 +96,9 @@ with pings as (
         origin_aimed_dep_ts,
         dest_aimed_arr_ts
     from {{ ref('stg_bus_pings') }}
+    {% if is_incremental() %}
+    where ping_local_date >= (select max(ping_local_date) from {{ this }}) - interval '3 days'
+    {% endif %}
 
 ),
 
@@ -152,10 +185,38 @@ keyed as (
 
     select
         *,
+        -- A running "sum of is_journey_start" would give every journey a
+        -- distinct increasing number, but that number is only stable WITHIN
+        -- one read: on an incremental run it restarts near zero for whatever
+        -- vehicle has journeys in the (narrow) window being reprocessed,
+        -- while a non-reprocessed older region of this same table still
+        -- carries numbers from a wide, full-history read. A busy vehicle can
+        -- rack up dozens of journey-starts in just the incremental window,
+        -- so the two numbering schemes can coincidentally collide on the
+        -- same suffix for two totally different physical journeys -- caught
+        -- live as a duplicate ping_seq in int_ping_stop_match the first time
+        -- this ran as a true incremental (non-first) build.
+        --
+        -- journey_key has to be a property of the journey itself, not of how
+        -- many journeys came before it in whatever slice happened to be
+        -- read. Carrying the current journey's own start ping_ts FORWARD
+        -- gives exactly that: the same physical journey always starts at the
+        -- same instant no matter how wide a window it is read through.
+        --
+        -- max(case ...) rather than last_value(... ignore nulls): both are
+        -- correct here (ping_ts is monotonic within the frame, so the max
+        -- non-null value up to the current row IS the most recent one), but
+        -- IGNORE NULLS window frames OOM'd the box outright at full 45M-row
+        -- scale -- twice, on two different formulations -- while max() is
+        -- the same accumulator shape as the sum() this replaces, which has
+        -- run this exact scale repeatedly tonight without incident. NULLs
+        -- need no special handling: max() already ignores them.
         bus_id || '#' || cast(
-            sum(is_journey_start) over (
-                partition by bus_id order by ping_ts
-                rows between unbounded preceding and current row
+            epoch_ms(
+                max(case when is_journey_start = 1 then ping_ts end) over (
+                    partition by bus_id order by ping_ts
+                    rows between unbounded preceding and current row
+                )
             ) as varchar
         ) as journey_key
     from flagged
@@ -187,6 +248,7 @@ final as (
         origin_ref,
         dest_ref,
         ping_ts,
+        ping_local_date,
         hour_band,
         day_type,
         lat,
@@ -220,6 +282,18 @@ final as (
             over (partition by journey_key) as last_moving_seq
     from measured
 
+),
+
+filtered as (
+
+    select *
+    from final
+    {% if is_incremental() %}
+    -- Only the last 2 days are ever (re)written; the 1-day buffer read above
+    -- was for lag() context only and never lands here.
+    where ping_local_date >= (select max(ping_local_date) from {{ this }}) - interval '2 days'
+    {% endif %}
+
 )
 
-select * from final
+select * from filtered

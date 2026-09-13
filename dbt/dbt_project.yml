@@ -2,9 +2,13 @@ name: ghost_bus
 version: 1.0.0
 config-version: 2
 
-# Everything here runs against a local DuckDB file (ghost_bus.duckdb) that Flask
-# later opens READ-ONLY, so there is no warehouse to keep warm and a full rebuild
-# is cheap enough to do from scratch every time.
+# Everything here runs against a local DuckDB file (ghost_bus.duckdb) that
+# Flask later opens READ-ONLY. The two most expensive intermediate models
+# (int_bus_journeys, int_ping_stop_match) are incremental -- see their own
+# file headers -- so the scratch warehouse now persists across runs on
+# purpose; a normal nightly run only reprocesses the last couple of days for
+# those two. Everything else here is still cheap enough to rebuild from
+# scratch every time, and does.
 profile: ghost_bus
 
 model-paths: ["models"]
@@ -26,8 +30,9 @@ models:
     intermediate:
       # Views by default, but the two models that every downstream model scans
       # (journey segmentation and the stop spatial join) are materialised as
-      # tables in their own config blocks -- recomputing a 20M-row window
-      # function three times is the single biggest cost in this project.
+      # incremental tables in their own config blocks -- recomputing a 20M-row
+      # window function over the whole retention window every run is the
+      # single biggest cost in this project.
       +materialized: view
     marts:
       # Marts are read by a long-lived Flask process over a read-only DuckDB
