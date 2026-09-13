@@ -1967,7 +1967,7 @@ wheels = [
 [[package]]
 name = "wraith-bus-ingestor"
 version = "0.1.0"
-source = { editable = "." }
+source = { virtual = "." }
 dependencies = [
     { name = "dbt-core" },
     { name = "dbt-duckdb" },
