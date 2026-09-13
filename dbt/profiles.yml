@@ -1,5 +1,5 @@
 # Kept inside the project so the whole thing is self-contained:
-#   .venv/bin/dbt run --profiles-dir .
+#   ../.venv/bin/dbt run --profiles-dir .   (the repo root's own venv -- see dbt/README.md)
 # NOTE: the external_location paths in models/staging/{bods,naptan}/_*__sources.yml
 # are RELATIVE, so dbt must be invoked with dbt/ as the working directory.
 ghost_bus:

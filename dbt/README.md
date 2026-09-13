@@ -18,6 +18,10 @@ Every command must be run **from this directory** (`dbt/`). The sources point at
 relative paths (`data/bus_positions_*.parquet`), so running from the repo root
 will fail to find them.
 
+There is no separate `dbt/.venv` -- dbt runs under the repo root's own
+`.venv` (`uv sync` there installs `dbt-core`/`dbt-duckdb` alongside Flask
+and everything else), referenced below as `../.venv`.
+
 ```bash
 cd dbt
 ./build.sh                    # extract, build, test, validate contracts, publish. This is the one to use.
@@ -31,17 +35,17 @@ Or the steps by hand:
 cd dbt
 
 # 1. pull the last 22 days out of QuestDB into data/*.parquet (mainland GB, several min)
-QUESTDB_HTTP=http://localhost:9001 EXTRACT_DAYS=22 .venv/bin/python extract.py
+QUESTDB_HTTP=http://localhost:9001 EXTRACT_DAYS=22 ../.venv/bin/python extract.py
 
 # 2. build every model (into the SCRATCH file -- see "Two files", below)
-.venv/bin/dbt run --profiles-dir .
+../.venv/bin/dbt run --profiles-dir .
 
 # 3. assert the results are sane
-.venv/bin/dbt test --profiles-dir .
+../.venv/bin/dbt test --profiles-dir .
 
 # 4. browse the docs, including the DAG
-.venv/bin/dbt docs generate --profiles-dir .
-.venv/bin/dbt docs serve --profiles-dir .
+../.venv/bin/dbt docs generate --profiles-dir .
+../.venv/bin/dbt docs serve --profiles-dir .
 ```
 
 ### Two files, and why
@@ -86,10 +90,10 @@ fine; the website falling over while it runs is not.
 Useful during development:
 
 ```bash
-.venv/bin/dbt run  --profiles-dir . --select stg_bods__vehicle_pings          # one model
-.venv/bin/dbt run  --profiles-dir . --select stg_bods__vehicle_pings+         # it and everything downstream
-.venv/bin/dbt run  --profiles-dir . --select +eta_models                     # it and everything it needs
-.venv/bin/dbt test --profiles-dir . --select eta_models
+../.venv/bin/dbt run  --profiles-dir . --select stg_bods__vehicle_pings          # one model
+../.venv/bin/dbt run  --profiles-dir . --select stg_bods__vehicle_pings+         # it and everything downstream
+../.venv/bin/dbt run  --profiles-dir . --select +eta_models                     # it and everything it needs
+../.venv/bin/dbt test --profiles-dir . --select eta_models
 ```
 
 There is no `packages.yml` and no `dbt deps` step: this project needs no
