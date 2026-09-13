@@ -1,7 +1,7 @@
 # Open Data Contract Standard v3.2.0
 #
 # PRODUCER: ingestor/ingest.py, polling the DfT Bus Open Data Service SIRI-VM feed
-# CONSUMER: the ghost_bus dbt project (via dbt/extract.py) AND the Flask API,
+# CONSUMER: the wraith_bus_ingestor dbt project (via dbt/extract.py) AND the Flask API,
 #           which reads the live tail of this table directly
 #
 # This is the contract at the ingest boundary. It documents what the ingestor
@@ -11,7 +11,7 @@
 apiVersion: v3.2.0
 kind: DataContract
 id: 2b7d1e64-9a03-4f18-8c52-1d7e6b4a9f30
-name: ghost_bus_positions
+name: wraith_bus_ingestor_positions
 version: 2.0.0
 status: active
 domain: transit

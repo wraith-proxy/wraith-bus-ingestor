@@ -2,20 +2,20 @@
 #   ../.venv/bin/dbt run --profiles-dir .   (the repo root's own venv -- see dbt/README.md)
 # NOTE: the external_location paths in models/staging/{bods,naptan}/_*__sources.yml
 # are RELATIVE, so dbt must be invoked with dbt/ as the working directory.
-ghost_bus:
+wraith_bus_ingestor:
   target: dev
   outputs:
     dev:
       type: duckdb
       # dbt builds into a SCRATCH file, never into the one Flask serves.
       # DuckDB takes an exclusive lock for the whole run, so building straight
-      # into ghost_bus.duckdb made every read-only open fail for the duration
+      # into wraith_bus_ingestor.duckdb made every read-only open fail for the duration
       # ("Conflicting lock is held") and blanked the live map for minutes at a
-      # time. build.sh publishes the marts into ghost_bus.duckdb with an atomic
+      # time. build.sh publishes the marts into wraith_bus_ingestor.duckdb with an atomic
       # rename once the tests have passed -- so the API sees either the whole
       # old file or the whole new one, and a failed build leaves the last good
       # marts in place. See build.sh.
-      path: ghost_bus_build.duckdb
+      path: wraith_bus_ingestor_build.duckdb
       # 3, not 6. The box has 6 cores and also runs QuestDB, the ingestor and
       # the API; at 4+ threads DuckDB drove load average past 10 and the API's
       # p50 went from 1.3 s to 15.6 s, which is long enough for nginx to start

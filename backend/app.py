@@ -35,7 +35,7 @@ CORS(app)
 
 QUESTDB_URL = os.getenv('QUESTDB_URL', '')
 QUESTDB_TIMEOUT = 8          # seconds; keeps any request under the ~10s budget
-MARTS_PATH = os.getenv('MARTS_PATH', '/models/ghost_bus.duckdb')
+MARTS_PATH = os.getenv('MARTS_PATH', '/models/wraith_bus_ingestor.duckdb')
 MARTS_TTL = 60               # only stat the marts file once a minute
 
 # --------------------------------------------------------------------------
@@ -385,7 +385,7 @@ _marts_state = {'data': None, 'mtime': None, 'checked': 0.0}
 
 def _table_columns(con, table):
     """Columns a mart actually has. The dbt side is rebuilt independently, so
-    for a while ghost_bus.duckdb still carries the pre-day_type shape. Detect
+    for a while wraith_bus_ingestor.duckdb still carries the pre-day_type shape. Detect
     rather than assume: a missing column must degrade the grain, not throw and
     disable every prediction."""
     try:

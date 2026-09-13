@@ -1,4 +1,4 @@
-# ghost_bus — a dbt project over live UK bus positions
+# wraith_bus_ingestor — a dbt project over live UK bus positions
 
 This project turns a firehose of bus GPS pings into five small tables that a
 Flask API can answer questions from: where each line goes, what its stops are in
@@ -6,7 +6,7 @@ order, how punctual it is, and — the interesting one — how long a bus with
 *X* kilometres left to run will actually take.
 
 It is deliberately a *small* warehouse. Everything lives in one DuckDB file,
-`ghost_bus.duckdb`, which Flask opens read-only. There is no cluster, no
+`wraith_bus_ingestor.duckdb`, which Flask opens read-only. There is no cluster, no
 scheduler and no model artefact: the fitted regression coefficients *are* a
 table.
 
@@ -50,10 +50,10 @@ QUESTDB_HTTP=http://localhost:9001 EXTRACT_DAYS=22 ../.venv/bin/python extract.p
 
 ### Two files, and why
 
-`dbt run` builds into **`ghost_bus_build.duckdb`**, a scratch warehouse. Only
+`dbt run` builds into **`wraith_bus_ingestor_build.duckdb`**, a scratch warehouse. Only
 once `dbt test` and the contract gate (`contracts/validate.py`, run by
 `build.sh` against the candidate marts) have both passed does `build.sh` copy
-the five marts into a fresh file and `mv` it over **`ghost_bus.duckdb`**,
+the five marts into a fresh file and `mv` it over **`wraith_bus_ingestor.duckdb`**,
 which is the one Flask opens.
 
 This is not tidiness, it is scar tissue from real incidents:

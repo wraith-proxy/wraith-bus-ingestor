@@ -8,7 +8,7 @@ BODS SIRI-VM feed (polled every 60s, GB mainland bbox)
   ↓  ingestor/ingest.py
 QuestDB  —  bus_positions (append-only, partitioned by day)
   ↓  dbt/build.sh, nightly at 03:00
-DuckDB marts  —  ghost_bus.duckdb (staging → intermediate → marts)
+DuckDB marts  —  wraith_bus_ingestor.duckdb (staging → intermediate → marts)
   ↓  backend/app.py, opened read-only, reloaded on mtime change
 Flask API  →  MapLibre map on slaycoach.quest/bus-map/
 ```
@@ -160,7 +160,7 @@ A Flask API with five routes:
 | `GET /search` | Locality search against `localities` |
 | `GET /model-info` | Marts freshness, model coverage, and any degraded-state note |
 
-The marts are optional by design: if `ghost_bus.duckdb` is missing,
+The marts are optional by design: if `wraith_bus_ingestor.duckdb` is missing,
 mid-rewrite, or a table inside it is absent, the API still answers — with
 `"unknown"` status and null predictions — rather than 500ing. See
 [Operations](operations.md#the-api-never-needs-a-restart) for how it

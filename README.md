@@ -34,7 +34,7 @@ dbt models (DuckDB)
   ├─ Intermediate: journey cuts, direction inference, stop matching, remaining distance
   └─ Marts: five frozen tables (eta_models, line_stops, line_localities, line_punctuality, localities)
   ↓
-Flask API (read-only handle to ghost_bus.duckdb)
+Flask API (read-only handle to wraith_bus_ingestor.duckdb)
   ├─ GET /buses        — live vehicle positions as GeoJSON, < 10 min old
   ├─ GET /bus/<bus_id> — one vehicle: position, model grain used, predicted arrival
   ├─ GET /route        — stop sequence, geometry and live buses for one line
@@ -48,15 +48,15 @@ MapLibre map on slaycoach.quest/bus-map/ (in ghost-site)
 
 The dbt build is split across three files by design:
 
-- **`ghost_bus_build.duckdb`** — persistent incremental warehouse. Two
+- **`wraith_bus_ingestor_build.duckdb`** — persistent incremental warehouse. Two
   expensive models (`int_pings_segmented_to_journeys`,
   `int_pings_matched_to_stops`) are incremental; they take the fast path
   only when this file already exists. Deleted before each run, they
   silently became "full rebuild every time". Persisting it across runs
   cuts the nightly rebuild from ~20-30 min to ~5 min.
-- **`ghost_bus_staged.duckdb`** — fresh per-run throwaway where the five
+- **`wraith_bus_ingestor_staged.duckdb`** — fresh per-run throwaway where the five
   marts are copied after `dbt test` and the contract gate both pass.
-- **`ghost_bus.duckdb`** — the published file the API opens read-only. Only
+- **`wraith_bus_ingestor.duckdb`** — the published file the API opens read-only. Only
   `mv`d into place after both gates pass, so a bad build leaves the
   previous good marts serving instead of replacing them with something
   known to be wrong.
@@ -99,7 +99,7 @@ not — stale records are republished, bus IDs are not globally unique,
 aimed times may be stale, etc.).
 
 The marts contract is in `contracts/bus-marts.odcs.yaml`. The ontology in
-`contracts/ghost-bus.ontology.yaml` names the semantic types (`AtcoCode`,
+`contracts/wraith-bus-ingestor.ontology.yaml` names the semantic types (`AtcoCode`,
 `ServiceNumber`, `Direction`, `HourBand`, etc.) and proves it has not
 drifted from the data. Run `uv run python contracts/validate.py` to check.
 

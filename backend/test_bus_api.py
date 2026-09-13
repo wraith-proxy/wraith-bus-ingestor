@@ -816,7 +816,7 @@ def test_marts_state_distinguishes_locked_from_missing():
 
 
 def test_load_marts_tolerates_both_shapes():
-    """The dbt marts are rebuilt independently, so for a while ghost_bus.duckdb
+    """The dbt marts are rebuilt independently, so for a while wraith_bus_ingestor.duckdb
     still has the pre-day_type, pre-operator columns. Both the oldest shape and
     the current one must load; a shape missing a column just files everything
     under that column's '*'."""

@@ -36,7 +36,7 @@ services:
     environment:
       - QUESTDB_URL=${QUESTDB_URL}
       - OSRM_URL=${OSRM_URL}
-      - MARTS_PATH=/models/ghost_bus.duckdb
+      - MARTS_PATH=/models/wraith_bus_ingestor.duckdb
     volumes:
       # dbt marts, read-only. The whole directory is mounted rather than the
       # .duckdb file itself: bind-mounting a file that does not exist yet makes

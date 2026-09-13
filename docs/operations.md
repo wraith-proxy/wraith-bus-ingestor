@@ -3,17 +3,17 @@
 ## The nightly rebuild
 
 `dbt/build.sh` runs from a host cron entry at **03:00** every night — this
-is a host crontab, not a container, since it needs the `dbt/.venv`
+is a host crontab, not a container, since it needs the repo root's `.venv`
 environment and to run at low priority alongside the live stack:
 
 ```
-0 3 * * * cd /path/to/wraith-bus-ingestor/dbt && ./build.sh >> /var/log/ghost-bus-build.log 2>&1
+0 3 * * * cd /path/to/wraith-bus-ingestor/dbt && ./build.sh >> /var/log/wraith-bus-ingestor-build.log 2>&1
 ```
 
 A run does four things in order: extract the last `EXTRACT_DAYS` (default
 22) of `bus_positions` out of QuestDB into `data/*.parquet`, `dbt run`
 every model into a scratch warehouse, `dbt test` the result, and — only if
-the tests pass — publish the five marts into `ghost_bus.duckdb`, the file
+the tests pass — publish the five marts into `wraith_bus_ingestor.duckdb`, the file
 the API reads. A failed test run leaves the previous night's marts serving
 rather than replacing them with something known to be wrong.
 
@@ -33,17 +33,17 @@ is held`, greying out every bus on the map for the run's duration.
 
 Instead:
 
-1. `dbt run` builds into **`ghost_bus_build.duckdb`**, a persistent
+1. `dbt run` builds into **`wraith_bus_ingestor_build.duckdb`**, a persistent
    scratch warehouse (see below for why it persists).
 2. Once `dbt test` passes, the five marts are copied into a fresh
-   **`ghost_bus_staged.duckdb`**.
-3. `ghost_bus_staged.duckdb` is `mv`'d over **`ghost_bus.duckdb`** — atomic
+   **`wraith_bus_ingestor_staged.duckdb`**.
+3. `wraith_bus_ingestor_staged.duckdb` is `mv`'d over **`wraith_bus_ingestor.duckdb`** — atomic
    within a filesystem, so the API sees either the whole old file or the
    whole new one, never a lock or a partial write.
 
 ### Why the scratch warehouse persists across runs
 
-`ghost_bus_build.duckdb` used to be wiped before every run. Two of the
+`wraith_bus_ingestor_build.duckdb` used to be wiped before every run. Two of the
 models — `int_pings_segmented_to_journeys` and `int_pings_matched_to_stops` — are incremental,
 and dbt's `is_incremental()` only takes the fast path when the target
 table **already exists**. Wiping the file every run silently turned
@@ -60,7 +60,7 @@ cd dbt
 FULL_REFRESH=1 ./build.sh
 ```
 
-Wipes `ghost_bus_build.duckdb` and passes `--full-refresh` to `dbt run`,
+Wipes `wraith_bus_ingestor_build.duckdb` and passes `--full-refresh` to `dbt run`,
 forcing both incremental models to rebuild from nothing. Use this after a
 schema change to either model, or if incremental drift is suspected — not
 routinely, since it's the slow path the persistence above exists to avoid.
@@ -101,7 +101,7 @@ skipped.
 
 ## The API never needs a restart
 
-`backend/app.py` opens `ghost_bus.duckdb` (mounted read-only from `dbt/`)
+`backend/app.py` opens `wraith_bus_ingestor.duckdb` (mounted read-only from `dbt/`)
 and caches its contents in memory. Rather than watching for a restart or a
 signal, it polls the file's `mtime` — checked at most once a minute
 (`MARTS_TTL`) — and reloads automatically the moment the nightly build's

@@ -28,6 +28,7 @@ osrm_data/*
 .coverage
 coverage.xml
 docs/coverage.svg
+requirements.txt
 site/
 dist/
 .venv/

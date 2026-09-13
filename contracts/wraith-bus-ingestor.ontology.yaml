@@ -1,4 +1,4 @@
-# Ghost Bus Ontology
+# Wraith Bus Ingestor Ontology
 #
 # Semantic layer over the two ODCS data contracts, modelled the way Palantir
 # Foundry structures an ontology: shared value types, object types with a primary
@@ -13,8 +13,8 @@
 ---
 apiVersion: ghost-ontology/v1
 kind: Ontology
-id: ghost-bus-ontology
-name: Ghost Bus
+id: wraith-bus-ingestor-ontology
+name: Wraith Bus Ingestor
 version: 1.0.0
 status: draft
 domain: transit

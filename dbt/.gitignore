@@ -1,9 +1,9 @@
 .venv/
 data/*.parquet
 data/naptan_stops.csv
-ghost_bus.duckdb*
-ghost_bus_build.duckdb*
-ghost_bus_staged.duckdb*
+wraith_bus_ingestor.duckdb*
+wraith_bus_ingestor_build.duckdb*
+wraith_bus_ingestor_staged.duckdb*
 target/
 dbt_packages/
 logs/

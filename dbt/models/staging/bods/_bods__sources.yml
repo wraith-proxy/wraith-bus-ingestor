@@ -3,7 +3,7 @@ version: 2
 sources:
   # dbt-duckdb lets a source point straight at a file instead of a table in the
   # database: `meta.external_location` is substituted verbatim wherever
-  # {{ source(...) }} appears. Nothing is copied into ghost_bus.duckdb -- the
+  # {{ source(...) }} appears. Nothing is copied into wraith_bus_ingestor.duckdb -- the
   # staging views read the parquet/CSV off disk on every query.
   #
   # These paths are RELATIVE. dbt must therefore be run from the dbt/ directory:

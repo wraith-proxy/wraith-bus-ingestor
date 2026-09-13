@@ -14,8 +14,8 @@
 #  1. It never lets dbt touch the file Flask is serving. DuckDB holds an
 #     exclusive lock for the whole run, so building in place made every
 #     read-only open fail and put all ~4200 buses on the map into 'unknown'
-#     for the duration. dbt builds into ghost_bus_build.duckdb; the marts are
-#     copied into a new file and moved over ghost_bus.duckdb with a rename,
+#     for the duration. dbt builds into wraith_bus_ingestor_build.duckdb; the marts are
+#     copied into a new file and moved over wraith_bus_ingestor.duckdb with a rename,
 #     which is atomic within a filesystem. Readers see the whole old file or
 #     the whole new one, never a lock or a half-written table.
 #
@@ -23,7 +23,7 @@
 #     leaves the previous good marts serving rather than replacing them with
 #     something known to be wrong.
 #
-#  3. ghost_bus_build.duckdb now PERSISTS across runs by default. The two
+#  3. wraith_bus_ingestor_build.duckdb now PERSISTS across runs by default. The two
 #     most expensive models (int_pings_segmented_to_journeys,
 #     int_pings_matched_to_stops) are incremental, and dbt's is_incremental()
 #     only takes the fast path when the target table already exists -- if
@@ -54,9 +54,9 @@ PY="../.venv/bin/python"
 
 export QUESTDB_HTTP EXTRACT_DAYS
 
-SERVED="ghost_bus.duckdb"
-BUILD="ghost_bus_build.duckdb"
-STAGED="ghost_bus_staged.duckdb"
+SERVED="wraith_bus_ingestor.duckdb"
+BUILD="wraith_bus_ingestor_build.duckdb"
+STAGED="wraith_bus_ingestor_staged.duckdb"
 
 MARTS=(eta_models localities line_localities line_stops line_punctuality)
 

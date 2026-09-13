@@ -1,11 +1,11 @@
 # Open Data Contract Standard v3.2.0
 # https://bitol-io.github.io/open-data-contract-standard/v3.2.0/
 #
-# PRODUCER: the ghost_bus dbt project (dbt/), which rebuilds these tables nightly
+# PRODUCER: the wraith_bus_ingestor dbt project (dbt/), which rebuilds these tables nightly
 # CONSUMER: the Flask bus API (backend/app.py), which opens the file read-only
 #
 # This is the contract across the analytics boundary. The API is not allowed to
-# read anything in ghost_bus.duckdb that is not described here -- intermediate
+# read anything in wraith_bus_ingestor.duckdb that is not described here -- intermediate
 # and staging models are the producer's private business and may change without
 # notice. Anything below may only change via a version bump.
 #
@@ -14,7 +14,7 @@
 apiVersion: v3.2.0
 kind: DataContract
 id: 9f2c4b10-5d6e-4a33-b0c1-6e8a5d3f1c47
-name: ghost_bus_marts
+name: wraith_bus_ingestor_marts
 version: 2.0.0
 status: draft
 domain: transit
@@ -49,12 +49,12 @@ description:
 servers:
   - server: marts-prod
     type: duckdb
-    database: ./dbt/ghost_bus.duckdb
+    database: ./dbt/wraith_bus_ingestor.duckdb
     schema: main
     environment: prod
     description: >-
       Single-file DuckDB warehouse, bind-mounted read-only into the API
-      container at /models/ghost_bus.duckdb. The producer builds into a
+      container at /models/wraith_bus_ingestor.duckdb. The producer builds into a
       temporary file and renames it into place, so a reader sees either the
       whole previous version or the whole new one, never a partial write.
 
@@ -651,13 +651,13 @@ roles:
 
 customProperties:
   - property: producer
-    value: dbt project ghost_bus (dbt/)
+    value: dbt project wraith_bus_ingestor (dbt/)
   - property: consumer
     value: Flask bus API (backend/app.py)
   - property: upstreamContract
     value: contracts/bus-positions.odcs.yaml
   - property: ontology
-    value: contracts/ghost-bus.ontology.yaml
+    value: contracts/wraith-bus-ingestor.ontology.yaml
   - property: detourFactor
     value: 1.30
   - property: detourFactorRationale

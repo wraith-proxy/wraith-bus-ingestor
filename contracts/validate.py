@@ -25,7 +25,7 @@ import yaml
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
-DEFAULT_MARTS = os.path.join(ROOT, "dbt", "ghost_bus.duckdb")
+DEFAULT_MARTS = os.path.join(ROOT, "dbt", "wraith_bus_ingestor.duckdb")
 DEFAULT_QUESTDB = os.environ.get("QUESTDB_HTTP", "http://localhost:9001")
 
 # Physical types that mean the same thing to the engines we target.
@@ -391,7 +391,7 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--contract", action="append", default=None,
                     help="ODCS contract to validate (repeatable; default: both)")
-    ap.add_argument("--ontology", default=os.path.join(HERE, "ghost-bus.ontology.yaml"))
+    ap.add_argument("--ontology", default=os.path.join(HERE, "wraith-bus-ingestor.ontology.yaml"))
     ap.add_argument("--marts", default=DEFAULT_MARTS, help="path to the DuckDB marts file")
     ap.add_argument("--questdb", default=DEFAULT_QUESTDB)
     ap.add_argument("--questdb-window", type=int, default=5, metavar="MINUTES",

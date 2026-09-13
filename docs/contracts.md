@@ -43,9 +43,9 @@ ran out of buses.
 
 ## `bus-marts.odcs.yaml` — the analytics boundary
 
-**Producer:** the `ghost_bus` dbt project. **Consumer:** `backend/app.py`,
+**Producer:** the `wraith_bus_ingestor` dbt project. **Consumer:** `backend/app.py`,
 which opens the file read-only. The API is not allowed to read anything in
-`ghost_bus.duckdb` that isn't described here — staging and intermediate
+`wraith_bus_ingestor.duckdb` that isn't described here — staging and intermediate
 models are the producer's private business and may change without notice;
 anything in this contract may only change via a version bump.
 
@@ -74,7 +74,7 @@ fixable in this layer: `line` is a published number, not a unique route
 concept of bank holidays; the fitted window has a real gap (2026-08-28 to
 08-30, a feed outage).
 
-## `ghost-bus.ontology.yaml` — the semantic layer
+## `wraith-bus-ingestor.ontology.yaml` — the semantic layer
 
 Modelled the way Palantir Foundry structures an ontology — shared value
 types, object types with a primary key and title property, typed link
