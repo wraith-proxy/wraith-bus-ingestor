@@ -1,7 +1,4 @@
 [![Documentation](https://img.shields.io/badge/docs-live-brightgreen)](https://www.thomaspeoples.com/gitea-repos/wraith-bus-ingestor/)
-![PyPI - Version](https://img.shields.io/pypi/v/wraith-bus-ingestor)
-![PyPI - License](https://img.shields.io/pypi/l/wraith-bus-ingestor)
-![PyPI - Python Version](https://img.shields.io/pypi/pyversions/wraith-bus-ingestor)
 ![Coverage](https://www.thomaspeoples.com/gitea-repos/wraith-bus-ingestor/coverage.svg)
 
 # 👻 wraith-bus-ingestor
