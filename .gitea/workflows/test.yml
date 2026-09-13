@@ -13,16 +13,15 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "latest"
       - name: Install dependencies into system Python
-        # The runner image is lite now -- it no longer bakes deps in, and
-        # `uv pip install .[dev]` would try to build this non-package (see
-        # pyproject.toml's `tool.uv.package = false`) into a wheel and hit
-        # hatchling's "no directory matches the project name" error. Export
-        # the locked deps and install those directly instead: no build.
+        # uv itself is already on ghost-runner -- no sibling repo's test.yml
+        # installs it (setup-uv downloads a tarball to /tmp and spawns it,
+        # which ENOENTs here; that's not how any other Wraith repo does it).
+        # The runner image just stopped baking in project deps like flask, so
+        # export the locked deps and install those into system Python
+        # directly. `uv pip install .[dev]` would instead try to build this
+        # non-package (see pyproject.toml's `tool.uv.package = false`) into a
+        # wheel and hit hatchling's "no directory matches the project name".
         run: |
           uv export --extra dev --no-hashes -o requirements.txt
           uv pip install --system -r requirements.txt
