@@ -1,0 +1,31 @@
+# Live data volumes -- currently referenced by absolute path back into
+# ghost-site/ (see docker-compose.yml); kept here defensively in case they
+# are ever physically migrated into this repo's own directory.
+questdb_data/
+maps/
+*.log
+
+# Housekeeping
+tree.txt
+.env
+.DS_Store
+.aider*
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Multi-GB OSM extract + generated routing graph -- keep the build script.
+osrm_data/*
+!osrm_data/build.sh
+
+# dbt's own venv, data and build artifacts -- see dbt/.gitignore, which is
+# more precise than a blanket pattern here would be.
+
+# Packaging / tooling
+.ruff_cache/
+.pytest_cache/
+.coverage
+site/
+dist/
+.venv/

@@ -1,0 +1,87 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# This is an application (a Flask service + a dbt project + two poller
+# containers), not a library meant to be pip-installed elsewhere -- there is
+# no package matching the project name for hatchling to auto-detect.
+# Pointing it at backend/ explicitly avoids depending on whatever heuristic
+# a given hatchling version falls back to.
+[tool.hatch.build.targets.wheel]
+packages = ["backend"]
+
+[project]
+name = "wraith-bus-ingestor"
+version = "0.1.0"
+description = "Live UK bus tracking data platform: BODS SIRI-VM ingest, QuestDB, a dbt/DuckDB ETA model, and the Flask API that serves it."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Thomas Peoples", email = "hello@thomaspeoples.com" },
+]
+requires-python = ">=3.12"
+dependencies = [
+    "flask",
+    "flask-cors",
+    "duckdb",
+    # zoneinfo (Europe/London, used for hour_band/day_type) ships without data
+    # on slim/minimal Python images; tzdata backfills it.
+    "tzdata",
+    "requests",
+    "pyyaml",
+    "dbt-core==1.12.4",
+    "dbt-duckdb==1.11.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "ty",
+    "pytest",
+    "pytest-cov",
+    "pre-commit",
+    "commitizen",
+    "detect-secrets",
+    "mkdocs",
+    "mkdocs-material",
+    "poethepoet",
+    "typer",
+]
+
+[project.urls]
+Homepage = "https://git.thomaspeoples.com/thomaspeoples/wraith-bus-ingestor"
+Repository = "https://git.thomaspeoples.com/thomaspeoples/wraith-bus-ingestor.git"
+
+[tool.poe.tasks]
+test = "pytest"
+test-ci = "pytest --cov=backend --cov-report=term-missing --cov-fail-under=80"
+lint = "ruff check ."
+format = "ruff format ."
+tidy = ["lint", "format"]
+docs-build = "mkdocs build"
+docs-serve = "mkdocs serve"
+# The dbt project keeps its own .venv historically (see dbt/README.md); these
+# tasks just wrap the existing entry point rather than re-plumb dbt through
+# this project's own environment.
+build = { shell = "cd dbt && ./build.sh" }
+validate = "python contracts/validate.py"
+
+[tool.ruff]
+# 99, not a default 79: this codebase's established voice is long explanatory
+# prose comments, measured against the real code as fitting p99 = 99 chars.
+line-length = 99
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+xfail_strict = true
+addopts = [
+    "--cov=backend",
+    "--cov-report=term-missing",
+    "--tb=short",
+    "--strict-markers",
+]
+pythonpath = ["backend"]
+testpaths = ["backend"]

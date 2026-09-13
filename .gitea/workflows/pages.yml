@@ -1,0 +1,58 @@
+name: Deploy Gitea Pages
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Build Documentation
+        run: uv run mkdocs build
+
+      - name: Sync to Main Website Repo
+        env:
+          MY_TOKEN: ${{ secrets.GITEATOKEN }}
+          MY_URL: ${{ secrets.GITEAURL }}
+
+        run: |
+          # 1. Clone the main website repo
+          CLEAN_URL=${MY_URL#*//}
+          git clone https://${MY_TOKEN}@${CLEAN_URL}/thomaspeoples/ghost-site.git main_site
+
+          # 2. Create the target directory if it doesn't exist.
+          # NOTE: ghost-site's docroot split (2026-09) moved this from
+          # main_site/www/gitea-repos/ to main_site/www/thomaspeoples/gitea-repos/
+          # -- thomaspeoples.com now roots at www/thomaspeoples/ only. Every
+          # OTHER wraith-* repo's pages.yml still targets the old path and is
+          # silently writing to a location nginx no longer serves.
+          TARGET_DIR="main_site/www/thomaspeoples/gitea-repos/wraith-bus-ingestor"
+          mkdir -p $TARGET_DIR
+
+          # 3. Clean and Copy
+          rm -rf $TARGET_DIR/*
+          cp -r site/* $TARGET_DIR/
+
+          # 4. Commit and Push to the OTHER repo
+          cd main_site
+          git config user.name "Ghost Runner"
+          git config user.email "runner@ghost-stack.local"
+          git add .
+          if git diff --staged --quiet; then
+            echo "No changes to documentation. Skipping commit."
+          else
+            git commit -m ":books: main: Update docs for wraith-bus-ingestor: ${{ gitea.sha }}"
+            git push origin main
+          fi
