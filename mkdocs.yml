@@ -22,6 +22,7 @@ nav:
   - Bus Platform: bus-platform.md
   - Contracts: contracts.md
   - Operations: operations.md
+  - Roadmap: ROADMAP.md
   - Python API: api.md
   - dbt Docs: dbt/index.html
 
