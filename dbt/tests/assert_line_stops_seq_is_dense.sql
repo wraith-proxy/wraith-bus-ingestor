@@ -14,7 +14,7 @@ with per_line_direction as (
         count(distinct seq)   as n_distinct_seq,
         min(seq)              as min_seq,
         max(seq)              as max_seq
-    from {{ ref('mart_line_stops') }}
+    from {{ ref('line_stops') }}
     group by operator, line, direction, day_type
 
 )

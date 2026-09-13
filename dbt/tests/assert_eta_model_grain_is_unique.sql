@@ -1,4 +1,4 @@
--- Composite primary key of mart_eta_model. Flask indexes the model by
+-- Composite primary key of eta_models. Flask indexes the model by
 -- (operator, line, direction, day_type, hour_band) and takes the first match;
 -- two rows on one key would make the ETA depend on row order.
 --
@@ -13,6 +13,6 @@ select
     day_type,
     hour_band,
     count(*) as n_rows
-from {{ ref('mart_eta_model') }}
+from {{ ref('eta_models') }}
 group by operator, line, direction, day_type, hour_band
 having count(*) > 1

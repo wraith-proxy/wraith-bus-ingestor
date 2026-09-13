@@ -16,7 +16,7 @@ select
     hour_of_day,
     hour_band,
     day_type
-from {{ ref('stg_bus_pings') }}
+from {{ ref('stg_bods__vehicle_pings') }}
 where hour_of_day <> extract(hour from ping_local_ts)
    or hour_band   <> ({{ hour_band('extract(hour from ping_local_ts)') }})
    or day_type    <> ({{ day_type('ping_local_ts') }})

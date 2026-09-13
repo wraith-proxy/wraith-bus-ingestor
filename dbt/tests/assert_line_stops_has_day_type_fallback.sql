@@ -10,7 +10,7 @@
 with real_grains as (
 
     select distinct operator, line, direction
-    from {{ ref('mart_line_stops') }}
+    from {{ ref('line_stops') }}
     where day_type <> '*'
 
 ),
@@ -18,7 +18,7 @@ with real_grains as (
 fallback_grains as (
 
     select distinct operator, line, direction
-    from {{ ref('mart_line_stops') }}
+    from {{ ref('line_stops') }}
     where day_type = '*'
 
 )

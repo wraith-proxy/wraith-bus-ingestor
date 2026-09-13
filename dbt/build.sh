@@ -24,10 +24,11 @@
 #     something known to be wrong.
 #
 #  3. ghost_bus_build.duckdb now PERSISTS across runs by default. The two
-#     most expensive models (int_bus_journeys, int_ping_stop_match) are
-#     incremental, and dbt's is_incremental() only takes the fast path when
-#     the target table already exists -- if this file never survived between
-#     runs, "incremental" would silently mean "full rebuild every time"
+#     most expensive models (int_pings_segmented_to_journeys,
+#     int_pings_matched_to_stops) are incremental, and dbt's is_incremental()
+#     only takes the fast path when the target table already exists -- if
+#     this file never survived between runs, "incremental" would silently
+#     mean "full rebuild every time"
 #     anyway, which is exactly what happened until 2026-09-13 and is why
 #     fixing one stale test used to cost a 20-30 min rebuild. FULL_REFRESH=1
 #     is the deliberate escape hatch back to from-scratch.
@@ -52,7 +53,7 @@ SERVED="ghost_bus.duckdb"
 BUILD="ghost_bus_build.duckdb"
 STAGED="ghost_bus_staged.duckdb"
 
-MARTS=(mart_eta_model mart_localities mart_line_localities mart_line_stops mart_line_punctuality)
+MARTS=(eta_models localities line_localities line_stops line_punctuality)
 
 # Low priority for everything heavy. `nice` is always present; `ionice` is not
 # (it needs util-linux and a supporting scheduler), so fall back gracefully.
@@ -83,9 +84,10 @@ if [[ ! -f data/naptan_stops.csv ]]; then
 fi
 
 # The extract writes no file at all for a day the feed was down, so the date
-# range has holes. That is expected and handled (int_bus_journeys breaks a
-# journey on any gap over 20 min; int_journey_shape discards journeys whose end
-# falls in a hole) -- but it is worth saying out loud how much data there is.
+# range has holes. That is expected and handled
+# (int_pings_segmented_to_journeys breaks a journey on any gap over 20 min;
+# int_journeys_shaped_and_directed discards journeys whose end falls in a
+# hole) -- but it is worth saying out loud how much data there is.
 echo "==> $(ls data/bus_positions_*.parquet 2>/dev/null | wc -l) daily parquet files in data/"
 
 # No packages.yml: this project deliberately has no package dependencies, so

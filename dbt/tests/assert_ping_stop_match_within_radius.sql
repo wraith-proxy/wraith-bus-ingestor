@@ -8,7 +8,7 @@ select
     ping_seq,
     count(*)      as n_matches,
     max(dist_km)  as worst_dist_km
-from {{ ref('int_ping_stop_match') }}
+from {{ ref('int_pings_matched_to_stops') }}
 group by journey_key, ping_seq
 having count(*) > 1
     or max(dist_km) > 0.120

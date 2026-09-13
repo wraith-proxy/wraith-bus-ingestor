@@ -95,7 +95,7 @@ with pings as (
         lon,
         origin_aimed_dep_ts,
         dest_aimed_arr_ts
-    from {{ ref('stg_bus_pings') }}
+    from {{ ref('stg_bods__vehicle_pings') }}
     {% if is_incremental() %}
     where ping_local_date >= (select max(ping_local_date) from {{ this }}) - interval '3 days'
     {% endif %}
@@ -136,7 +136,7 @@ with_step as (
         -- positive anticlockwise, negative clockwise.
         -- This is the only usable direction signal for a circular route, whose
         -- first-to-last bearing is noise because it ends where it started.
-        -- See int_journey_shape.
+        -- See int_journeys_shaped_and_directed.
         case when prev_ping_ts is null then 0.0
              else (prev_lon * lat) - (lon * prev_lat)
         end as shoelace_term,
@@ -194,8 +194,8 @@ keyed as (
         -- rack up dozens of journey-starts in just the incremental window,
         -- so the two numbering schemes can coincidentally collide on the
         -- same suffix for two totally different physical journeys -- caught
-        -- live as a duplicate ping_seq in int_ping_stop_match the first time
-        -- this ran as a true incremental (non-first) build.
+        -- live as a duplicate ping_seq in int_pings_matched_to_stops the
+        -- first time this ran as a true incremental (non-first) build.
         --
         -- journey_key has to be a property of the journey itself, not of how
         -- many journeys came before it in whatever slice happened to be
@@ -259,8 +259,9 @@ final as (
         dest_aimed_arr_ts,
         ping_seq,
         -- Cumulative path length from the journey's first ping to this one.
-        -- int_ping_remaining subtracts this from the journey total to get
-        -- "how far is left"; int_journey_shape takes its max as the path length.
+        -- int_pings_measured_to_journey_end subtracts this from the journey
+        -- total to get "how far is left"; int_journeys_shaped_and_directed
+        -- takes its max as the path length.
         sum(hop_km) over (
             partition by journey_key order by ping_ts
             rows between unbounded preceding and current row
@@ -273,7 +274,8 @@ final as (
         -- leaving them on the end means every journey finishes with several
         -- minutes of "0 km remaining, still 6 minutes to go" -- which the
         -- regression absorbs into a large positive intercept. Marking the first
-        -- and last genuinely moving ping lets int_journey_shape trim both ends.
+        -- and last genuinely moving ping lets int_journeys_shaped_and_directed
+        -- trim both ends.
         -- Ceiling: moving = at least 50 m in a 3-minute bucket (~1 km/h).
         -- Measured effect of trimming: r2 0.52 -> 0.69, intercept 1060s -> 749s.
         min(ping_seq) filter (where hop_km >= 0.05)

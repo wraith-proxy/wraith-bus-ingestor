@@ -30,7 +30,7 @@
 
   For a loop, the meaningful question is not "which way is it pointing" but
   "which way round is it going". That is the SIGN OF THE ENCLOSED AREA, via the
-  shoelace formula summed in int_bus_journeys: positive is anticlockwise,
+  shoelace formula summed in int_pings_segmented_to_journeys: positive is anticlockwise,
   negative is clockwise. It is exact, it needs no reference bearing, and two
   buses running the same loop the same way always agree.
 
@@ -53,12 +53,12 @@
 
 with pings as (
 
-    -- Trim the stationary head and tail off every journey. int_bus_journeys
+    -- Trim the stationary head and tail off every journey. int_pings_segmented_to_journeys
     -- marks the first and last ping at which the vehicle was actually moving;
     -- everything outside that window is the bus standing on the stand, which
     -- is real but is not travel and must not be measured as if it were.
     select *
-    from {{ ref('int_bus_journeys') }}
+    from {{ ref('int_pings_segmented_to_journeys') }}
     where first_moving_seq is not null
       and ping_seq between first_moving_seq and last_moving_seq
 
@@ -159,7 +159,7 @@ plausible as (
 coverage_buckets as (
 
     select distinct time_bucket(interval '10 minutes', ping_ts) as bucket
-    from {{ ref('int_bus_journeys') }}
+    from {{ ref('int_pings_segmented_to_journeys') }}
 
 ),
 
@@ -207,7 +207,7 @@ line_shape as (
     -- for historical data, still does) treat a Sheffield cross-city route and
     -- a Wilmslow-Hale route as one shape. operator is coalesced to a sentinel
     -- rather than left NULL because SQL joins never match NULL to NULL --
-    -- see int_bus_journeys' prev_operator for the same trick. Every row
+    -- see int_pings_segmented_to_journeys' prev_operator for the same trick. Every row
     -- before 2026-09-12 has operator_key = '~none~' for everything, so this
     -- is a no-op on historical data: it only starts disambiguating once the
     -- feed actually supplies an operator.

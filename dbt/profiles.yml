@@ -1,7 +1,7 @@
 # Kept inside the project so the whole thing is self-contained:
 #   .venv/bin/dbt run --profiles-dir .
-# NOTE: the external_location paths in models/staging/_sources.yml are RELATIVE,
-# so dbt must be invoked with dbt/ as the working directory.
+# NOTE: the external_location paths in models/staging/{bods,naptan}/_*__sources.yml
+# are RELATIVE, so dbt must be invoked with dbt/ as the working directory.
 ghost_bus:
   target: dev
   outputs:
@@ -23,10 +23,11 @@ ghost_bus:
       threads: 3
       settings:
         # Cut to 3 GB on 2026-09-12 after two host-level OOM events during
-        # int_bus_journeys. Raised to 6 GB again on 2026-09-13 once a 16 GB
-        # swapfile was added: with swap as a backstop, int_bus_journeys now
-        # completes cleanly at 3 GB (724 s, no spill trouble) but the next
-        # model, mart_line_stops, hit DuckDB's own ceiling head-on --
+        # int_pings_segmented_to_journeys. Raised to 6 GB again on 2026-09-13
+        # once a 16 GB swapfile was added: with swap as a backstop,
+        # int_pings_segmented_to_journeys now completes cleanly at 3 GB (724 s,
+        # no spill trouble) but the next model, line_stops, hit DuckDB's own
+        # ceiling head-on --
         # "Out of Memory Error: failed to pin block of size 256.0 KiB (2.7
         # GiB/2.7 GiB used)" -- a clean DuckDB error, not a host OOM kill.
         # That model grew a 4-way operator/day_type fallback union this same

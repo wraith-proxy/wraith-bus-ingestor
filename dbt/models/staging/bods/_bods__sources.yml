@@ -9,7 +9,12 @@ sources:
   # These paths are RELATIVE. dbt must therefore be run from the dbt/ directory:
   #     cd dbt && .venv/bin/dbt run --profiles-dir .
   # (build.sh does this for you.)
-  - name: questdb
+  #
+  # Named `bods` (Bus Open Data Service), not `questdb`: QuestDB is the landing
+  # store the ingestor writes to, not the source system. BODS' SIRI-VM feed is
+  # the actual source of this data, and the staging guide organises by source
+  # system, not by loader.
+  - name: bods
     description: >
       Bus AVL positions exported from QuestDB by extract.py -- one parquet file
       per day, already downsampled to one row per bus per 3 minutes so that
@@ -30,8 +35,9 @@ sources:
           - name: bus_id
             description: >
               Operator vehicle ref. REUSED across journeys and even across
-              operators, so it is never a key on its own -- int_bus_journeys
-              exists precisely to cut this stream into journeys.
+              operators, so it is never a key on its own --
+              int_pings_segmented_to_journeys exists precisely to cut this
+              stream into journeys.
           - name: line
             description: Public-facing service number, e.g. '88'. NOT unique across operators.
           - name: lat
@@ -40,16 +46,3 @@ sources:
             description: WGS84 longitude, same caveats as lat.
           - name: bearing
             description: Degrees clockwise from north; carried through for the map arrow, not used in modelling.
-
-  - name: naptan
-    description: The national NaPTAN public transport access node register (all modes, whole GB).
-    tables:
-      - name: stops
-        description: >
-          435k rows covering every rail station, ferry pier, airport and bus stop
-          in Great Britain. Read with all_varchar=true because the file mixes
-          empty strings, locale-formatted dates and numeric codes with leading
-          zeros; staging does every cast explicitly so a new bad row fails loudly
-          in one place instead of silently re-typing a column.
-        meta:
-          external_location: "read_csv('data/naptan_stops.csv', header=true, all_varchar=true, sample_size=-1)"

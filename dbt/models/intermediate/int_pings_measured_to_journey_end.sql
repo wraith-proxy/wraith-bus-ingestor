@@ -6,7 +6,7 @@
   One row per ping of every surviving journey, answering the only question the
   API actually asks: "given that this bus still has X km of route in front of
   it, how many seconds will that take?" Fitting remaining_secs on remaining_km
-  over millions of these rows is what mart_eta_model does.
+  over millions of these rows is what eta_models does.
 
   Note this is measured along the *observed path*, not as the crow flies. The
   path is itself a chord approximation -- pings are 3 minutes apart, so the
@@ -19,7 +19,7 @@
 
 with journeys as (
 
-    -- int_journey_shape has already thrown out the implausible journeys, so
+    -- int_journeys_shaped_and_directed has already thrown out the implausible journeys, so
     -- this join is also the filter.
     select
         journey_key,
@@ -30,7 +30,7 @@ with journeys as (
         start_cum_km,
         start_ping_seq,
         end_ping_seq
-    from {{ ref('int_journey_shape') }}
+    from {{ ref('int_journeys_shaped_and_directed') }}
 
 ),
 
@@ -44,7 +44,7 @@ pings as (
         ping_ts,
         ping_seq,
         cum_km
-    from {{ ref('int_bus_journeys') }}
+    from {{ ref('int_pings_segmented_to_journeys') }}
 
 ),
 

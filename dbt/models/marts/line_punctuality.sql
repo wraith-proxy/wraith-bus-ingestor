@@ -32,7 +32,7 @@ with journeys as (
         hour_band,
         end_ts,
         dest_aimed_arr_ts
-    from {{ ref('int_journey_shape') }}
+    from {{ ref('int_journeys_shaped_and_directed') }}
     where dest_aimed_arr_ts is not null
 
 ),

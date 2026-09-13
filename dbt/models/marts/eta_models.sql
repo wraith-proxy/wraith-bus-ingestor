@@ -85,7 +85,7 @@
 
 with training as (
 
-    select * from {{ ref('int_ping_remaining') }}
+    select * from {{ ref('int_pings_measured_to_journey_end') }}
 
 ),
 

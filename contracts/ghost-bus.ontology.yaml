@@ -242,11 +242,11 @@ objectTypes:
     titleProperty: lineId
     backingDatasets:
       - contract: marts
-        object: mart_line_localities
+        object: line_localities
     properties:
       - apiName: lineId
         valueType: ServiceNumber
-        binding: {contract: marts, object: mart_line_localities, property: line}
+        binding: {contract: marts, object: line_localities, property: line}
 
   - apiName: Operator
     displayName: Operator
@@ -274,23 +274,23 @@ objectTypes:
     titleProperty: stopName
     backingDatasets:
       - contract: marts
-        object: mart_line_stops
+        object: line_stops
     properties:
       - apiName: atcoCode
         valueType: AtcoCode
-        binding: {contract: marts, object: mart_line_stops, property: atco_code}
+        binding: {contract: marts, object: line_stops, property: atco_code}
       - apiName: stopName
         valueType: String
-        binding: {contract: marts, object: mart_line_stops, property: stop_name}
+        binding: {contract: marts, object: line_stops, property: stop_name}
       - apiName: localityName
         valueType: String
-        binding: {contract: marts, object: mart_line_stops, property: locality}
+        binding: {contract: marts, object: line_stops, property: locality}
       - apiName: latitude
         valueType: Double
-        binding: {contract: marts, object: mart_line_stops, property: lat}
+        binding: {contract: marts, object: line_stops, property: lat}
       - apiName: longitude
         valueType: Double
-        binding: {contract: marts, object: mart_line_stops, property: lon}
+        binding: {contract: marts, object: line_stops, property: lon}
 
   - apiName: LineStop
     displayName: Stop on a line
@@ -305,30 +305,30 @@ objectTypes:
     titleProperty: atcoCode
     backingDatasets:
       - contract: marts
-        object: mart_line_stops
+        object: line_stops
     properties:
       - apiName: lineId
         valueType: ServiceNumber
-        binding: {contract: marts, object: mart_line_stops, property: line}
+        binding: {contract: marts, object: line_stops, property: line}
       - apiName: direction
         valueType: Direction
-        binding: {contract: marts, object: mart_line_stops, property: direction}
+        binding: {contract: marts, object: line_stops, property: direction}
       - apiName: dayType
         valueType: DayType
-        binding: {contract: marts, object: mart_line_stops, property: day_type}
+        binding: {contract: marts, object: line_stops, property: day_type}
       - apiName: atcoCode
         valueType: AtcoCode
-        binding: {contract: marts, object: mart_line_stops, property: atco_code}
+        binding: {contract: marts, object: line_stops, property: atco_code}
       - apiName: sequence
         valueType: Integer
-        binding: {contract: marts, object: mart_line_stops, property: seq}
+        binding: {contract: marts, object: line_stops, property: seq}
       - apiName: medianSecondsFromOrigin
         valueType: Double
-        binding: {contract: marts, object: mart_line_stops, property: median_secs_from_origin}
+        binding: {contract: marts, object: line_stops, property: median_secs_from_origin}
         description: Anchored on the start of tracking, so only differences between two stops carry meaning.
       - apiName: observations
         valueType: Long
-        binding: {contract: marts, object: mart_line_stops, property: n_obs}
+        binding: {contract: marts, object: line_stops, property: n_obs}
 
   - apiName: Locality
     displayName: Locality
@@ -340,23 +340,23 @@ objectTypes:
     titleProperty: localityName
     backingDatasets:
       - contract: marts
-        object: mart_localities
+        object: localities
     properties:
       - apiName: localityNorm
         valueType: LocalityNorm
-        binding: {contract: marts, object: mart_localities, property: locality_norm}
+        binding: {contract: marts, object: localities, property: locality_norm}
       - apiName: localityName
         valueType: String
-        binding: {contract: marts, object: mart_localities, property: locality}
+        binding: {contract: marts, object: localities, property: locality}
       - apiName: latitude
         valueType: Double
-        binding: {contract: marts, object: mart_localities, property: lat}
+        binding: {contract: marts, object: localities, property: lat}
       - apiName: longitude
         valueType: Double
-        binding: {contract: marts, object: mart_localities, property: lon}
+        binding: {contract: marts, object: localities, property: lon}
       - apiName: stopCount
         valueType: Long
-        binding: {contract: marts, object: mart_localities, property: n_stops}
+        binding: {contract: marts, object: localities, property: n_stops}
 
   - apiName: TravelTimeModel
     displayName: Travel time model
@@ -370,36 +370,36 @@ objectTypes:
     titleProperty: lineId
     backingDatasets:
       - contract: marts
-        object: mart_eta_model
+        object: eta_models
     properties:
       - apiName: lineId
         valueType: ServiceNumber
-        binding: {contract: marts, object: mart_eta_model, property: line}
+        binding: {contract: marts, object: eta_models, property: line}
       - apiName: direction
         valueType: Direction
-        binding: {contract: marts, object: mart_eta_model, property: direction}
+        binding: {contract: marts, object: eta_models, property: direction}
       - apiName: dayType
         valueType: DayType
-        binding: {contract: marts, object: mart_eta_model, property: day_type}
+        binding: {contract: marts, object: eta_models, property: day_type}
       - apiName: hourBand
         valueType: HourBand
-        binding: {contract: marts, object: mart_eta_model, property: hour_band}
+        binding: {contract: marts, object: eta_models, property: hour_band}
       - apiName: slopeSecondsPerKm
         valueType: Double
-        binding: {contract: marts, object: mart_eta_model, property: slope_s_per_km}
+        binding: {contract: marts, object: eta_models, property: slope_s_per_km}
       - apiName: interceptSeconds
         valueType: Double
-        binding: {contract: marts, object: mart_eta_model, property: intercept_s}
+        binding: {contract: marts, object: eta_models, property: intercept_s}
         description: Absorbs terminus dwell. The reason this model may not be used to compute lateness.
       - apiName: rSquared
         valueType: Double
-        binding: {contract: marts, object: mart_eta_model, property: r2}
+        binding: {contract: marts, object: eta_models, property: r2}
       - apiName: observations
         valueType: Long
-        binding: {contract: marts, object: mart_eta_model, property: n_obs}
+        binding: {contract: marts, object: eta_models, property: n_obs}
       - apiName: meanSpeedKmh
         valueType: Double
-        binding: {contract: marts, object: mart_eta_model, property: mean_speed_kmh}
+        binding: {contract: marts, object: eta_models, property: mean_speed_kmh}
 
   - apiName: PunctualityProfile
     displayName: Punctuality profile
@@ -414,29 +414,29 @@ objectTypes:
     titleProperty: lineId
     backingDatasets:
       - contract: marts
-        object: mart_line_punctuality
+        object: line_punctuality
     properties:
       - apiName: lineId
         valueType: ServiceNumber
-        binding: {contract: marts, object: mart_line_punctuality, property: line}
+        binding: {contract: marts, object: line_punctuality, property: line}
       - apiName: direction
         valueType: Direction
-        binding: {contract: marts, object: mart_line_punctuality, property: direction}
+        binding: {contract: marts, object: line_punctuality, property: direction}
       - apiName: dayType
         valueType: DayType
-        binding: {contract: marts, object: mart_line_punctuality, property: day_type}
+        binding: {contract: marts, object: line_punctuality, property: day_type}
       - apiName: hourBand
         valueType: HourBand
-        binding: {contract: marts, object: mart_line_punctuality, property: hour_band}
+        binding: {contract: marts, object: line_punctuality, property: hour_band}
       - apiName: medianDelaySeconds
         valueType: DelaySeconds
-        binding: {contract: marts, object: mart_line_punctuality, property: median_delay_s}
+        binding: {contract: marts, object: line_punctuality, property: median_delay_s}
       - apiName: p90DelaySeconds
         valueType: DelaySeconds
-        binding: {contract: marts, object: mart_line_punctuality, property: p90_delay_s}
+        binding: {contract: marts, object: line_punctuality, property: p90_delay_s}
       - apiName: journeyCount
         valueType: Long
-        binding: {contract: marts, object: mart_line_punctuality, property: n_journeys}
+        binding: {contract: marts, object: line_punctuality, property: n_journeys}
 
 # ---------------------------------------------------------------------------
 # Link types
@@ -501,7 +501,7 @@ linkTypes:
     to: {objectType: Locality, property: localityNorm}
     through:
       contract: marts
-      object: mart_line_localities
+      object: line_localities
       fromProperty: line
       toProperty: locality_norm
       properties: [n_pings, first_seen, last_seen]

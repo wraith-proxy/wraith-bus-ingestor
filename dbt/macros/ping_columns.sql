@@ -8,7 +8,7 @@
   the column does not exist and every model referencing it fails to compile.
 
   This macro asks DuckDB once, at compile time, what the union actually
-  contains; stg_bus_pings then emits `cast(null as ...) as journey_ref` for the
+  contains; stg_bods__vehicle_pings then emits `cast(null as ...) as journey_ref` for the
   ones that are missing. That keeps the project buildable on a fresh box that
   has only historical data.
 #}
@@ -16,6 +16,6 @@
   {%- if not execute -%}
     {{ return([]) }}
   {%- endif -%}
-  {%- set results = run_query("select * from " ~ source('questdb', 'bus_positions') ~ " limit 0") -%}
+  {%- set results = run_query("select * from " ~ source('bods', 'bus_positions') ~ " limit 0") -%}
   {{ return(results.column_names | map('lower') | list) }}
 {% endmacro %}

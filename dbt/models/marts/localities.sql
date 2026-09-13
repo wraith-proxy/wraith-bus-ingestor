@@ -10,7 +10,7 @@
 
 with stops as (
 
-    select * from {{ ref('stg_naptan_stops') }}
+    select * from {{ ref('stg_naptan__stops') }}
 
 ),
 

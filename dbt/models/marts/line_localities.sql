@@ -3,13 +3,13 @@
   seen rather than from any published route description.
 
   This is the join that makes "search WILMSLOW, highlight the buses" work: the
-  API resolves the typed text to a locality_norm in mart_localities, then reads
+  API resolves the typed text to a locality_norm in localities, then reads
   the lines off this table.
 #}
 
 with matches as (
 
-    select * from {{ ref('int_ping_stop_match') }}
+    select * from {{ ref('int_pings_matched_to_stops') }}
 
 ),
 

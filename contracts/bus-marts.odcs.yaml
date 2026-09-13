@@ -41,10 +41,10 @@ description:
     2026-08-28..30 removed one weekend from the sample.
   refresh: >-
     Marts refresh nightly at 03:00 via cron (dbt/build.sh). The journey/stop-match
-    layer (int_bus_journeys, int_ping_stop_match) is incremental, reprocessing only
-    the trailing ~2 days each run; everything downstream, including every mart in
-    this contract, is still fully rebuilt each run from that incrementally-maintained
-    base.
+    layer (int_pings_segmented_to_journeys, int_pings_matched_to_stops) is
+    incremental, reprocessing only the trailing ~2 days each run; everything
+    downstream, including every mart in this contract, is still fully rebuilt
+    each run from that incrementally-maintained base.
 
 servers:
   - server: marts-prod
@@ -61,8 +61,8 @@ servers:
 schema:
   # ---------------------------------------------------------------------------
   - id: mart_eta_model_obj
-    name: mart_eta_model
-    physicalName: mart_eta_model
+    name: eta_models
+    physicalName: eta_models
     logicalType: object
     physicalType: table
     businessName: Travel time model
@@ -259,8 +259,8 @@ schema:
 
   # ---------------------------------------------------------------------------
   - id: mart_line_stops_obj
-    name: mart_line_stops
-    physicalName: mart_line_stops
+    name: line_stops
+    physicalName: line_stops
     logicalType: object
     physicalType: table
     businessName: Line stop sequence
@@ -406,8 +406,8 @@ schema:
 
   # ---------------------------------------------------------------------------
   - id: mart_localities_obj
-    name: mart_localities
-    physicalName: mart_localities
+    name: localities
+    physicalName: localities
     logicalType: object
     physicalType: table
     businessName: Locality gazetteer
@@ -472,8 +472,8 @@ schema:
 
   # ---------------------------------------------------------------------------
   - id: mart_line_localities_obj
-    name: mart_line_localities
-    physicalName: mart_line_localities
+    name: line_localities
+    physicalName: line_localities
     logicalType: object
     physicalType: table
     businessName: Lines serving a locality
@@ -510,7 +510,7 @@ schema:
         required: true
         primaryKey: true
         primaryKeyPosition: 2
-        description: Foreign key to mart_localities.locality_norm.
+        description: Foreign key to localities.locality_norm.
       - id: ll_display
         name: locality
         logicalType: string
@@ -532,8 +532,8 @@ schema:
 
   # ---------------------------------------------------------------------------
   - id: mart_line_punctuality_obj
-    name: mart_line_punctuality
-    physicalName: mart_line_punctuality
+    name: line_punctuality
+    physicalName: line_punctuality
     logicalType: object
     physicalType: table
     businessName: Observed punctuality by line
@@ -609,13 +609,13 @@ slaProperties:
   - property: frequency
     value: 1
     unit: d
-    element: mart_eta_model
+    element: eta_models
     driver: operational
     description: Rebuilt nightly by dbt/build.sh. The consumer reloads when the file mtime changes.
   - property: latency
     value: 26
     unit: h
-    element: mart_eta_model
+    element: eta_models
     driver: operational
     description: >-
       Maximum age of the marts before the consumer flags them stale. The API
@@ -624,12 +624,12 @@ slaProperties:
   - property: retention
     value: 21
     unit: d
-    element: mart_eta_model
+    element: eta_models
     driver: analytics
     description: The fit uses a rolling 21-day window of positions, downsampled to one ping per vehicle per 3 minutes.
   - property: timeOfAvailability
     value: 04:00+01:00
-    element: mart_eta_model
+    element: eta_models
     driver: operational
     description: Rebuild is scheduled off-peak; it saturates the host and must not overlap the morning traffic.
 

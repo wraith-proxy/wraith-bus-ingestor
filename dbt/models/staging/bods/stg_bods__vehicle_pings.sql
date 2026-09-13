@@ -14,10 +14,11 @@
 
   NOTE ON DATE COVERAGE: the extract window is NOT contiguous. The feed had an
   outage over 2026-08-28..08-30, so those days have no file at all. Nothing in
-  this project may assume consecutive dates -- int_bus_journeys breaks a journey
-  on any gap over 20 minutes, so a four-day hole is handled by the same rule
-  that handles a bus going into the depot, and int_journey_shape separately
-  discards journeys whose end falls inside a coverage hole.
+  this project may assume consecutive dates -- int_pings_segmented_to_journeys
+  breaks a journey on any gap over 20 minutes, so a four-day hole is handled by
+  the same rule that handles a bus going into the depot, and
+  int_journeys_shaped_and_directed separately discards journeys whose end falls
+  inside a coverage hole.
 #}
 
 {#-
@@ -52,7 +53,7 @@ with source as (
         {%- for col, type in optional %},
         {% if col in available %}try_cast({{ col }} as {{ type }}){% else %}cast(null as {{ type }}){% endif %} as {{ col }}
         {%- endfor %}
-    from {{ source('questdb', 'bus_positions') }}
+    from {{ source('bods', 'bus_positions') }}
 
 ),
 
@@ -124,10 +125,11 @@ derived as (
         -- The feed's own DirectionRef, normalised, or NULL when we do not have
         -- one. Deliberately NOT coalesced to '*' here: nearly the whole
         -- training set predates 2026-09-12 and would collapse into a single
-        -- direction bucket, and mart_line_stops would then interleave the
+        -- direction bucket, and line_stops would then interleave the
         -- outbound and inbound stop orders into one meaningless sequence.
-        -- int_journey_shape infers a direction per journey instead, and only
-        -- mart_eta_model ever uses '*', as the name of its fallback grain.
+        -- int_journeys_shaped_and_directed infers a direction per journey
+        -- instead, and only eta_models ever uses '*', as the name of its
+        -- fallback grain.
         -- A handful of operators fill DirectionRef with their own scheme
         -- ('2', 'eastbound'); those are treated as "no usable direction".
         case lower(trim(coalesce(direction, '')))

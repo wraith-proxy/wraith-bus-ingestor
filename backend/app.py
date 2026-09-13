@@ -77,7 +77,7 @@ MAX_SCHEDULE_AHEAD_S = 12 * 3600   # ...or this far in the future
 # full 24 hours. Those are not late buses, they are yesterday's buses.
 MAX_POSITION_AGE_S = 600
 
-# mart_eta_model is fitted on distance travelled ALONG the route, but all this
+# eta_models is fitted on distance travelled ALONG the route, but all this
 # service knows at request time is the straight line to the destination stop.
 # Median path_km/straight_km over 356k historical journeys is 1.304, so feed the
 # model the quantity it was trained on rather than a systematic 30% undercount.
@@ -144,7 +144,7 @@ OPERATOR_RE = re.compile(r'^[A-Za-z0-9_]{1,16}$')
 DAY_TYPES = ('weekday', 'sat', 'sun', '*')
 
 # A service number is not a route. '88' is several unrelated routes in different
-# towns that happen to share a number, and mart_line_stops keys on the number
+# towns that happen to share a number, and line_stops keys on the number
 # alone, so a low-numbered line's merged stop set can zig-zag between counties.
 # Cap what we will draw either way -- riders only board at a stop, never on
 # the road between two, so a plausible road-snapped guess through even a
@@ -207,7 +207,7 @@ def classify_status(delay_s):
 
 
 def normalise_query(q):
-    """Match mart_localities.locality_norm: upper, punctuation stripped,
+    """Match localities.locality_norm: upper, punctuation stripped,
     whitespace collapsed, trimmed."""
     if not q:
         return ''
@@ -280,7 +280,7 @@ def hour_band(dt):
 
 
 def pick_model(models, operator, line, direction, day, band):
-    """Best-matching mart_eta_model row, most specific grain first.
+    """Best-matching eta_models row, most specific grain first.
 
     Grain is (operator, line, direction, day_type, hour_band); each fallback
     row is refitted at its own grain rather than averaged.
@@ -448,21 +448,21 @@ def _load_marts(path):
         # Old-shape marts have no day_type (or operator) column; select a
         # literal '*' in its place so every row lands on the agnostic rungs
         # of the chain rather than failing to load at all.
-        eta_cols = _table_columns(con, 'mart_eta_model')
+        eta_cols = _table_columns(con, 'eta_models')
         day_expr = 'day_type' if 'day_type' in eta_cols else "'*'"
         eta_op_expr = 'operator' if 'operator' in eta_cols else "'*'"
         if day_expr != 'day_type':
             log_once('marts-noday-eta',
-                     'mart_eta_model has no day_type column; treating every model '
+                     'eta_models has no day_type column; treating every model '
                      'as day_type "*" until the marts are rebuilt')
         if eta_op_expr != 'operator':
             log_once('marts-noop-eta',
-                     'mart_eta_model has no operator column; treating every model '
+                     'eta_models has no operator column; treating every model '
                      'as operator "*" until the marts are rebuilt')
         for operator, line, direction, day, band, slope, intercept, r2, n_obs in _fetch(
             con,
             f'SELECT {eta_op_expr}, line, direction, {day_expr}, hour_band, '
-            'slope_s_per_km, intercept_s, r2, n_obs FROM mart_eta_model', 'eta_model'):
+            'slope_s_per_km, intercept_s, r2, n_obs FROM eta_models', 'eta_model'):
             marts['eta'][(operator, line, direction, day, band)] = {
                 'slope_s_per_km': slope, 'intercept_s': intercept,
                 'r2': r2, 'n_obs': n_obs,
@@ -470,7 +470,7 @@ def _load_marts(path):
 
         for norm, locality, lat, lon, n_stops in _fetch(
             con,
-            'SELECT locality_norm, locality, lat, lon, n_stops FROM mart_localities',
+            'SELECT locality_norm, locality, lat, lon, n_stops FROM localities',
             'localities'):
             marts['localities'].append({
                 'locality_norm': norm, 'locality': locality,
@@ -478,24 +478,24 @@ def _load_marts(path):
             })
 
         for line, norm in _fetch(
-            con, 'SELECT line, locality_norm FROM mart_line_localities', 'line_localities'):
+            con, 'SELECT line, locality_norm FROM line_localities', 'line_localities'):
             marts['line_loc'].setdefault(norm, set()).add(line)
 
-        stop_cols = _table_columns(con, 'mart_line_stops')
+        stop_cols = _table_columns(con, 'line_stops')
         sday_expr = 'day_type' if 'day_type' in stop_cols else "'*'"
         sop_expr = 'operator' if 'operator' in stop_cols else "'*'"
         if sday_expr != 'day_type':
             log_once('marts-noday-stops',
-                     'mart_line_stops has no day_type column; treating every stop '
+                     'line_stops has no day_type column; treating every stop '
                      'sequence as day_type "*" until the marts are rebuilt')
         if sop_expr != 'operator':
             log_once('marts-noop-stops',
-                     'mart_line_stops has no operator column; treating every stop '
+                     'line_stops has no operator column; treating every stop '
                      'sequence as operator "*" until the marts are rebuilt')
         for operator, line, direction, day, atco, name, locality, lat, lon, seq, secs in _fetch(
             con,
             f'SELECT {sop_expr}, line, direction, {sday_expr}, atco_code, stop_name, '
-            'locality, lat, lon, seq, median_secs_from_origin FROM mart_line_stops',
+            'locality, lat, lon, seq, median_secs_from_origin FROM line_stops',
             'line_stops'):
             stop = {
                 'atco': atco, 'name': display_name(name), 'locality': locality,
@@ -713,7 +713,7 @@ def progress_delay(row, marts, now_s, operator, line, direction, day, lat, lon):
 
     The feed gives aimed times for the journey's origin and destination only --
     there are no per-stop scheduled times anywhere in SIRI-VM. So we take the
-    SHAPE of the route from our own history (mart_line_stops knows the median
+    SHAPE of the route from our own history (line_stops knows the median
     seconds a journey needs to reach each stop) and stretch it onto THIS
     journey's advertised timetable:
 
@@ -910,10 +910,10 @@ def predict(row, marts, now_s):
     # buses sitting at their destination stop, it lands within a couple of
     # seconds of the truth (median +98 s vs +96 s observed). The stop-sequence
     # version is in principle better -- it knows where a route actually dawdles
-    # -- but mart_line_stops used to key on line number alone, where a number
+    # -- but line_stops used to key on line number alone, where a number
     # like '88' is several unrelated routes merged, so in practice it read ~6
     # minutes late. operator joined the mart grain 2026-09-12 (see
-    # mart_line_stops), which fixes that for a bus whose operator has enough
+    # line_stops), which fixes that for a bus whose operator has enough
     # observed history to fit its own sequence; for everything else this
     # still falls back to the same merged, pooled ('*') sequence as before.
     # Keeping this as the fallback for circular routes only, rather than
@@ -966,12 +966,12 @@ def stops_for(marts, operator, line, direction, day):
     """Stop sequence for a line, preferring the bus's own operator then '*',
     the live day_type then '*', and the feed's direction then its opposite.
 
-    Known approximation: mart_line_stops directions are inferred from journey
+    Known approximation: line_stops directions are inferred from journey
     geometry over historical pings that carried no direction column, so the
     mart's 'outbound' may be the feed's 'inbound' for any given line. Last
     resort is every stop on the line regardless of operator, direction or day,
     so a vocabulary mismatch degrades the answer instead of deleting it --
-    this only triggers for a line mart_line_stops has never observed under
+    this only triggers for a line line_stops has never observed under
     any grain at all, since the '*'/'*' row stops_index_key already falls
     back to exists for every line the mart has any data for."""
     key = stops_index_key(marts['stops'], operator, line, direction, day)
@@ -1382,7 +1382,7 @@ def model_info():
                    ': ' + marts['reload_error'] if marts.get('reload_error') else '',
                    marts['built_at']))
     elif not marts['n_models']:
-        note = 'mart_eta_model missing or empty; predictions disabled'
+        note = 'eta_models missing or empty; predictions disabled'
     elif age is not None and age > STALE_AFTER_HOURS:
         note = 'marts are %.1f days old; still serving predictions' % (age / 24.0)
     elif marts['day_types'] == ['*']:

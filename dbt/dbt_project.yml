@@ -4,8 +4,9 @@ config-version: 2
 
 # Everything here runs against a local DuckDB file (ghost_bus.duckdb) that
 # Flask later opens READ-ONLY. The two most expensive intermediate models
-# (int_bus_journeys, int_ping_stop_match) are incremental -- see their own
-# file headers -- so the scratch warehouse now persists across runs on
+# (int_pings_segmented_to_journeys, int_pings_matched_to_stops) are
+# incremental -- see their own file headers -- so the scratch warehouse now
+# persists across runs on
 # purpose; a normal nightly run only reprocesses the last couple of days for
 # those two. Everything else here is still cheap enough to rebuild from
 # scratch every time, and does.

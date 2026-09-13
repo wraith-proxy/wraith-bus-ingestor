@@ -830,35 +830,35 @@ def test_load_marts_tolerates_both_shapes():
         con = app.duckdb.connect(path)
         if with_day:
             # Current shape: day_type AND operator both present.
-            con.execute('CREATE TABLE mart_eta_model(operator VARCHAR, line VARCHAR, '
+            con.execute('CREATE TABLE eta_models(operator VARCHAR, line VARCHAR, '
                         'direction VARCHAR, day_type VARCHAR, hour_band VARCHAR, '
                         'slope_s_per_km DOUBLE, intercept_s DOUBLE, r2 DOUBLE, n_obs BIGINT)')
-            con.execute("INSERT INTO mart_eta_model VALUES "
+            con.execute("INSERT INTO eta_models VALUES "
                         "('BEVC','88','outbound','weekday','am_peak',140,60,0.8,250),"
                         "('*','88','outbound','weekday','am_peak',150,90,0.7,400),"
                         "('*','88','outbound','sat','*',160,80,0.6,300),"
                         "('*','*','*','*','*',170,70,0.5,9000)")
-            con.execute('CREATE TABLE mart_line_stops(operator VARCHAR, line VARCHAR, '
+            con.execute('CREATE TABLE line_stops(operator VARCHAR, line VARCHAR, '
                         'direction VARCHAR, day_type VARCHAR, atco_code VARCHAR, '
                         'stop_name VARCHAR, locality VARCHAR, lat DOUBLE, lon DOUBLE, '
                         'seq INTEGER, median_secs_from_origin DOUBLE, n_obs BIGINT)')
-            con.execute("INSERT INTO mart_line_stops VALUES "
+            con.execute("INSERT INTO line_stops VALUES "
                         "('BEVC','88','outbound','weekday','A','Alpha_Street','Ashton',53.5,-2.2,1,0,40),"
                         "('*','88','outbound','weekday','A','Alpha_Street','Ashton',53.5,-2.2,1,0,40),"
                         "('*','88','outbound','*','A','Alpha_Street','Ashton',53.5,-2.2,1,0,90)")
         else:
             # Oldest shape: neither day_type nor operator.
-            con.execute('CREATE TABLE mart_eta_model(line VARCHAR, direction VARCHAR, '
+            con.execute('CREATE TABLE eta_models(line VARCHAR, direction VARCHAR, '
                         'hour_band VARCHAR, slope_s_per_km DOUBLE, intercept_s DOUBLE, '
                         'r2 DOUBLE, n_obs BIGINT)')
-            con.execute("INSERT INTO mart_eta_model VALUES "
+            con.execute("INSERT INTO eta_models VALUES "
                         "('88','outbound','am_peak',150,90,0.7,400),"
                         "('*','*','*',170,70,0.5,9000)")
-            con.execute('CREATE TABLE mart_line_stops(line VARCHAR, direction VARCHAR, '
+            con.execute('CREATE TABLE line_stops(line VARCHAR, direction VARCHAR, '
                         'atco_code VARCHAR, stop_name VARCHAR, locality VARCHAR, '
                         'lat DOUBLE, lon DOUBLE, seq INTEGER, '
                         'median_secs_from_origin DOUBLE, n_obs BIGINT)')
-            con.execute("INSERT INTO mart_line_stops VALUES "
+            con.execute("INSERT INTO line_stops VALUES "
                         "('88','outbound','A','Alpha_Street','Ashton',53.5,-2.2,1,0,40)")
         con.close()
 

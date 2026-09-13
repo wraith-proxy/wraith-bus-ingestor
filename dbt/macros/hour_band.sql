@@ -10,7 +10,7 @@
   year a UTC hour is an hour early, and 'am_peak' bucketed on UTC would really
   be 07:00-10:59 local. That is not a rounding detail: it shifts the entire
   peak/off-peak split against the traffic it is supposed to describe, and it
-  puts the morning rush an hour out. stg_bus_pings therefore derives
+  puts the morning rush an hour out. stg_bods__vehicle_pings therefore derives
   ping_local_ts with AT TIME ZONE 'Europe/London' and bands that.
 
   Kept as a macro so staging and any ad-hoc analysis agree on the boundaries.
@@ -18,7 +18,7 @@
 {% macro hour_band(hour_expr) -%}
 case
   -- FROZEN: backend/app.py buckets "now" with exactly these cut points to look
-  -- up mart_eta_model. If the two ever disagree, every lookup silently misses
+  -- up eta_models. If the two ever disagree, every lookup silently misses
   -- its band and falls through to the coarse '*' row, and the per-band fits
   -- become dead weight. Change both or neither.
   when {{ hour_expr }} < 6  then 'night'     -- 00:00-05:59

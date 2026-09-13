@@ -53,14 +53,14 @@
   not ping_local_date -- a stop sequence belongs to a whole journey, and a
   journey's pings must not be split across two incremental batches.
 
-  Unlike int_bus_journeys, no extra read-buffer day is needed: each journey's
+  Unlike int_pings_segmented_to_journeys, no extra read-buffer day is needed: each journey's
   stop-matching is independent of every other journey (no lag()-style
   cross-boundary dependency), so read window = write window = the last 2
   days. The `journeys` CTE below does both the incremental filter and the
   effective "which journeys are new" join restriction in one place.
 
   `delete+insert` with `unique_key='journey_local_date'` is the same
-  partition-replace pattern as int_bus_journeys: delete every existing row
+  partition-replace pattern as int_pings_segmented_to_journeys: delete every existing row
   whose journey_local_date appears in the new batch, then insert the batch.
   The post-hook prunes to the same retention window as extract.py.
 #}
@@ -77,7 +77,7 @@ with journeys as (
         cast(start_ts at time zone 'Europe/London' as date) as journey_local_date,
         start_ping_seq,
         end_ping_seq
-    from {{ ref('int_journey_shape') }}
+    from {{ ref('int_journeys_shaped_and_directed') }}
     {% if is_incremental() %}
     where cast(start_ts at time zone 'Europe/London' as date)
         >= (select max(journey_local_date) from {{ this }}) - interval '2 days'
@@ -103,7 +103,7 @@ pings as (
         p.lon,
         cast(floor(p.lat * 500) as integer) as lat_cell,
         cast(floor(p.lon * 500) as integer) as lon_cell
-    from {{ ref('int_bus_journeys') }} p
+    from {{ ref('int_pings_segmented_to_journeys') }} p
     join journeys j using (journey_key)
     where p.ping_seq between j.start_ping_seq and j.end_ping_seq
 
@@ -131,7 +131,7 @@ stops_spread as (
         s.lon,
         s.lat_cell + o.d_lat as lat_cell,
         s.lon_cell + o.d_lon as lon_cell
-    from {{ ref('stg_naptan_stops') }} s
+    from {{ ref('stg_naptan__stops') }} s
     cross join neighbour_offsets o
 
 ),

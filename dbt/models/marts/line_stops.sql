@@ -25,15 +25,15 @@
 
   Two row sets are emitted: one per real day_type, and one at day_type = '*'
   fitted across all days, so a lookup always resolves even for a line that only
-  runs Monday to Friday. Like mart_eta_model's fallbacks, the '*' set is
+  runs Monday to Friday. Like eta_models' fallbacks, the '*' set is
   rebuilt from the underlying observations rather than merged from the others.
 
   This mart matters more than it used to. The API refuses to estimate circular
   routes geometrically (origin and destination are the same stop, so the
   geometry says "you have arrived" for the whole loop), and falls back to this
   stop sequence instead -- so for those ~340 vehicles this table is the only
-  thing that can produce an ETA at all. int_journey_shape has a dedicated
-  direction rule for circular routes for that reason.
+  thing that can produce an ETA at all. int_journeys_shaped_and_directed has a
+  dedicated direction rule for circular routes for that reason.
 
   HOW GOOD IS THE RESULT? Measured, not assumed: walk the published stops in
   seq order, sum the distance, divide by the route's actual length. A correct
@@ -59,7 +59,7 @@
 
 with matches as (
 
-    select * from {{ ref('int_ping_stop_match') }}
+    select * from {{ ref('int_pings_matched_to_stops') }}
 
 ),
 

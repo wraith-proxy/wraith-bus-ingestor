@@ -14,13 +14,13 @@
 -- row when the global fallback is absent.
 
 select
-    'mart_eta_model is missing the global (*,*,*,*) fallback row' as failure
+    'eta_models is missing the global (*,*,*,*) fallback row' as failure
 
 from (select 1) as always_one_row
 
 where not exists (
     select 1
-    from {{ ref('mart_eta_model') }}
+    from {{ ref('eta_models') }}
     where line = '*'
       and direction = '*'
       and day_type = '*'

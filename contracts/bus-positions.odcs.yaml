@@ -176,7 +176,7 @@ schema:
         physicalType: VARCHAR
         description: >-
           NaPTAN ATCO code of the journey's first stop. Joins to
-          mart_line_stops.atco_code. NOT GUARANTEED TO BE AN ATCO CODE: at
+          line_stops.atco_code. NOT GUARANTEED TO BE AN ATCO CODE: at
           least one small operator (OperatorRef ESTS, observed 2026-09-12)
           publishes its internal line code in this field instead -- e.g.
           OriginRef 'k28' for LineRef 'k28'. This is upstream data quality,

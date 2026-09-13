@@ -1,7 +1,7 @@
 version: 2
 
 models:
-  - name: mart_eta_model
+  - name: eta_models
     description: >
       The fitted ETA model: one ordinary-least-squares line per grain, giving
       remaining_secs = intercept_s + slope_s_per_km * remaining_km.
@@ -11,7 +11,7 @@ models:
       add. Eleven grains are emitted, each refitted from the underlying pings
       rather than averaged from the finer rows: five operator-specific grains
       (operator joined the key 2026-09-12, since a line number alone is not a
-      route -- see mart_line_stops) fall back to the original six line-only
+      route -- see line_stops) fall back to the original six line-only
       grains, from (operator, line, direction, band) all the way down to
       ('*', '*', '*', '*', '*'), and are guaranteed a hit.
 
@@ -102,7 +102,7 @@ models:
         description: 3600 / slope. Published because it is the human-readable form of the slope and makes an implausible fit obvious at a glance. Guaranteed to lie in 3..90.
         tests: [not_null]
 
-  - name: mart_localities
+  - name: localities
     description: >
       The place-name index behind GET /api/search. One row per normalised
       locality, built from stops rather than from a gazetteer, so the only
@@ -125,13 +125,13 @@ models:
         description: Stops in the locality. A crude size proxy, so the API can rank Manchester above a hamlet that shares a prefix.
         tests: [not_null]
 
-  - name: mart_line_localities
+  - name: line_localities
     description: >
       Which places each line actually serves, from observed positions rather
       than from any published route description. This is what turns "search
       WILMSLOW" into a set of lines to highlight on the map.
 
-      Same caveat as mart_line_stops: a line number is not a route. Line '88'
+      Same caveat as line_stops: a line number is not a route. Line '88'
       legitimately appears in Sheffield, in Wilmslow and in rural Lancashire
       because three unrelated operators use that number. For a search feature
       that is tolerable -- the user gets a superset and the map shows them where
@@ -142,12 +142,12 @@ models:
         description: Service number. With locality_norm, the primary key.
         tests: [not_null]
       - name: locality_norm
-        description: Normalised place the line was observed in; joins to mart_localities.
+        description: Normalised place the line was observed in; joins to localities.
         tests:
           - not_null
           - relationships:
               arguments:
-                to: ref('mart_localities')
+                to: ref('localities')
                 field: locality_norm
       - name: locality
         description: Human spelling for display.
@@ -166,7 +166,7 @@ models:
       - name: last_seen
         description: Latest observation.
 
-  - name: mart_line_stops
+  - name: line_stops
     description: >
       The observed stop sequence per (operator, line, direction) -- what the
       API answers "what was the last stop" and "what is the next stop" from.
@@ -250,8 +250,8 @@ models:
         description: >
           Which way round the route. Mostly INFERRED from the journey's bearing
           rather than reported by the operator -- see
-          int_journey_shape.direction_inferred. Never '*' here: a stop sequence
-          pooled across both directions is meaningless.
+          int_journeys_shaped_and_directed.direction_inferred. Never '*' here: a
+          stop sequence pooled across both directions is meaningless.
         tests:
           - not_null
           - accepted_values:
@@ -263,7 +263,7 @@ models:
           full row set is emitted per real day_type and again at '*', rebuilt
           from the underlying observations rather than merged, so a lookup
           always resolves -- a Monday-to-Friday line still answers on a Sunday.
-          Bank holidays file as 'weekday'; see mart_eta_model.day_type.
+          Bank holidays file as 'weekday'; see eta_models.day_type.
         tests:
           - not_null
           - accepted_values:
@@ -275,7 +275,7 @@ models:
           - not_null
           - relationships:
               arguments:
-                to: ref('stg_naptan_stops')
+                to: ref('stg_naptan__stops')
                 field: atco_code
       - name: stop_name
         description: Display name. Not unique -- opposite sides of a road share it.
@@ -305,7 +305,7 @@ models:
           other side of the road that a couple of journeys clipped.
         tests: [not_null]
 
-  - name: mart_line_punctuality
+  - name: line_punctuality
     description: >
       Observed lateness per (line, direction, hour_band): median and 90th
       percentile delay in seconds, positive meaning late. The API turns these
@@ -340,7 +340,7 @@ models:
       - name: day_type
         description: >
           Service pattern of the day the journey ran, from the LOCAL date. Bank
-          holidays file as 'weekday'; see mart_eta_model.day_type.
+          holidays file as 'weekday'; see eta_models.day_type.
         tests:
           - not_null
           - accepted_values:
