@@ -41,7 +41,12 @@ set -euo pipefail
 cd "$(dirname "$0")"          # every path below -- and every source in
                               # _sources.yml -- is relative to dbt/
 
-PY=".venv/bin/python"
+# dbt used to keep its own separate .venv (a leftover from before this
+# project moved under uv). One venv, not two: dbt-core and dbt-duckdb are
+# real dependencies in the repo root's pyproject.toml now, so this just
+# points at ../.venv, the same environment `uv sync` at the repo root
+# already manages.
+PY="../.venv/bin/python"
 : "${QUESTDB_HTTP:=http://localhost:9001}"
 : "${EXTRACT_DAYS:=22}"
 : "${SKIP_EXTRACT:=0}"
@@ -61,7 +66,7 @@ NICE=(nice -n 15)
 if command -v ionice >/dev/null 2>&1 && ionice -c3 true >/dev/null 2>&1; then
     NICE=(nice -n 15 ionice -c3)
 fi
-DBT=("${NICE[@]}" .venv/bin/dbt)
+DBT=("${NICE[@]}" ../.venv/bin/dbt)
 
 # extract_days is a dbt var, not just a shell/Python env var, because the
 # incremental models' retention post-hooks prune to this same window --
