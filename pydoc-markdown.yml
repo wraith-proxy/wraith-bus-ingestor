@@ -1,0 +1,18 @@
+# Generates docs/api.md from backend/app.py's own docstrings.
+# Run via `uv run poe docs-api`, or `uv run poe docs-build` (chains it in).
+# search_path is relative to this file, not the cwd it's invoked from.
+loaders:
+  - type: python
+    search_path: [backend]
+    modules: [app]
+
+processors:
+  - type: filter
+    skip_empty_modules: true
+  - type: smart
+  - type: crossref
+
+renderer:
+  type: markdown
+  render_module_header: false
+  descriptive_class_title: false

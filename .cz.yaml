@@ -1,0 +1,67 @@
+commitizen:
+  name: cz_customize
+  version_provider: uv
+  version_scheme: semver
+  major_version_zero: true
+  update_changelog_on_bump: true
+  tag_format: v$version
+  bump_message: ":ghost: chore: release v$current_version -> v$new_version [skip ci]"
+
+  customize:
+    bump_map:
+      Break: MAJOR
+      break: MAJOR
+      Feature: MINOR
+      feature: MINOR
+      Fix: PATCH
+      fix: PATCH
+      Bug: PATCH
+      bug: PATCH
+
+    # Removed '^' to allow emojis/prefixes to exist without breaking the match
+    bump_pattern: '(feature|fix|bug|break|Feature|Fix|Bug|Break)/[A-Z]{3}-\d{5}'
+
+    # Parser: Extracts the type for the changelog even if there's an emoji before it
+    commit_parser: '(?P<change_type>feature|fix|bug|break|Feature|Fix|Bug|Break)/[A-Z]{3}-\d{5}: (?P<message>.*)'
+
+    change_type_map:
+      Break: "Breaking Changes"
+      break: "Breaking Changes"
+      Feature: "Features"
+      feature: "Features"
+      Fix: "Bug Fixes"
+      fix: "Bug Fixes"
+      Bug: "Bug Fixes"
+      bug: "Bug Fixes"
+
+    change_type_order:
+      - break
+      - Break
+      - feature
+      - Feature
+      - fix
+      - Fix
+      - bug
+      - Bug
+
+    changelog_pattern: '(feature|fix|bug|break|Feature|Fix|Bug|Break)/[A-Z]{3}-\d{5}'
+
+    example: '👻 feature/TJP-00001: implement sovereign automation'
+    message_template: '{{change_type}}: {{message}}'
+
+    questions:
+      - name: change_type
+        type: list
+        message: Select the type of change you are committing
+        choices:
+          - {name: "break:   A breaking change", value: break}
+          - {name: "feature: A new feature", value: feature}
+          - {name: "fix:     A standard fix", value: fix}
+          - {name: "bug:     A specific bug fix", value: bug}
+      - name: message
+        type: input
+        message: "Enter a brief description:"
+
+    schema: '<type>/<ticket>: <body>'
+    # Schema stays strict for your local pre-commit hooks
+    schema_pattern: '^.*(feature|fix|bug|break|Feature|Fix|Bug|Break)/[A-Z]{3}-\d{5}: (.*)'

@@ -1,0 +1,110 @@
+services:
+  # PMTiles basemap for the bus map, which lives in ghost-site
+  # (www/slaycoach/bus-map/). ghost-site's nginx proxies /tiles/ to this
+  # container by name over ghost-net.
+  tiles:
+    image: ghcr.io/maplibre/martin
+    container_name: ${TILES_CONTAINER}
+    restart: unless-stopped
+    ports:
+      - "${TILES_PORT}:3000"
+    volumes:
+      - ${MAPS_PATH}:/data
+    command: --config /data/config.yaml --listen-addresses 0.0.0.0:3000 --webui enable-for-all
+    networks:
+      - ghost-net
+
+  db:
+    image: questdb/questdb:latest
+    container_name: ${QUESTDB_CONTAINER}
+    restart: unless-stopped
+    ports:
+      - "${QUESTDB_HTTP_PORT}:9000"
+      - "${QUESTDB_PG_PORT}:8812"
+    volumes:
+      - ${QUESTDB_DATA_PATH}:/var/lib/questdb
+    networks:
+      - ghost-net
+
+  # ghost-site's nginx proxies /api/ to this container by name over ghost-net.
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: ${API_CONTAINER}
+    restart: unless-stopped
+    environment:
+      - QUESTDB_URL=${QUESTDB_URL}
+      - OSRM_URL=${OSRM_URL}
+      - MARTS_PATH=/models/wraith_bus_ingestor.duckdb
+    volumes:
+      # dbt marts, read-only. The whole directory is mounted rather than the
+      # .duckdb file itself: bind-mounting a file that does not exist yet makes
+      # Docker create a directory in its place.
+      - ./dbt:/models:ro
+    networks:
+      - ghost-net
+    depends_on:
+      - osrm
+
+  # Self-hosted road routing (car profile -- OSRM has no bus profile, and a
+  # bus mostly drives the same streets a car does), used to snap /api/route
+  # LineStrings to actual roads instead of straight lines between stops.
+  # Graph built once from a Great-Britain OSM extract -- see osrm_data/build.sh.
+  # No host port: only the api container talks to it, over ghost-net.
+  osrm:
+    image: osrm/osrm-backend
+    container_name: ${OSRM_CONTAINER}
+    restart: unless-stopped
+    command: osrm-routed --algorithm mld /data/great-britain-latest.osrm
+    volumes:
+      - ${OSRM_DATA_PATH}:/data:ro
+    networks:
+      - ghost-net
+
+  # Moves bus_positions partitions older than RETENTION_DAYS off this box and
+  # onto the separate drive at ARCHIVE_PATH, instead of deleting them --
+  # QuestDB's own SET TTL was considered and rejected for this table
+  # specifically because TTL drops data outright. Runs as root: the
+  # partition directories on disk are owned by QuestDB's in-container uid,
+  # which the host user cannot write to.
+  archiver:
+    build:
+      context: .
+      dockerfile: archiver/Dockerfile
+    container_name: ${ARCHIVER_CONTAINER}
+    restart: unless-stopped
+    environment:
+      - QUESTDB_URL=${QUESTDB_URL}
+      - RETENTION_DAYS=${RETENTION_DAYS}
+    volumes:
+      - ${QUESTDB_DATA_PATH}/db:/questdb_data/db
+      - ${ARCHIVE_PATH}:/archive
+    networks:
+      - ghost-net
+    depends_on:
+      - db
+
+  ingestor:
+    build:
+      context: .
+      dockerfile: ingestor/Dockerfile
+    container_name: ${INGESTOR_CONTAINER}
+    dns:
+      - 194.242.2.2
+      - 1.1.1.1
+    restart: unless-stopped
+    environment:
+      - BODS_API_KEY=${BODS_API_KEY}
+      - QUESTDB_URL=${QUESTDB_URL}
+    networks:
+      - ghost-net
+    depends_on:
+      - db
+
+networks:
+  # Owned by ghost-site's own compose file (name: ghost-net, driver: bridge).
+  # ghost-site must be brought up first on a cold boot so this network
+  # already exists -- compose can't express depends_on across projects.
+  ghost-net:
+    external: true

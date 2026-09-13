@@ -1,0 +1,248 @@
+version: 2
+
+models:
+  - name: int_pings_segmented_to_journeys
+    description: >
+      The ping stream cut into journeys. One row per ping, carrying the
+      journey it belongs to and where in that journey it sits.
+
+      Everything hard about this dataset is handled here. A vehicle reference is
+      reused all day and across operators, buses keep transmitting while parked
+      on a terminus stand, and the feed gives us no journey identifier for any
+      historical row -- so "which pings belong to one run of the route" has to
+      be reconstructed. Six break conditions do it; the model header explains
+      each and names its ceiling.
+
+      Incremental (see the model's own header for the read/write window and
+      why the key is derived the way it is): three downstream models scan it,
+      and recomputing the window functions over the full retained history
+      every run was the single most expensive step in the project before that.
+    columns:
+      - name: journey_key
+        description: >
+          Synthetic journey identifier, '<bus_id>#<epoch_ms of its first ping>'.
+          Deterministic for a given physical journey regardless of how wide a
+          window it was read through -- see the model header for why that
+          matters once this became incremental.
+        tests: [not_null]
+      - name: ping_seq
+        description: Position of this ping within its journey, 1-based. With journey_key it is the primary key of this table.
+        tests: [not_null]
+      - name: hop_km
+        description: >
+          Great-circle distance from the previous ping. Forced to zero on the
+          first ping of a journey, where the previous ping belongs to a
+          different run and is often in another town.
+      - name: cum_km
+        description: >
+          Running path length from the journey's first ping. Measured as the sum
+          of straight hops between 3-minute samples, so it cuts corners and
+          understates the true road distance by roughly 10-20% on winding urban
+          routes. Consistent, which is what the regression needs.
+      - name: first_moving_seq
+        description: >
+          ping_seq of the first ping at which the bus was actually moving
+          (>= 50 m in a bucket). NULL if the journey never moved at all.
+      - name: last_moving_seq
+        description: >
+          ping_seq of the last moving ping. int_journeys_shaped_and_directed
+          trims the journey to [first_moving_seq, last_moving_seq]: the
+          stationary tail at the terminus is real time but not travel, and
+          leaving it in absorbed into a large positive regression intercept.
+          Measured: trimming moved r2 from 0.52 to 0.69.
+      - name: journey_n_pings
+        description: Ping count of the UNtrimmed journey; kept for diagnostics, not used as a filter.
+      - name: journey_start_ts
+        description: First ping time of the untrimmed journey.
+      - name: journey_end_ts
+        description: Last ping time of the untrimmed journey.
+
+  - name: int_journeys_shaped_and_directed
+    description: >
+      One row per journey: where it ran, how far, how long, and which way round
+      the route. Implausible journeys are dropped here, so every downstream
+      model can take this table at face value.
+
+      Also where direction is decided. The feed's DirectionRef is NULL for the
+      entire historical training set, and line_stops is unusable without a
+      direction -- the outbound and inbound stop orders would interleave into
+      one sequence and the API's next-stop answer would be wrong. So a direction
+      is INFERRED from the journey's first-to-last compass bearing against the
+      line's modal bearing. It is a heuristic, and it is labelled as one.
+    columns:
+      - name: journey_key
+        description: Primary key. One row per surviving journey.
+        tests: [not_null, unique]
+      - name: line
+        description: Service number. Not a route identifier -- see stg_bods__vehicle_pings.line.
+        tests: [not_null]
+      - name: feed_direction
+        description: The operator's DirectionRef if the feed supplied one for any ping of this journey, else NULL. Currently NULL for every row.
+      - name: direction_inferred
+        description: >
+          HEURISTIC, not observed, by one of two rules depending on route shape.
+          LINEAR routes: the journey's first-to-last bearing compared against
+          the line's reference bearing (the circular mean of its modal 45-degree
+          bin); within 90 degrees is 'outbound', otherwise 'inbound'.
+          CIRCULAR routes: the bearing rule is worse than useless, because a
+          loop ends where it started and its bearing is GPS noise -- identical
+          loops would be scattered at random between the two directions. Those
+          use the SIGN OF THE ENCLOSED AREA instead (shoelace formula), which
+          asks "which way round" rather than "which way along" and always
+          agrees between two buses running the same loop the same way.
+          The circulation sense is mapped onto the same 'outbound'/'inbound'
+          tokens rather than introducing new ones: the names are arbitrary for a
+          loop, and new tokens would break every direction lookup in the API for
+          no gain. What matters is that the bucketing is consistent.
+          The upgrade path for both rules is to stop inferring once enough
+          post-2026-09-12 data has accumulated for the real DirectionRef.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['inbound', 'outbound']
+      - name: is_circular_line
+        description: >
+          Whether the line is treated as a loop route: median straight_km /
+          path_km across its journeys below 0.35, i.e. the typical journey ends
+          up much nearer its start than the distance it covered. Decided per
+          LINE rather than per journey, so one short-turn working on a loop
+          route is not bucketed by a different rule than the rest of its line.
+          Ceiling: 0.35.
+      - name: line_median_linearity
+        description: The median straight_km / path_km behind is_circular_line. 1.0 is a perfectly straight A-to-B run, 0.0 returns exactly to its start.
+      - name: signed_area_2
+        description: >
+          Twice the signed area the journey's path encloses (shoelace formula,
+          lon as x and lat as y). Only its SIGN is used -- positive is
+          anticlockwise, negative clockwise -- and only for circular lines.
+      - name: direction
+        description: >
+          The direction actually used downstream -- coalesce(feed_direction,
+          direction_inferred). The feed always wins where it has an opinion, so
+          this improves on its own as real DirectionRef data ages in. Never '*':
+          '*' names a fallback grain of the model, not a real direction of
+          travel.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['inbound', 'outbound', 'clockwise', 'anticlockwise']
+      - name: hour_band
+        description: The band the journey STARTED in, from local time. A journey is short enough that using one band per journey keeps it inside one grain of the punctuality aggregate.
+        tests: [not_null]
+      - name: day_type
+        description: The service pattern of the local date the journey set off on. One value per journey, for the same reason as hour_band.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['weekday', 'sat', 'sun']
+      - name: n_pings
+        description: Pings in the trimmed journey. At least 5 by construction -- fewer is not enough shape to measure anything.
+      - name: start_cum_km
+        description: cum_km at the trimmed start, subtracted downstream so distances are measured from where the journey actually began moving.
+      - name: start_ping_seq
+        description: ping_seq of the trimmed start, so downstream models can re-slice int_pings_segmented_to_journeys to the same window.
+      - name: end_ping_seq
+        description: ping_seq of the trimmed end.
+      - name: path_km
+        description: Distance travelled along the observed path between the trimmed start and end. At least 0.5 km by construction.
+      - name: straight_km
+        description: >
+          Crow-flies distance from first to last position. Mostly a diagnostic:
+          straight_km / path_km near zero means the journey returned to where it
+          started, which is how the terminus-layover problem was found.
+      - name: duration_secs
+        description: Trimmed journey duration. Constrained to 4 minutes .. 5 hours; outside that it is a fragment or a failed segmentation.
+      - name: mean_speed_kmh
+        description: path_km over duration. Constrained to 1..90 km/h -- below is a parked bus with drifting GPS, above is a vehicle-ref collision the segmentation failed to split.
+      - name: journey_bearing
+        description: Compass bearing from the journey's first position to its last, 0-360. The input to direction inference.
+      - name: reference_bearing
+        description: The line's representative heading, used as the axis that splits its journeys into two directions.
+      - name: dest_aimed_arr_ts
+        description: Scheduled arrival, when the feed gave one. The sole input to line_punctuality and currently NULL on every surviving journey.
+
+  - name: int_pings_measured_to_journey_end
+    description: >
+      The training set for the ETA regression: for every ping of every surviving
+      journey, how far and how long was left to run.
+
+      This is the whole modelling idea in one table. remaining_km is the
+      independent variable, remaining_secs the dependent one, and
+      eta_models is eleven GROUP BYs over it.
+    columns:
+      - name: journey_key
+        description: The journey this training row came from. With ping_seq, the primary key.
+        tests: [not_null]
+      - name: ping_seq
+        description: Position within the journey. Always at least two short of the end -- see remaining_km.
+        tests: [not_null]
+      - name: line
+        description: Service number, one of the grain columns of the fitted model.
+        tests: [not_null]
+      - name: direction
+        description: Journey direction, inferred or observed; a grain column of the fitted model.
+        tests: [not_null]
+      - name: hour_band
+        description: >
+          The band of THIS ping, not of the journey. The API looks the model up
+          by the band of the current clock time, so training rows have to be
+          bucketed the same way -- a journey starting at 09:50 correctly
+          contributes its first pings to am_peak and the rest to inter.
+        tests: [not_null]
+      - name: day_type
+        description: >
+          The day pattern of THIS ping, from local time -- not of the journey.
+          It matters at the seam: a journey leaving at 23:50 on Saturday is
+          still running at 00:10 on Sunday, and the API asking "what is the pace
+          right now" at 00:10 is asking a Sunday question.
+        tests: [not_null]
+      - name: remaining_km
+        description: >
+          Path distance from this ping to the journey's final ping. Always
+          strictly positive: the last two pings of every journey are dropped
+          because they sit at remaining ~= 0, carry no information about pace,
+          and left in they flatten r2 and drag the intercept toward zero.
+        tests: [not_null]
+      - name: remaining_secs
+        description: Seconds from this ping to the journey's final ping. The regression target.
+        tests: [not_null]
+
+  - name: int_pings_matched_to_stops
+    description: >
+      Every ping snapped to the nearest NaPTAN bus stop within 120 m, or
+      dropped. About 90% of pings match, at a median of 30 m.
+
+      The implementation is the interesting part of this project: a naive
+      nearest-neighbour search is 13M pings x 344k stops, which is not slow but
+      impossible. Binning both sides onto a 0.002-degree integer grid and
+      replicating each stop into its 3x3 cell neighbourhood turns it into a hash
+      join on an integer pair, and haversine is then paid only on the handful of
+      candidates that could possibly be in range. The model header walks through
+      why the cell size and the match radius have to be chosen together.
+    columns:
+      - name: journey_key
+        description: The journey the ping belongs to. With ping_seq, the primary key.
+        tests: [not_null]
+      - name: ping_seq
+        description: Position within the journey.
+        tests: [not_null]
+      - name: atco_code
+        description: The matched stop. One winner per ping -- the nearest candidate, ties broken on atco_code so rebuilds are deterministic.
+        tests: [not_null]
+      - name: dist_km
+        description: Distance from ping to matched stop. At most 0.120 by construction. Ceiling -- tighten if stops on opposite sides of a dual carriageway start cross-matching.
+      - name: secs_from_origin
+        description: >
+          Seconds between the journey's start and this ping. Quantised to
+          multiples of 180 by the 3-minute sampling, which is why
+          line_stops needs a continuous tie-break to order stops that share
+          a median.
+      - name: day_type
+        description: The day pattern of the JOURNEY (the local date it set off), not of the individual ping -- a stop sequence belongs to a whole run.
+        tests: [not_null]
+      - name: locality_norm
+        description: Normalised place name of the matched stop; the key line_localities groups on.
+        tests: [not_null]

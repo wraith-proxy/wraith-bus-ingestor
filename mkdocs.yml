@@ -1,0 +1,47 @@
+site_name: wraith-bus-ingestor
+site_description: Live UK bus tracking data platform -- BODS ingest, QuestDB, dbt/DuckDB ETA model, Flask API
+site_author: Thomas Peoples
+repo_url: https://git.thomaspeoples.com/thomaspeoples/wraith-bus-ingestor
+edit_uri: edit/main/docs/
+site_url: https://www.thomaspeoples.com/gitea-repos/wraith-bus-ingestor/
+use_directory_urls: true
+
+theme:
+  name: material
+  palette:
+    - scheme: slate
+      primary: teal
+      accent: cyan
+  features:
+    - navigation.tabs
+    - content.code.copy
+
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Bus Platform: bus-platform.md
+  - Contracts: contracts.md
+  - Operations: operations.md
+  - Roadmap: ROADMAP.md
+  - Python API: api.md
+  - dbt Docs: dbt/index.html
+
+plugins:
+  - search
+
+markdown_extensions:
+  - pymdownx.snippets:
+      base_path: ["."]
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - admonition
+  - pymdownx.details
+
+extra:
+  links:
+    - icon: material/home
+      link: https://www.thomaspeoples.com/
+      name: Back to Main Site

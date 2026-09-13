@@ -1,0 +1,296 @@
+# Open Data Contract Standard v3.2.0
+#
+# PRODUCER: ingestor/ingest.py, polling the DfT Bus Open Data Service SIRI-VM feed
+# CONSUMER: the wraith_bus_ingestor dbt project (via dbt/extract.py) AND the Flask API,
+#           which reads the live tail of this table directly
+#
+# This is the contract at the ingest boundary. It documents what the ingestor
+# guarantees to land in QuestDB, and -- just as importantly -- what it does NOT
+# guarantee, because this feed is considerably less trustworthy than it looks.
+---
+apiVersion: v3.2.0
+kind: DataContract
+id: 2b7d1e64-9a03-4f18-8c52-1d7e6b4a9f30
+name: wraith_bus_ingestor_positions
+version: 2.0.0
+status: active
+domain: transit
+tenant: ghost-stack
+tags: ['transit', 'bus', 'realtime', 'questdb', 'siri-vm']
+
+description:
+  purpose: >-
+    Raw vehicle position and journey records for buses across mainland Great
+    Britain, one row per vehicle per feed poll, appended every 60 seconds and
+    retained as a time series.
+  usage: >-
+    Two consumers with different needs. The API reads only the newest row per
+    vehicle within a five-minute window. dbt extracts a rolling 21-day window
+    downsampled to one row per vehicle per three minutes; it never reads the
+    full table, which is approaching a billion rows.
+  limitations: >-
+    THE FEED REPUBLISHES DEAD RECORDS. A vehicle that has finished for the day
+    keeps appearing with its last known position and its original RecordedAtTime,
+    so a row arriving now is not evidence that a bus is moving now. Measured on a
+    live poll, 32% of vehicles carried a position over five minutes stale and 29%
+    over thirty minutes, out to a full 24 hours. Consumers MUST judge freshness on
+    `recorded_at`, never on `timestamp`. Vehicles are also left logged on to a
+    completed journey while starting the next one, so the aimed times on a row may
+    belong to a working the bus finished an hour ago. Vehicle references are not
+    globally unique -- the same short `bus_id` is reused by unrelated operators in
+    different towns.
+
+servers:
+  - server: questdb-prod
+    type: custom
+    host: db
+    port: 9000
+    database: qdb
+    format: ilp
+    environment: prod
+    description: >-
+      QuestDB, written over Influx Line Protocol on the REST port and read over
+      the HTTP query API. Reachable as http://db:9000 inside the compose network
+      and http://localhost:9001 from the host.
+
+schema:
+  - id: bus_positions_obj
+    name: bus_positions
+    physicalName: bus_positions
+    logicalType: object
+    physicalType: table
+    businessName: Live vehicle positions
+    description: Append-only time series of SIRI-VM VehicleActivity records.
+    dataGranularityDescription: One row per vehicle per poll, roughly every 30 seconds per vehicle.
+    quality:
+      - id: positions_ingest_is_live
+        type: sql
+        dimension: timeliness
+        severity: error
+        businessImpact: operational
+        description: The ingestor should land several thousand vehicles per poll. Silence means it has died or the API key has lapsed.
+        query: |
+          SELECT count() FROM {object}
+        mustBeGreaterThan: 1000
+      - id: positions_schedule_capture
+        type: text
+        dimension: completeness
+        severity: info
+        description: >-
+          The schedule columns (origin_ref through recorded_at) were added on
+          2026-09-12. Rows before that timestamp have them NULL, permanently.
+          Consumers must treat them as optional, not merely as occasionally
+          missing.
+    properties:
+      - id: pos_bus_id
+        name: bus_id
+        businessName: Vehicle reference
+        logicalType: string
+        physicalType: SYMBOL
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 1
+        description: >-
+          Operator's vehicle reference, spaces and commas replaced with
+          underscores. NOT globally unique: short numeric references such as
+          '3104' are reused by unrelated operators, so a bus_id alone can denote
+          several physical vehicles in different towns.
+        examples: ['WU24_ZMZ', 'A2BV-24', '7516']
+      - id: pos_timestamp
+        name: timestamp
+        businessName: Ingest time
+        logicalType: date
+        physicalType: TIMESTAMP
+        required: true
+        partitioned: true
+        partitionKeyPosition: 1
+        description: >-
+          When WE wrote the row, not when the position was measured. Designated
+          timestamp, partitioned by day. Useless as a freshness signal because a
+          replayed dead record gets a fresh one every poll.
+      - id: pos_recorded_at
+        name: recorded_at
+        businessName: Position measured at
+        logicalType: integer
+        physicalType: LONG
+        description: >-
+          SIRI RecordedAtTime in epoch milliseconds -- when the vehicle actually
+          reported this position. THE ONLY VALID FRESHNESS SIGNAL. The consuming
+          API discards vehicles whose recorded_at is more than 10 minutes old.
+          Null on rows ingested before 2026-09-12.
+      - id: pos_line
+        name: line
+        businessName: Service number
+        logicalType: string
+        physicalType: SYMBOL
+        required: true
+        description: LineRef. A published service number, not a unique route identifier.
+        examples: ['192', 'X66', '88']
+      - id: pos_lat
+        name: lat
+        logicalType: number
+        physicalType: DOUBLE
+        required: true
+        description: WGS84 latitude. Consumers filter to the GB bounding box; the feed occasionally emits nulls and zeroes.
+      - id: pos_lon
+        name: lon
+        logicalType: number
+        physicalType: DOUBLE
+        required: true
+      - id: pos_bearing
+        name: bearing
+        logicalType: number
+        physicalType: DOUBLE
+        description: Compass degrees. Absent for roughly 40% of vehicles and written as 0.0 when missing, so 0.0 is ambiguous between due north and unknown.
+      - id: pos_operator
+        name: operator
+        logicalType: string
+        physicalType: SYMBOL
+        description: OperatorRef, a National Operator Code. Null before 2026-09-12.
+        examples: ['BEVC', 'ANEA', 'A2BV']
+      - id: pos_direction
+        name: direction
+        logicalType: string
+        physicalType: SYMBOL
+        description: DirectionRef as published. Null before 2026-09-12.
+        enum:
+          - value: inbound
+          - value: outbound
+      - id: pos_journey_ref
+        name: journey_ref
+        businessName: Dated journey reference
+        logicalType: string
+        physicalType: VARCHAR
+        description: >-
+          DatedVehicleJourneyRef. Identifies the working, and a change in it is
+          the cleanest signal that a vehicle has rolled onto its next trip.
+          Stored as a field rather than a SYMBOL because it is high cardinality.
+      - id: pos_published_line
+        name: published_line
+        logicalType: string
+        physicalType: VARCHAR
+      - id: pos_origin_ref
+        name: origin_ref
+        businessName: Origin stop ATCO
+        logicalType: string
+        physicalType: VARCHAR
+        description: >-
+          NaPTAN ATCO code of the journey's first stop. Joins to
+          line_stops.atco_code. NOT GUARANTEED TO BE AN ATCO CODE: at
+          least one small operator (OperatorRef ESTS, observed 2026-09-12)
+          publishes its internal line code in this field instead -- e.g.
+          OriginRef 'k28' for LineRef 'k28'. This is upstream data quality,
+          not an ingest defect; the ingestor records SIRI verbatim. Consumers
+          MUST treat a failed ATCO lookup as "unknown", never as an error,
+          which is exactly what happens today (the value simply misses every
+          key in stop_by_atco).
+        examples: ['1800STIN0P1']
+      - id: pos_origin_name
+        name: origin_name
+        logicalType: string
+        physicalType: VARCHAR
+        description: Origin stop name with spaces replaced by underscores by the upstream feed. Consumers must de-underscore for display.
+        examples: ['Stockport_Interchange']
+      - id: pos_dest_ref
+        name: dest_ref
+        businessName: Destination stop ATCO
+        logicalType: string
+        physicalType: VARCHAR
+      - id: pos_dest_name
+        name: dest_name
+        logicalType: string
+        physicalType: VARCHAR
+      - id: pos_origin_aimed_dep
+        name: origin_aimed_dep
+        businessName: Aimed departure
+        logicalType: integer
+        physicalType: LONG
+        description: >-
+          OriginAimedDepartureTime in epoch milliseconds. MAY BELONG TO A
+          COMPLETED JOURNEY -- a vehicle left logged on advertises the working it
+          has already finished. Consumers must sanity-check it against the
+          current time before treating it as this trip's schedule.
+      - id: pos_dest_aimed_arr
+        name: dest_aimed_arr
+        businessName: Aimed arrival
+        logicalType: integer
+        physicalType: LONG
+        description: >-
+          DestinationAimedArrivalTime in epoch milliseconds. The only scheduled
+          time available for the whole journey; SIRI-VM carries NO per-stop
+          scheduled times, which is why intermediate arrival times throughout
+          this system are observed rather than timetabled.
+      - id: pos_block_ref
+        name: block_ref
+        logicalType: string
+        physicalType: VARCHAR
+        description: BlockRef, the vehicle's duty. Captured but not yet consumed.
+
+slaProperties:
+  - property: frequency
+    value: 60
+    unit: s
+    driver: operational
+    description: Poll interval of the ingest loop.
+  - property: latency
+    value: 10
+    unit: m
+    element: bus_positions.recorded_at
+    driver: operational
+    description: >-
+      Maximum age of recorded_at for a vehicle to count as live. Beyond this the
+      consuming API drops the vehicle entirely rather than drawing a frozen bus.
+  - property: retention
+    value: 35
+    unit: d
+    driver: analytics
+    description: >-
+      Archived, not deleted. The archiver service (archiver/archive.py)
+      DETACHes any day partition older than 35 days and copies it to a
+      separate drive (ARCHIVE_PATH, currently a 3.5" SATA disk at
+      /mnt/archive), verified byte-for-byte before the local copy is freed --
+      QuestDB's own DROP-based TTL was considered and rejected for this
+      table specifically because it destroys data outright. bus_positions
+      itself also carries a QuestDB-native `SET TTL 90 DAYS` as a backstop
+      only: at 35-day archival the table should never actually reach 90
+      days old, so that TTL firing at all means the archiver has been
+      broken for two months, and disk protection wins over data loss at
+      that point. Sized to the host SSD, not to any analytical need: at the
+      ~14M rows/day this feed's current north-of-England bounding box
+      produces (~46 bytes/row on disk), a full year would be ~237GB, more
+      than that SSD's entire volume. Widening the bounding box multiplies
+      both figures -- a same-instant measurement against the full Great
+      Britain extent on 2026-09-12 showed 4.72x the vehicle count of the
+      current box.
+
+support:
+  - channel: ghost-stack-ops
+    tool: email
+    scope: interactive
+    url: mailto:hello@thomaspeoples.com
+
+team:
+  - username: thomaspeoples
+    role: Data Product Owner
+    dateIn: '2026-09-12'
+
+customProperties:
+  - property: producer
+    value: ingestor/ingest.py
+  - property: upstreamSource
+    value: https://data.bus-data.dft.gov.uk/api/v1/datafeed/ (DfT Bus Open Data Service, SIRI-VM)
+  - property: boundingBox
+    value: >-
+      -6.3,49.9,1.8,58.75 (mainland Great Britain; widened from the original
+      north-of-England box '-4.0,53.0,-1.0,54.6' on 2026-09-12). Excludes
+      Northern Ireland, Isle of Man and the Channel Islands (not in BODS
+      regardless) and Orkney, Shetland, the Outer Hebrides and the Scillies
+      (rectangular bbox, so Isle of Wight still sneaks in against the
+      mainland south coast). A same-instant measurement showed those
+      exclusions cost 129 of 24,536 GB-wide vehicles, ~0.5%.
+  - property: downstreamContract
+    value: contracts/bus-marts.odcs.yaml
+  - property: knownFeedOutage
+    value: '2026-08-28 to 2026-08-30 inclusive: no rows. 2026-08-27 and 2026-08-31 partial.'
+
+contractCreatedTs: '2026-09-12T11:00:00+01:00'

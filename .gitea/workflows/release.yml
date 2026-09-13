@@ -1,0 +1,23 @@
+name: 'Sovereign Release'
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  release:
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    runs-on: ghost-runner
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITEA_TOKEN }}
+
+      - name: Run Ghost Bump
+        uses: https://git.thomaspeoples.com/thomaspeoples/ci-actions/version-bump@main
+        with:
+          gitea_token: ${{ secrets.giteatoken }}
+          api_url: "${{ secrets.giteaurl }}/api/v1"

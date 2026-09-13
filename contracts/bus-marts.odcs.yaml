@@ -1,0 +1,670 @@
+# Open Data Contract Standard v3.2.0
+# https://bitol-io.github.io/open-data-contract-standard/v3.2.0/
+#
+# PRODUCER: the wraith_bus_ingestor dbt project (dbt/), which rebuilds these tables nightly
+# CONSUMER: the Flask bus API (backend/app.py), which opens the file read-only
+#
+# This is the contract across the analytics boundary. The API is not allowed to
+# read anything in wraith_bus_ingestor.duckdb that is not described here -- intermediate
+# and staging models are the producer's private business and may change without
+# notice. Anything below may only change via a version bump.
+#
+# Validate with:  contracts/validate.py contracts/bus-marts.odcs.yaml
+---
+apiVersion: v3.2.0
+kind: DataContract
+id: 9f2c4b10-5d6e-4a33-b0c1-6e8a5d3f1c47
+name: wraith_bus_ingestor_marts
+version: 2.0.0
+status: draft
+domain: transit
+tenant: ghost-stack
+tags: ['transit', 'bus', 'realtime', 'duckdb']
+
+description:
+  purpose: >-
+    Serving tables for live UK bus punctuality. They carry the fitted travel-time
+    model, the stop sequence of each line, the locality gazetteer that powers
+    place search, and observed punctuality by line. Together they let a stateless
+    API turn a raw GPS ping into a red/amber/green answer.
+  usage: >-
+    Opened read-only by the API, loaded fully into memory at start-up and
+    refreshed when the file mtime changes. Every table is small enough to hold in
+    memory; none is intended for row-by-row lookup over a network.
+  limitations: >-
+    Derived from observed vehicle movements, not from a published timetable: the
+    stop sequences and travel times are what buses actually did, not what they
+    were scheduled to do. `line` is a published service number, NOT a unique
+    route -- number 88 is several unrelated routes in different towns, merged
+    here. Day classification does not know about bank holidays, which are filed
+    as 'weekday'. Fitted on a non-contiguous date range; a feed outage on
+    2026-08-28..30 removed one weekend from the sample.
+  refresh: >-
+    Marts refresh nightly at 03:00 via cron (dbt/build.sh). The journey/stop-match
+    layer (int_pings_segmented_to_journeys, int_pings_matched_to_stops) is
+    incremental, reprocessing only the trailing ~2 days each run; everything
+    downstream, including every mart in this contract, is still fully rebuilt
+    each run from that incrementally-maintained base.
+
+servers:
+  - server: marts-prod
+    type: duckdb
+    database: ./dbt/wraith_bus_ingestor.duckdb
+    schema: main
+    environment: prod
+    description: >-
+      Single-file DuckDB warehouse, bind-mounted read-only into the API
+      container at /models/wraith_bus_ingestor.duckdb. The producer builds into a
+      temporary file and renames it into place, so a reader sees either the
+      whole previous version or the whole new one, never a partial write.
+
+schema:
+  # ---------------------------------------------------------------------------
+  - id: mart_eta_model_obj
+    name: eta_models
+    physicalName: eta_models
+    logicalType: object
+    physicalType: table
+    businessName: Travel time model
+    description: >-
+      Ordinary least squares fit of remaining journey seconds on remaining
+      kilometres, one row per temporal grain. The fitted coefficients ARE the
+      model -- there is no serialised artefact and no inference service.
+    dataGranularityDescription: One row per (operator, line, direction, day_type, hour_band), plus coarser fallback rows using '*'.
+    tags: ['model']
+    quality:
+      - id: eta_model_has_rows
+        metric: rowCount
+        mustBeGreaterThan: 500
+        dimension: completeness
+        severity: error
+        businessImpact: operational
+        description: An empty model table disables every prediction in the API.
+      - id: eta_model_grain_unique
+        metric: duplicateValues
+        mustBe: 0
+        dimension: uniqueness
+        severity: error
+        description: The consumer looks up by this key and takes the first hit; duplicates make the answer arbitrary.
+        arguments:
+          properties: ['operator', 'line', 'direction', 'day_type', 'hour_band']
+      - id: eta_model_global_fallback_exists
+        type: sql
+        dimension: completeness
+        severity: error
+        businessImpact: operational
+        description: >-
+          The consumer walks an eleven-rung fallback chain ending at the global
+          row. Without it a line the model has never seen yields no prediction
+          at all.
+        query: |
+          SELECT COUNT(*) FROM {object}
+          WHERE operator = '*' AND line = '*' AND direction = '*' AND day_type = '*' AND hour_band = '*'
+        mustBe: 1
+      - id: eta_model_speeds_plausible
+        type: sql
+        dimension: accuracy
+        severity: error
+        businessImpact: operational
+        description: >-
+          A fitted grain implying walking pace or motorway speed is a
+          segmentation bug, not a bus. Rejected at source rather than shipped.
+        query: |
+          SELECT COUNT(*) FROM {object}
+          WHERE mean_speed_kmh IS NULL OR mean_speed_kmh < 3 OR mean_speed_kmh > 90
+        mustBe: 0
+    properties:
+      - id: eta_operator
+        name: operator
+        businessName: Operator
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 1
+        description: >-
+          National Operator Code, or '*' for a fit pooled across every
+          operator. Added 2026-09-12; null in the source feed before that
+          date, so every historical ping can only ever feed the '*' rows.
+        examples: ['BEVC', 'ANEA', '*']
+      - id: eta_line
+        name: line
+        businessName: Service number
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 2
+        description: Published service number as the operator advertises it, or '*' for the global fallback row.
+        examples: ['192', 'X66', '*']
+      - id: eta_direction
+        name: direction
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 3
+        description: >-
+          Direction of travel. Inferred from journey geometry for historical
+          pings that predate the feed's DirectionRef, so the label is a
+          heuristic and a line's 'outbound' may not match the feed's.
+        enum:
+          - value: inbound
+          - value: outbound
+          - value: '*'
+            description: Fallback grain, fitted across both directions.
+      - id: eta_day_type
+        name: day_type
+        businessName: Day type
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 4
+        description: >-
+          Service day class, derived from the LOCAL (Europe/London) date.
+          Saturday and Sunday timetables differ from Monday-Friday in both
+          frequency and running time. Bank holidays are not detected and file
+          as 'weekday'.
+        enum:
+          - value: weekday
+          - value: sat
+          - value: sun
+          - value: '*'
+            description: Fallback grain, fitted across all day types.
+      - id: eta_hour_band
+        name: hour_band
+        businessName: Time of day band
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 5
+        description: >-
+          Local-time band. night 22:00-05:59, am_peak 06:00-09:59,
+          inter 10:00-15:59, pm_peak 16:00-18:59, evening 19:00-21:59.
+          MUST match the consumer's banding exactly or every lookup silently
+          resolves one grain coarser.
+        enum:
+          - value: night
+          - value: am_peak
+          - value: inter
+          - value: pm_peak
+          - value: evening
+          - value: '*'
+      - id: eta_slope
+        name: slope_s_per_km
+        businessName: Seconds per kilometre
+        logicalType: number
+        physicalType: DOUBLE
+        required: true
+        semanticType: measure
+        description: >-
+          Regression slope. Seconds of running time per kilometre still to go,
+          inclusive of stop dwell, which is why it reads far slower than road
+          speed. Fitted on along-route distance, so a consumer holding only a
+          straight line must scale it up by the detour factor first.
+        examples: [245.4, 107.5]
+      - id: eta_intercept
+        name: intercept_s
+        businessName: Fixed overhead seconds
+        logicalType: number
+        physicalType: DOUBLE
+        required: true
+        semanticType: measure
+        description: >-
+          Regression intercept, around 400-750 s. It absorbs end-of-journey
+          behaviour -- terminus approach and dwell -- because the target is the
+          journey's last ping rather than the moment of arrival. CONSUMER
+          WARNING: this makes the model unsuitable for computing lateness; it
+          reads about 7 minutes late when checked against buses observed
+          standing at their destination. Use it for a rough ETA only.
+      - id: eta_r2
+        name: r2
+        businessName: R squared
+        logicalType: number
+        physicalType: DOUBLE
+        semanticType: measure
+        description: Coefficient of determination for this grain. Surfaced to end users as model provenance.
+        quality:
+          - id: eta_r2_in_range
+            type: sql
+            dimension: accuracy
+            description: R squared outside 0..1 means the fit did not converge on this grain.
+            query: SELECT COUNT(*) FROM {object} WHERE {property} < 0 OR {property} > 1
+            mustBe: 0
+      - id: eta_n_obs
+        name: n_obs
+        businessName: Observations
+        logicalType: integer
+        physicalType: BIGINT
+        required: true
+        semanticType: measure
+        description: Pings behind this fit. Grains below 200 are dropped rather than published.
+        quality:
+          - id: eta_n_obs_floor
+            type: sql
+            dimension: accuracy
+            severity: error
+            description: A grain fitted on a handful of pings is noise dressed as a model.
+            query: SELECT COUNT(*) FROM {object} WHERE {property} < 200
+            mustBe: 0
+      - id: eta_mean_speed
+        name: mean_speed_kmh
+        businessName: Implied mean speed
+        logicalType: number
+        physicalType: DOUBLE
+        semanticType: measure
+        description: 3600 / slope. Carried for sanity checking and for humans reading the table.
+
+  # ---------------------------------------------------------------------------
+  - id: mart_line_stops_obj
+    name: line_stops
+    physicalName: line_stops
+    logicalType: object
+    physicalType: table
+    businessName: Line stop sequence
+    description: >-
+      The stops each line is observed to call at, in order, with the median time
+      from the start of the journey to each one. Answers "what was the last stop
+      and what is the next one", and is the only way to rate a circular route.
+    dataGranularityDescription: One row per (operator, line, direction, day_type, atco_code).
+    quality:
+      - id: line_stops_has_rows
+        metric: rowCount
+        mustBeGreaterThan: 10000
+        dimension: completeness
+        severity: error
+      - id: line_stops_grain_unique
+        metric: duplicateValues
+        mustBe: 0
+        dimension: uniqueness
+        severity: error
+        arguments:
+          properties: ['operator', 'line', 'direction', 'day_type', 'atco_code']
+      - id: line_stops_day_agnostic_rows_exist
+        type: sql
+        dimension: completeness
+        severity: error
+        description: The consumer falls back to '*' whenever a day-specific sequence is missing.
+        query: SELECT COUNT(*) FROM {object} WHERE day_type = '*'
+        mustBeGreaterThan: 0
+      - id: line_stops_operator_agnostic_rows_exist
+        type: sql
+        dimension: completeness
+        severity: error
+        description: >-
+          The consumer falls back to operator = '*' whenever a bus has no
+          operator, or an operator-specific sequence is missing. Every
+          pre-2026-09-12 observation can only ever land here.
+        query: SELECT COUNT(*) FROM {object} WHERE operator = '*'
+        mustBeGreaterThan: 0
+    properties:
+      - id: stops_operator
+        name: operator
+        businessName: Operator
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 1
+        description: >-
+          National Operator Code, or '*' for the sequence pooled across every
+          operator (the original, merged behaviour, kept as a fallback grain).
+          Added 2026-09-12; null in the source feed before that date.
+        examples: ['BEVC', 'ANEA', '*']
+      - id: stops_line
+        name: line
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 2
+      - id: stops_direction
+        name: direction
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 3
+      - id: stops_day_type
+        name: day_type
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 4
+        enum:
+          - value: weekday
+          - value: sat
+          - value: sun
+          - value: '*'
+      - id: stops_atco
+        name: atco_code
+        businessName: NaPTAN ATCO code
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 5
+        description: National stop identifier. Joins to NaPTAN and to the OriginRef/DestinationRef the live feed publishes.
+        examples: ['1800STIN0P1', '0600MA6154']
+      - id: stops_name
+        name: stop_name
+        logicalType: string
+        physicalType: VARCHAR
+        description: Stop common name, underscores already replaced with spaces.
+      - id: stops_locality
+        name: locality
+        logicalType: string
+        physicalType: VARCHAR
+      - id: stops_lat
+        name: lat
+        logicalType: number
+        physicalType: DOUBLE
+        required: true
+        quality:
+          - id: stops_lat_in_gb
+            type: sql
+            dimension: accuracy
+            query: SELECT COUNT(*) FROM {object} WHERE {property} NOT BETWEEN 49.8 AND 61.0
+            mustBe: 0
+      - id: stops_lon
+        name: lon
+        logicalType: number
+        physicalType: DOUBLE
+        required: true
+        quality:
+          - id: stops_lon_in_gb
+            type: sql
+            dimension: accuracy
+            query: SELECT COUNT(*) FROM {object} WHERE {property} NOT BETWEEN -8.7 AND 2.0
+            mustBe: 0
+      - id: stops_seq
+        name: seq
+        businessName: Position in sequence
+        logicalType: integer
+        physicalType: INTEGER
+        required: true
+        description: Rank of this stop within the line and direction, ordered by median time from origin. Dense from 1.
+      - id: stops_median_secs
+        name: median_secs_from_origin
+        businessName: Median seconds from journey start
+        logicalType: number
+        physicalType: DOUBLE
+        semanticType: measure
+        description: >-
+          Median seconds from the journey's first ping to this stop. Anchored on
+          the start of tracking, not on the scheduled departure, so only
+          DIFFERENCES between two stops are meaningful. Consumers must not treat
+          it as a scheduled time.
+      - id: stops_n_obs
+        name: n_obs
+        logicalType: integer
+        physicalType: BIGINT
+        description: Journeys observed calling here. Stops seen fewer than 5 times are dropped.
+
+  # ---------------------------------------------------------------------------
+  - id: mart_localities_obj
+    name: localities
+    physicalName: localities
+    logicalType: object
+    physicalType: table
+    businessName: Locality gazetteer
+    description: Every settlement that has a bus stop, with its stop centroid. Backs the place search box.
+    dataGranularityDescription: One row per normalised locality name.
+    quality:
+      - id: localities_has_rows
+        metric: rowCount
+        mustBeGreaterThan: 10000
+        dimension: completeness
+        severity: error
+      - id: localities_contains_known_place
+        type: sql
+        dimension: accuracy
+        description: A canary. WILMSLOW is the worked example in the API tests and the docs.
+        query: SELECT COUNT(*) FROM {object} WHERE locality_norm = 'WILMSLOW'
+        mustBe: 1
+    properties:
+      - id: loc_norm
+        name: locality_norm
+        businessName: Normalised locality
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        unique: true
+        primaryKey: true
+        primaryKeyPosition: 1
+        description: >-
+          Upper-cased, punctuation stripped, whitespace collapsed. The consumer
+          normalises the user's search term with exactly this rule; if the two
+          diverge, search silently returns nothing.
+        examples: ['WILMSLOW', 'STOCKPORT']
+        quality:
+          - id: loc_norm_no_nulls
+            metric: nullValues
+            mustBe: 0
+            dimension: completeness
+      - id: loc_display
+        name: locality
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        description: Display form, as NaPTAN spells it.
+        examples: ['Wilmslow', 'Stockport']
+      - id: loc_lat
+        name: lat
+        logicalType: number
+        physicalType: DOUBLE
+        required: true
+        description: Centroid of the locality's stops. Used to fly the map to a search result.
+      - id: loc_lon
+        name: lon
+        logicalType: number
+        physicalType: DOUBLE
+        required: true
+      - id: loc_n_stops
+        name: n_stops
+        logicalType: integer
+        physicalType: BIGINT
+        semanticType: measure
+        description: Stops in this locality. Shown beside each search suggestion to rank them.
+
+  # ---------------------------------------------------------------------------
+  - id: mart_line_localities_obj
+    name: line_localities
+    physicalName: line_localities
+    logicalType: object
+    physicalType: table
+    businessName: Lines serving a locality
+    description: >-
+      Which lines were actually observed passing through which localities, from
+      matched pings rather than from any published route description. This is the
+      join that answers "show me the buses that go through Wilmslow".
+    dataGranularityDescription: One row per (line, locality_norm).
+    quality:
+      - id: line_localities_has_rows
+        metric: rowCount
+        mustBeGreaterThan: 5000
+        dimension: completeness
+        severity: error
+      - id: line_localities_grain_unique
+        metric: duplicateValues
+        mustBe: 0
+        dimension: uniqueness
+        severity: error
+        arguments:
+          properties: ['line', 'locality_norm']
+    properties:
+      - id: ll_line
+        name: line
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 1
+      - id: ll_norm
+        name: locality_norm
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 2
+        description: Foreign key to localities.locality_norm.
+      - id: ll_display
+        name: locality
+        logicalType: string
+        physicalType: VARCHAR
+      - id: ll_n_pings
+        name: n_pings
+        logicalType: integer
+        physicalType: BIGINT
+        semanticType: measure
+        description: Matched pings. At least 20 are required, so one stray GPS fix cannot claim a town.
+      - id: ll_first_seen
+        name: first_seen
+        logicalType: date
+        physicalType: TIMESTAMP WITH TIME ZONE
+      - id: ll_last_seen
+        name: last_seen
+        logicalType: date
+        physicalType: TIMESTAMP WITH TIME ZONE
+
+  # ---------------------------------------------------------------------------
+  - id: mart_line_punctuality_obj
+    name: line_punctuality
+    physicalName: line_punctuality
+    logicalType: object
+    physicalType: table
+    businessName: Observed punctuality by line
+    description: >-
+      Historical lateness at journey end, per line and temporal grain. Requires
+      the aimed times the ingestor only began recording on 2026-09-12, so it
+      covers a far shorter window than the other marts and may legitimately be
+      empty on a fresh install.
+    dataGranularityDescription: One row per (line, direction, day_type, hour_band).
+    quality:
+      - id: punctuality_grain_unique
+        metric: duplicateValues
+        mustBe: 0
+        dimension: uniqueness
+        severity: error
+        arguments:
+          properties: ['line', 'direction', 'day_type', 'hour_band']
+      - id: punctuality_may_be_empty
+        type: text
+        dimension: completeness
+        severity: info
+        description: >-
+          Deliberately NOT asserted non-empty. Schedule capture began
+          2026-09-12; before a full day has accumulated, zero rows is correct
+          rather than a failure.
+    properties:
+      - id: punc_line
+        name: line
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 1
+      - id: punc_direction
+        name: direction
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 2
+      - id: punc_day_type
+        name: day_type
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 3
+      - id: punc_hour_band
+        name: hour_band
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        primaryKey: true
+        primaryKeyPosition: 4
+      - id: punc_median
+        name: median_delay_s
+        logicalType: number
+        physicalType: DOUBLE
+        semanticType: measure
+        description: Median seconds late at journey end. Negative is early.
+      - id: punc_p90
+        name: p90_delay_s
+        logicalType: number
+        physicalType: DOUBLE
+        semanticType: measure
+      - id: punc_n
+        name: n_journeys
+        logicalType: integer
+        physicalType: BIGINT
+        semanticType: measure
+
+slaProperties:
+  - property: frequency
+    value: 1
+    unit: d
+    element: eta_models
+    driver: operational
+    description: Rebuilt nightly by dbt/build.sh. The consumer reloads when the file mtime changes.
+  - property: latency
+    value: 26
+    unit: h
+    element: eta_models
+    driver: operational
+    description: >-
+      Maximum age of the marts before the consumer flags them stale. The API
+      keeps serving predictions past this and reports staleness via
+      /api/model-info rather than going dark.
+  - property: retention
+    value: 21
+    unit: d
+    element: eta_models
+    driver: analytics
+    description: The fit uses a rolling 21-day window of positions, downsampled to one ping per vehicle per 3 minutes.
+  - property: timeOfAvailability
+    value: 04:00+01:00
+    element: eta_models
+    driver: operational
+    description: Rebuild is scheduled off-peak; it saturates the host and must not overlap the morning traffic.
+
+support:
+  - channel: ghost-stack-ops
+    tool: email
+    scope: interactive
+    url: mailto:hello@thomaspeoples.com
+
+team:
+  - username: thomaspeoples
+    role: Data Product Owner
+    dateIn: '2026-09-12'
+
+roles:
+  - role: bus_api_reader
+    access: read
+    description: The Flask API service account. Read-only on the five mart tables; no access to staging or intermediate models.
+
+customProperties:
+  - property: producer
+    value: dbt project wraith_bus_ingestor (dbt/)
+  - property: consumer
+    value: Flask bus API (backend/app.py)
+  - property: upstreamContract
+    value: contracts/bus-positions.odcs.yaml
+  - property: ontology
+    value: contracts/wraith-bus-ingestor.ontology.yaml
+  - property: detourFactor
+    value: 1.30
+  - property: detourFactorRationale
+    value: >-
+      Median ratio of along-route distance to straight-line distance, measured
+      over 356k historical journeys (1.20 to 1.37 by distance band). A consumer
+      holding only a straight line MUST scale by this before applying
+      slope_s_per_km, which is fitted on along-route distance.
+
+contractCreatedTs: '2026-09-12T11:00:00+01:00'

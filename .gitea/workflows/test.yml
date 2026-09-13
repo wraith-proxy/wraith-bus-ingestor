@@ -1,0 +1,47 @@
+name: Wraith Bus Ingestor CI
+
+on:
+  push:
+    branches-ignore:
+      - 'main'
+
+jobs:
+  test-and-verify:
+    runs-on: ghost-runner
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install dependencies
+        # uv itself is already on ghost-runner. The runner image just stopped
+        # baking project deps (flask etc) in globally, so sync a real venv
+        # instead of relying on that -- `--system` doesn't work here anyway:
+        # ghost-runner's Python is apk-managed (PEP 668), and uv refuses to
+        # touch an externally-managed interpreter without --break-system-packages.
+        run: uv sync --extra dev
+      - name: Run Tests
+        # Just pytest for now. Contract validation needs duckdb, which has no
+        # musllinux wheel and can't build from source here (no C++ compiler)
+        # -- same reason dbt is a separate extra. backend/app.py and the test
+        # suite both already degrade gracefully with duckdb absent, so this
+        # is the only CI check that can run on ghost-runner as it stands.
+        # See ROADMAP.md for a real runner image with duckdb/dbt baked in,
+        # which is what actually fixes this rather than works around it.
+        run: |
+          chmod +x bin/run_tests.sh
+          ./bin/run_tests.sh
+        env:
+          PYTHONPATH: .
+
+  auto-merge:
+    needs: test-and-verify
+    if: github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Call Central Merge Action
+        uses: https://git.thomaspeoples.com/thomaspeoples/ci-actions/auto-merge@main
+        with:
+          gitea_token: ${{ secrets.giteatoken }}
+          api_url: "${{ secrets.giteaurl }}/api/v1"

@@ -1,0 +1,187 @@
+[![Documentation](https://img.shields.io/badge/docs-live-brightgreen)](https://www.thomaspeoples.com/gitea-repos/wraith-bus-ingestor/)
+![PyPI - Version](https://img.shields.io/pypi/v/wraith-bus-ingestor)
+![PyPI - License](https://img.shields.io/pypi/l/wraith-bus-ingestor)
+![PyPI - Python Version](https://img.shields.io/pypi/pyversions/wraith-bus-ingestor)
+![Coverage](https://www.thomaspeoples.com/gitea-repos/wraith-bus-ingestor/coverage.svg)
+
+# 👻 wraith-bus-ingestor
+### *Live UK Bus Tracking for the Ghost Stack*
+
+**wraith-bus-ingestor** is a live UK bus tracking data platform, running
+end to end on a home NAS: a BODS SIRI-VM feed polled every 60 seconds,
+landed in QuestDB, turned into DuckDB marts by a nightly dbt build, and
+served by a Flask API. Extracted out of `ghost-site` (which now holds only
+the nginx front door and the static sites) into its own repo, with full
+history preserved.
+
+The map that consumes this API — `www/slaycoach/bus-map/` — lives in
+`ghost-site`; the two repos share a Docker network (`ghost-net`), not a
+directory.
+
+---
+
+## 🌐 The Data Flow
+
+```
+BODS SIRI-VM feed (every 60s, mainland GB bbox)
+  ↓ [ingestor container]
+QuestDB (time-series, ILP)
+  ├─ Live table: bus_positions (append-only, partitioned by day)
+  └─ Retention: 22 days hot on SSD, older partitions DETACH + archive to separate drive
+  ↓ [dbt/build.sh, nightly 03:00]
+dbt models (DuckDB)
+  ├─ Staging: one model per source system (bods/, naptan/), views
+  ├─ Intermediate: journey cuts, direction inference, stop matching, remaining distance
+  └─ Marts: five frozen tables (eta_models, line_stops, line_localities, line_punctuality, localities)
+  ↓
+Flask API (read-only handle to wraith_bus_ingestor.duckdb)
+  ├─ GET /buses        — live vehicle positions as GeoJSON, < 10 min old
+  ├─ GET /bus/<bus_id> — one vehicle: position, model grain used, predicted arrival
+  ├─ GET /route        — stop sequence, geometry and live buses for one line
+  ├─ GET /search       — locality search
+  └─ GET /model-info   — marts freshness, model coverage, degraded-state note
+  ↓
+MapLibre map on slaycoach.quest/bus-map/ (in ghost-site)
+```
+
+### Why the build matters
+
+The dbt build is split across three files by design:
+
+- **`wraith_bus_ingestor_build.duckdb`** — persistent incremental warehouse. Two
+  expensive models (`int_pings_segmented_to_journeys`,
+  `int_pings_matched_to_stops`) are incremental; they take the fast path
+  only when this file already exists. Deleted before each run, they
+  silently became "full rebuild every time". Persisting it across runs
+  cuts the nightly rebuild from ~20-30 min to ~5 min.
+- **`wraith_bus_ingestor_staged.duckdb`** — fresh per-run throwaway where the five
+  marts are copied after `dbt test` and the contract gate both pass.
+- **`wraith_bus_ingestor.duckdb`** — the published file the API opens read-only. Only
+  `mv`d into place after both gates pass, so a bad build leaves the
+  previous good marts serving instead of replacing them with something
+  known to be wrong.
+
+DuckDB holds an exclusive lock for the entire build. Moving the served file
+avoids `Conflicting lock` errors and every bus on the map going grey while
+the rebuild runs.
+
+The build also runs at low priority (`nice -n 15`) because DuckDB will
+steal every core it can get. Unconstrained, it drove load past 10 on a
+6-core box and broke the API's response times.
+
+### The ETA Model
+
+One regression per `(operator, line, direction, day_type, hour_band)` grain:
+
+```
+remaining_secs = intercept_s + slope_s_per_km × remaining_km
+```
+
+The slope is the service's pace (seconds per km); invert it to get mean
+speed. Fitted per-grain because the 192 outbound runs 14.7 km/h in the
+morning peak and 19.2 km/h at night; pooling would predict neither.
+
+Thin grains fall back through eleven progressively coarser rungs — drop
+band, drop day pattern, drop direction, drop line, then repeat the whole
+chain without operator, ending at the network average. Every fallback is
+refitted from the source data at that width, not averaged from finer rows.
+
+See [`dbt/README.md`](dbt/README.md) for the hard parts (direction inference
+from bearing, detecting journeys cut mid-stream, stop sequence limitations,
+stale distance chords, etc.).
+
+## 📜 Data Contracts and Ontology
+
+The boundary between the ingestor and everything downstream is documented
+in `contracts/bus-positions.odcs.yaml` — an Open Data Contract Standard
+spec that names what the SIRI-VM feed guarantees (and deliberately does
+not — stale records are republished, bus IDs are not globally unique,
+aimed times may be stale, etc.).
+
+The marts contract is in `contracts/bus-marts.odcs.yaml`. The ontology in
+`contracts/wraith-bus-ingestor.ontology.yaml` names the semantic types (`AtcoCode`,
+`ServiceNumber`, `Direction`, `HourBand`, etc.) and proves it has not
+drifted from the data. Run `uv run python contracts/validate.py` to check.
+
+## 🚀 Quickstart
+
+```bash
+git clone https://git.thomaspeoples.com/thomaspeoples/wraith-bus-ingestor.git
+cd wraith-bus-ingestor
+./bin/setup.sh              # uv sync + pre-commit install
+
+# ghost-net must already exist -- bring ghost-site up first
+docker compose up -d
+
+docker logs -f ingestor     # polling BODS
+docker logs -f archiver     # runs once daily, moves old partitions
+docker logs -f api          # Flask API startup
+
+# Rebuild the dbt warehouse (~5 min once the incremental warehouse is warm,
+# runs nightly at 03:00 via host cron -- see docs/operations.md)
+cd dbt
+./build.sh                  # extract from QuestDB, build, test, validate contracts, publish
+
+SKIP_EXTRACT=1 ./build.sh   # reuse the parquet already in data/, skip the QuestDB pull
+FULL_REFRESH=1 ./build.sh   # rebuild from scratch (schema change, suspected drift)
+```
+
+## 🗂️ Layout
+
+```
+.
+├── docker-compose.yml   — services: db (QuestDB), api, osrm, archiver, ingestor, tiles
+│                          joins ghost-net as external -- see docs/architecture.md
+├── backend/             — Flask API
+├── dbt/                 — data warehouse (staging/bods, staging/naptan, intermediate, marts)
+├── ingestor/            — BODS SIRI-VM → QuestDB poller
+├── archiver/            — partition retention (DETACH + archive, not delete)
+└── contracts/           — ODCS data contracts + ontology
+```
+
+## 🧩 The Hard Decisions Baked In
+
+**Partitions are archived, not deleted.** QuestDB's native `SET TTL` drops
+data outright; this keeps 22 days hot on fast SSD and moves older
+partitions to a separate drive intact for long-term storage.
+
+**Direction is inferred.** The feed started sending real `DirectionRef` on
+2026-09-12, but historical data is NULL. `int_journeys_shaped_and_directed`
+infers it from compass bearing on linear routes (split on the line's modal
+bearing) and from signed area on circular routes (shoelace formula, since a
+loop's bearing is noise). It is a heuristic, it is labelled as one, and it
+will retire itself as new data accumulates.
+
+**Journeys are cut by speed and movement, not time gaps.** Bus engines keep
+sending position pings while parked at the terminus every three minutes, so
+a "20 minutes with no pings" rule never fires.
+`int_pings_segmented_to_journeys` breaks on 120 km/h crossings (physical
+impossibility — a bus cannot do that but a bus_id collision can) and on
+layovers (less than 500 m in nine minutes). This gets loop-back journeys
+from 60% down to 16%.
+
+**Stop sequences are not gospel.** They are measured as 6-9x inflated on a
+coherent line and 200-480x on a number reused across towns, before
+`operator` joined the grain (which fixes cause 1 for post-2026-09-12 data).
+The contract documents this; the API consumer is warned not to trust them
+as a next-stop oracle.
+
+**Stationary time is trimmed.** The first and last pings of a journey are
+often the bus sitting still at the stand. Trimming them moved the
+regression's r² from 0.52 to 0.69.
+
+## 🔒 Security Posture
+
+* **No public ingress:** `api`, `osrm`, `archiver` and `ingestor` are reachable only from inside `ghost-net`; only `tiles` and `db` expose host ports, both configurable in `.env`.
+* **Secrets stay in `.env`:** the BODS API key and QuestDB credentials are never committed; `.env.example` documents the shape.
+* **Contract-gated publish:** `build.sh` refuses to publish new marts if `contracts/validate.py` finds a violation — a broken contract leaves the previous good marts serving.
+
+## License
+
+MIT. See LICENSE.
+
+---
+
+<div align="center">
+<sub><i>"Sovereignty is found in the Source."</i></sub>
+</div>

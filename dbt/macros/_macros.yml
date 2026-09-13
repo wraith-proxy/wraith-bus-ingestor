@@ -1,0 +1,96 @@
+version: 2
+
+macros:
+  - name: haversine_km
+    description: >
+      Great-circle distance in kilometres between two lat/lon pairs, on a
+      spherical earth (R = 6371 km). Emitted inline as a SQL expression rather
+      than a UDF, since a UDF would need registering on every DuckDB connection
+      dbt opens. Used throughout the intermediate layer for step distances and
+      journey shape.
+    arguments:
+      - name: lat1
+        type: SQL expression
+        description: Latitude of the first point.
+      - name: lon1
+        type: SQL expression
+        description: Longitude of the first point.
+      - name: lat2
+        type: SQL expression
+        description: Latitude of the second point.
+      - name: lon2
+        type: SQL expression
+        description: Longitude of the second point.
+
+  - name: bearing_deg
+    description: >
+      Initial great-circle (compass) bearing in degrees, 0-360, from point 1 to
+      point 2. Used to infer a journey's direction of travel when the feed does
+      not supply DirectionRef.
+    arguments:
+      - name: lat1
+        type: SQL expression
+      - name: lon1
+        type: SQL expression
+      - name: lat2
+        type: SQL expression
+      - name: lon2
+        type: SQL expression
+
+  - name: bearing_delta
+    description: >
+      Smallest absolute angle between two compass bearings, 0-180 degrees.
+      Plain subtraction is wrong across the 0/360 seam (350 and 10 are 20
+      degrees apart, not 340); this handles the wraparound.
+    arguments:
+      - name: b1
+        type: SQL expression
+        description: First bearing, degrees.
+      - name: b2
+        type: SQL expression
+        description: Second bearing, degrees.
+
+  - name: hour_band
+    description: >
+      Buckets a LOCAL (Europe/London) hour-of-day integer (0-23) into the five
+      traffic-regime bands the ETA model is fitted per: night, am_peak, inter,
+      pm_peak, evening. FROZEN against backend/app.py's own banding -- if the
+      two disagree, a lookup silently resolves one grain coarser than it
+      should. Must be called with a LOCAL hour, never a UTC one.
+    arguments:
+      - name: hour_expr
+        type: SQL expression
+        description: Integer hour of day (0-23), derived from Europe/London local time.
+
+  - name: day_type
+    description: >
+      Buckets a LOCAL timestamp into the service pattern the operator runs
+      that day: weekday, sat or sun. Bank holidays are not detected and file
+      as weekday, deliberately -- see the macro's own header for why. Must be
+      called with a LOCAL timestamp, never a UTC one.
+    arguments:
+      - name: local_ts_expr
+        type: SQL expression
+        description: A timestamp already converted to Europe/London local time.
+
+  - name: locality_norm
+    description: >
+      The search key shared by localities, line_localities and the Flask
+      /api/search endpoint: uppercase, strip everything that is not a
+      letter/digit/space, collapse runs of spaces, trim. Frozen in
+      CONTRACT.md s2 because the API normalises a user's search term with
+      exactly this rule.
+    arguments:
+      - name: expr
+        type: SQL expression
+        description: The raw locality text to normalise.
+
+  - name: ping_columns
+    description: >
+      Compile-time helper, not a SQL expression: asks DuckDB what columns
+      data/bus_positions_*.parquet actually has right now, so
+      stg_bods__vehicle_pings can emit a typed NULL for any schedule column
+      (direction, journey_ref, origin_ref, dest_aimed_arr, ...) that older
+      daily files predate. Keeps the project buildable on a fresh box that
+      only has historical data. Takes no arguments; reads the bods.bus_positions
+      source directly.

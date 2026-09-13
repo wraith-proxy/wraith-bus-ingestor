@@ -1,0 +1,50 @@
+version: 2
+
+models:
+  - name: stg_naptan__stops
+    description: >
+      NaPTAN narrowed to active bus stops with usable coordinates, and typed.
+      Everything that needs a stop joins here rather than to the raw CSV, so the
+      "what counts as a bus stop" decision lives in exactly one place.
+      About 344k of NaPTAN's 435k rows survive; the rest are rail, ferry, air
+      and metro nodes, or stops marked deleted.
+    columns:
+      - name: atco_code
+        description: National stop identifier. The join key to the feed's origin_ref and dest_ref, and the primary key here.
+        tests: [not_null, unique]
+      - name: stop_name
+        description: CommonName as published. Not unique -- both sides of a road share a name and differ only by ATCOCode.
+      - name: stop_type
+        description: NaPTAN StopType, constrained to the four bus varieties. Kept so a future filter change is auditable against what was actually let through.
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['BCT', 'BCS', 'BCQ', 'BST']
+      - name: timing_status
+        description: Whether the stop is a timing point on the published timetable. Not used yet; the natural input if stop sequences ever need anchoring to real schedule times.
+      - name: status
+        description: NaPTAN lifecycle status, always 'active' here by construction.
+      - name: lat
+        description: WGS84 latitude, non-null and inside the GB bounding box.
+        tests: [not_null]
+      - name: lon
+        description: WGS84 longitude, non-null and inside the GB bounding box.
+        tests: [not_null]
+      - name: locality
+        description: >
+          Human-readable place, coalesced down NaPTAN's three-level locality
+          hierarchy (LocalityName, then Town, then ParentLocalityName). The
+          coalesce matters: a stop in an unnamed hamlet still has to resolve to
+          a place a user would plausibly type.
+        tests: [not_null]
+      - name: locality_norm
+        description: >
+          The search key. Uppercased, punctuation stripped, spaces collapsed, so
+          that "ASHTON UNDER LYNE" typed into the box matches
+          "Ashton-under-Lyne" in the register. Frozen in CONTRACT.md s2 because
+          backend/app.py normalises the query the same way.
+        tests: [not_null]
+      - name: lat_cell
+        description: Integer grid cell index (0.002 deg) used by int_pings_matched_to_stops to turn the nearest-stop search into a hash join. Meaningless on its own.
+      - name: lon_cell
+        description: Longitude half of the same grid cell index.

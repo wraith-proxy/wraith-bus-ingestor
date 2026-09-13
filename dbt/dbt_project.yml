@@ -1,0 +1,41 @@
+name: wraith_bus_ingestor
+version: 1.0.0
+config-version: 2
+
+# Everything here runs against a local DuckDB file (wraith_bus_ingestor.duckdb) that
+# Flask later opens READ-ONLY. The two most expensive intermediate models
+# (int_pings_segmented_to_journeys, int_pings_matched_to_stops) are
+# incremental -- see their own file headers -- so the scratch warehouse now
+# persists across runs on
+# purpose; a normal nightly run only reprocesses the last couple of days for
+# those two. Everything else here is still cheap enough to rebuild from
+# scratch every time, and does.
+profile: wraith_bus_ingestor
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+analysis-paths: ["analyses"]
+seed-paths: ["seeds"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  wraith_bus_ingestor:
+    +materialized: view
+    staging:
+      # Staging is rename+cast only, so a view costs nothing and always reflects
+      # whatever parquet files currently sit in data/.
+      +materialized: view
+      +schema: null
+    intermediate:
+      # Views by default, but the two models that every downstream model scans
+      # (journey segmentation and the stop spatial join) are materialised as
+      # incremental tables in their own config blocks -- recomputing a 20M-row
+      # window function over the whole retention window every run is the
+      # single biggest cost in this project.
+      +materialized: view
+    marts:
+      # Marts are read by a long-lived Flask process over a read-only DuckDB
+      # handle; they must be real tables, not views over parquet.
+      +materialized: table
