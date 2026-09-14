@@ -2,7 +2,7 @@
     materialized='incremental',
     incremental_strategy='delete+insert',
     unique_key='journey_local_date',
-    post_hook="delete from {{ this }} where journey_local_date < (select max(journey_local_date) from {{ this }}) - interval '{{ var('extract_days', 22) }} days'"
+    post_hook="delete from {{ this }} where journey_local_date < (select max(journey_local_date) from {{ this }}) - interval '{{ retention_days() }} days'"
 ) }}
 
 {#

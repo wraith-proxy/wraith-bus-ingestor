@@ -2,7 +2,7 @@
     materialized='incremental',
     incremental_strategy='delete+insert',
     unique_key='ping_local_date',
-    post_hook="delete from {{ this }} where ping_local_date < (select max(ping_local_date) from {{ this }}) - interval '{{ var('extract_days', 22) }} days'"
+    post_hook="delete from {{ this }} where ping_local_date < (select max(ping_local_date) from {{ this }}) - interval '{{ retention_days() }} days'"
 ) }}
 
 {#
@@ -51,9 +51,10 @@
   ---------------------------------------------------------------------------
   Incremental strategy
   ---------------------------------------------------------------------------
-  This is the single most expensive model in the project (724s over the full
-  22-day, ~45M-row window) and the one three downstream models scan, so it is
-  incremental by ping_local_date rather than a full `table` rebuild every run.
+  This is the single most expensive model in the project (724s measured over
+  the old 22-day, ~45M-row window; retention_days() is now 8) and the one
+  three downstream models scan, so it is incremental by ping_local_date
+  rather than a full `table` rebuild every run.
 
   Read window vs. write window: `lag() over (partition by bus_id order by
   ping_ts)` needs real history at the edge of whatever window gets

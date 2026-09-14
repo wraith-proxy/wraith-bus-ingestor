@@ -299,9 +299,13 @@ def test_predict_guards():
     row = {'line': '88', 'direction': 'inbound', 'lat': 53.4, 'lon': -2.2,
            'dest_ref': 'FAR', 'dest_aimed_arr': int(now * 1000)}
     frag, model, pred = app.predict(row, marts, now)
-    assert frag['status'] == 'unknown' and frag['eta_iso'] is None and frag['delay_s'] is None
+    assert frag['status'] == 'unknown' and frag['delay_s'] is None
     assert frag['remaining_km'] > app.MAX_REMAINING_KM
     assert model is not None  # a model matched; the guard rejected the distance
+    # The regression was rejected, but dest_aimed_arr is a live timetable
+    # value -- every bus should still get an ETA where one is honestly
+    # available, so it falls back to the bare timetable.
+    assert frag['eta_iso'] is not None and frag['eta_source'] == 'timetable_raw'
 
     # 50 km out at 120 s/km = 6000 s + 60 s -> over the 4 hour rail? No: 6060 s.
     marts['stop_by_atco'] = {'NEAR': {'atco': 'NEAR', 'name': 'Near', 'locality': 'X',
@@ -331,11 +335,44 @@ def test_predict_guards():
     frag, _m, _p = app.predict(dict(row, origin_aimed_dep=None), marts, now)
     assert frag['status'] == 'unknown' and frag['delay_s'] is None
 
-    # No marts at all -> unknown, null everything, no exception.
+    # No marts at all -> no model, no regression, no delay -- but row still
+    # carries a live dest_aimed_arr, so the bare-timetable fallback still
+    # gives an ETA. Only a row with genuinely nothing (see below) gets None.
     frag, model, pred = app.predict(row, dict(app.EMPTY_MARTS), now)
-    assert frag == {'remaining_km': None, 'eta_iso': None, 'delay_s': None,
-                    'delay_source': None, 'status': 'unknown'}
+    assert frag['remaining_km'] is None and frag['delay_s'] is None
+    assert frag['delay_source'] is None and frag['status'] == 'unknown'
+    assert frag['eta_iso'] is not None and frag['eta_source'] == 'timetable_raw'
+    assert model is None and pred is not None
+
+    # Truly nothing to go on: no marts, no timetable, no prior cached ETA.
+    bare = dict(row, dest_aimed_arr=None)
+    frag, model, pred = app.predict(bare, dict(app.EMPTY_MARTS), now)
+    assert frag == {'remaining_km': None, 'eta_iso': None, 'eta_source': None,
+                    'delay_s': None, 'delay_source': None, 'status': 'unknown'}
     assert model is None and pred is None
+
+
+def test_eta_falls_back_to_last_known():
+    """A bus with no regression match, no timetable and no schedule this tick
+    still shows the ETA it last actually had, rather than going blank."""
+    now = 1789200000.0
+    marts = dict(app.EMPTY_MARTS)
+    row = {'line': '88', 'direction': 'outbound', 'lat': 53.5, 'lon': -2.2,
+           'bus_id': 'TEST-LAST-KNOWN', 'dest_aimed_arr': (now + 300) * 1000}
+
+    # First tick: only the bare timetable is available, but that's enough to
+    # seed the cache.
+    frag, _m, _p = app.predict(row, marts, now)
+    assert frag['eta_source'] == 'timetable_raw'
+    first_eta = frag['eta_iso']
+
+    # Next tick: the timetable value has gone stale (feed republishing an old
+    # schedule) and there's nothing else to go on -- fall back to what was
+    # last actually computed for this bus_id.
+    stale = dict(row, dest_aimed_arr=None)
+    frag, _m, _p = app.predict(stale, marts, now + 60)
+    assert frag['eta_source'] == 'last_known'
+    assert frag['eta_iso'] == first_eta
 
 
 def test_marts_missing_is_not_fatal():

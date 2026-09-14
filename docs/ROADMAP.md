@@ -42,6 +42,21 @@ non-`./`) volume path as a named volume, which would silently start QuestDB
 empty; and `ghost-web` caches this stack's container IPs at nginx startup,
 so recreating containers needs an `nginx -s reload` or `/tiles/` 502s.
 
+`RETENTION_DAYS` cut from 22 to 8 (7 days live + 1 day buffer) -- the SSD
+was holding far more hot QuestDB history than the API actually needs.
+Everything past that window still lands on `ARCHIVE_PATH` (the SATA
+mount, `/mnt/archive`) via the existing DETACH-and-copy archiver, nothing
+is deleted. dbt's own incremental purge window used to hardcode a second,
+independent `22` in two post_hooks; both now call a single
+`retention_days()` macro that reads `extract_days` from `dbt_project.yml`
+(default `8`) -- one number to change, not two, and the ETA regression
+trains on that same smaller window as a result. The API's `predict()` now
+also has a proper fallback chain: regression, then schedule-adjusted
+timetable, then the bare timetable with no delay applied, then (nothing
+else available) whatever ETA this bus_id last actually had. Every bus
+gets an ETA wherever one can be honestly produced, not just the ones the
+regression already covered.
+
 ## 0.3.0 -- retire the direction heuristic
 
 `DirectionRef` started arriving in the real feed on 2026-09-12.

@@ -81,3 +81,13 @@ macros:
       daily files predate. Keeps the project buildable on a fresh box that
       only has historical data. Takes no arguments; reads the bods.bus_positions
       source directly.
+
+  - name: retention_days
+    description: >
+      Single source of truth for how many days of history the incremental
+      models (int_pings_segmented_to_journeys, int_pings_matched_to_stops)
+      keep, and therefore the window the ETA regression trains on. Reads the
+      `extract_days` var in dbt_project.yml -- change it there, not in the
+      models. Keep it in sync with RETENTION_DAYS in .env: no point dbt
+      accumulating more history than QuestDB itself still has hot on the SSD.
+      Takes no arguments.

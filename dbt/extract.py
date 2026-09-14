@@ -13,7 +13,7 @@ import urllib.request
 from datetime import date, timedelta
 
 QUESTDB = os.environ.get("QUESTDB_HTTP", "http://localhost:9001")
-DAYS = int(os.environ.get("EXTRACT_DAYS", "7"))
+DAYS = int(os.environ.get("EXTRACT_DAYS", "8"))
 SAMPLE_MINS = int(os.environ.get("EXTRACT_SAMPLE_MINS", "3"))
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
