@@ -12,6 +12,13 @@ config-version: 2
 # scratch every time, and does.
 profile: wraith_bus_ingestor
 
+# Single source of truth for how much history the incremental models keep --
+# see macros/retention_days.sql. Matches RETENTION_DAYS in .env (7 days live
+# on the SSD + 1 day buffer): no point accumulating more dbt-side history
+# than QuestDB itself still has hot.
+vars:
+  extract_days: 8
+
 model-paths: ["models"]
 macro-paths: ["macros"]
 test-paths: ["tests"]

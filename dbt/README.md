@@ -35,8 +35,10 @@ Or the steps by hand:
 ```bash
 cd dbt
 
-# 1. pull the last 22 days out of QuestDB into data/*.parquet (mainland GB, several min)
-QUESTDB_HTTP=http://localhost:9001 EXTRACT_DAYS=22 ../.venv/bin/python extract.py
+# 1. pull the last 8 days out of QuestDB into data/*.parquet (mainland GB, several min)
+# Match dbt_project.yml's `extract_days` var (see macros/retention_days.sql)
+# and .env's RETENTION_DAYS -- all three should agree on the same window.
+QUESTDB_HTTP=http://localhost:9001 EXTRACT_DAYS=8 ../.venv/bin/python extract.py
 
 # 2. build every model (into the SCRATCH file -- see "Two files", below)
 ../.venv/bin/dbt run --profiles-dir .

@@ -1,6 +1,6 @@
-# Live data volumes -- currently referenced by absolute path back into
-# ghost-site/ (see docker-compose.yml); kept here defensively in case they
-# are ever physically migrated into this repo's own directory.
+# Live data volumes -- 29GB, owned and written by this repo's containers,
+# physically migrated in from ghost-site/ on 2026-09-14. questdb_data/ is
+# written by the QuestDB container as uid 10001, not by you.
 questdb_data/
 maps/
 *.log

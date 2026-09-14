@@ -382,6 +382,14 @@ EMPTY_MARTS = {
 _marts_lock = threading.Lock()
 _marts_state = {'data': None, 'mtime': None, 'checked': 0.0}
 
+# Last real ETA we managed to compute per bus_id, as a fallback of last resort
+# once the regression, geometric progress and stop-sequence progress have all
+# come up empty. A GIL-protected dict is good enough here: worst case under a
+# race is one bus briefly serving last tick's ETA, same as a slightly-stale
+# poll would anyway. Unbounded, but bounded in practice by the live fleet size
+# (a few thousand bus_ids) and reset on every process restart.
+_last_eta = {}
+
 
 def _table_columns(con, table):
     """Columns a mart actually has. The dbt side is rebuilt independently, so
@@ -883,6 +891,7 @@ def predict(row, marts, now_s):
     model = pick_model(marts['eta'], operator, line, direction, day, hour_band(local))
 
     eta_iso = None
+    eta_source = None
     predicted = None
     if remaining_km is not None and model and remaining_km <= MAX_REMAINING_KM:
         secs = max(0.0, (model['slope_s_per_km'] or 0.0) * remaining_km
@@ -890,6 +899,7 @@ def predict(row, marts, now_s):
         if secs <= MAX_REMAINING_S:
             predicted = now_s + secs
             eta_iso = iso_from_epoch_s(predicted)
+            eta_source = 'regression'
 
     # Whichever method produces it, a delay is refused outright once the bus is
     # essentially at its destination: the journey is over, so elapsed-versus-
@@ -927,16 +937,35 @@ def predict(row, marts, now_s):
         delay_source = 'progress_stops' if delay_s is not None else None
 
     # With a delay in hand, the timetable plus that delay beats the regression.
-    if delay_s is not None:
-        aimed = schedule_epoch_s(row.get('dest_aimed_arr'), now_s,
-                                 MAX_SCHEDULE_AGE_S, MAX_SCHEDULE_AHEAD_S)
-        if aimed is not None:
-            predicted = aimed + delay_s
-            eta_iso = iso_from_epoch_s(predicted)
+    aimed = schedule_epoch_s(row.get('dest_aimed_arr'), now_s,
+                             MAX_SCHEDULE_AGE_S, MAX_SCHEDULE_AHEAD_S)
+    if delay_s is not None and aimed is not None:
+        predicted = aimed + delay_s
+        eta_iso = iso_from_epoch_s(predicted)
+        eta_source = 'timetable_delay'
+
+    # Every bus should show an ETA wherever we can honestly produce one.
+    # Regression, then schedule-adjusted timetable, above, both failed --
+    # fall back to the bare timetable (no delay applied, since we have none),
+    # then to whatever ETA we last actually computed for this vehicle. Both
+    # are worse than a fresh number but better than a blank cell on the map.
+    bus_id = row.get('bus_id')
+    if eta_iso is None and aimed is not None:
+        predicted = aimed
+        eta_iso = iso_from_epoch_s(predicted)
+        eta_source = 'timetable_raw'
+    if eta_iso is None and bus_id is not None:
+        cached = _last_eta.get(bus_id)
+        if cached is not None:
+            predicted, eta_iso = cached
+            eta_source = 'last_known'
+    elif eta_iso is not None and bus_id is not None:
+        _last_eta[bus_id] = (predicted, eta_iso)
 
     return {
         'remaining_km': remaining_km,
         'eta_iso': eta_iso,
+        'eta_source': eta_source,
         'delay_s': delay_s,
         'delay_source': delay_source,
         'status': classify_status(delay_s),

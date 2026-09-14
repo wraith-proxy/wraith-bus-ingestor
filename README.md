@@ -150,7 +150,12 @@ git commit
 ├── dbt/                 — data warehouse (staging/bods, staging/naptan, intermediate, marts)
 ├── ingestor/            — BODS SIRI-VM → QuestDB poller
 ├── archiver/            — partition retention (DETACH + archive, not delete)
-└── contracts/           — ODCS data contracts + ontology
+├── contracts/           — ODCS data contracts + ontology
+│
+│                        untracked, 29GB, written by the containers:
+├── questdb_data/        — live QuestDB store (19G, owned by uid 10001)
+├── maps/                — basemap pmtiles served by tiles (2.1G)
+└── osrm_data/           — OSM extract + built routing graph (8.3G, + build.sh)
 ```
 
 ## 🧩 The Hard Decisions Baked In
