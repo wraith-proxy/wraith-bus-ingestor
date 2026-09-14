@@ -48,7 +48,7 @@ cd "$(dirname "$0")"          # every path below -- and every source in
 # already manages.
 PY="../.venv/bin/python"
 : "${QUESTDB_HTTP:=http://localhost:9001}"
-: "${EXTRACT_DAYS:=22}"
+: "${EXTRACT_DAYS:=8}"
 : "${SKIP_EXTRACT:=0}"
 : "${FULL_REFRESH:=0}"
 

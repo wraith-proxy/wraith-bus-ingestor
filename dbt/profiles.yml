@@ -31,10 +31,16 @@ wraith_bus_ingestor:
         # "Out of Memory Error: failed to pin block of size 256.0 KiB (2.7
         # GiB/2.7 GiB used)" -- a clean DuckDB error, not a host OOM kill.
         # That model grew a 4-way operator/day_type fallback union this same
-        # session, so it is legitimately heavier than when 3 GB was set. 6 GB
-        # leaves ~9 GB RAM plus 16 GB swap free for everything else on the
-        # box during a rebuild.
-        memory_limit: '6GB'
+        # session, so it is legitimately heavier than when 3 GB was set.
+        # Raised again to 9 GB on 2026-09-14: 6 GB still OOM'd line_stops
+        # ("failed to pin block of size 256.0 KiB (5.5 GiB/5.5 GiB used)")
+        # even against the SMALLER 8-day retention window, because every row
+        # in that window now has `operator` populated (the field only
+        # started arriving 2026-09-12) -- all 5 operator-specific fallback
+        # rungs run in full now, instead of the partial coverage the 22-day
+        # window used to give them. 9 GB leaves ~6 GB RAM plus 9 GB swap
+        # free for everything else on the box during a rebuild.
+        memory_limit: '9GB'
         # DO NOT set temp_directory here. dbt-duckdb replays every `settings:`
         # entry on each new connection it opens, and DuckDB refuses to change
         # the temp directory once it has spilled to the current one -- so the
