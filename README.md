@@ -123,6 +123,23 @@ SKIP_EXTRACT=1 ./build.sh   # reuse the parquet already in data/, skip the Quest
 FULL_REFRESH=1 ./build.sh   # rebuild from scratch (schema change, suspected drift)
 ```
 
+### Publishing dbt docs
+
+`docs/dbt/index.html` is generated locally, against real live data, and
+committed -- it is NOT built in CI. The runner has neither QuestDB nor the
+NaPTAN register, so its own catalog would be sparse; CI just publishes
+whatever's already committed and only falls back to generating a
+placeholder if the file is missing entirely.
+
+After a real dbt build, whenever you want the published catalog stats
+refreshed:
+
+```bash
+uv run poe docs-dbt        # regenerates docs/dbt/index.html from dbt/target/
+git add docs/dbt/index.html
+git commit
+```
+
 ## 🗂️ Layout
 
 ```
