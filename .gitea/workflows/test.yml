@@ -17,9 +17,15 @@ jobs:
         # uv itself is already on ghost-runner. `--system` doesn't work here
         # anyway: ghost-runner's Python is apk-managed (PEP 668), and uv
         # refuses to touch an externally-managed interpreter without
-        # --break-system-packages. duckdb is now baked into the ghost-runner
-        # image itself (see ci-images), so --all-extras just works here too.
-        run: uv sync --all-extras
+        # --break-system-packages. duckdb compiles fine now that it's baked
+        # into the ghost-runner image (see ci-images) -- but NOT --all-extras:
+        # that also pulls the `dbt` extra, and dbt-core-experimental-parser
+        # (one of dbt-core's own hard deps) ships no musllinux wheel and
+        # refuses to build from source at all, on any platform, without a
+        # matching prebuilt binary. No image fixes that; dbt genuinely can't
+        # run on this runner. Not needed here anyway -- dbt docs generate
+        # already runs on ubuntu-latest (glibc) in pages.yml.
+        run: uv sync --extra dev --extra duckdb
       - name: Run Tests
         run: |
           chmod +x bin/run_tests.sh

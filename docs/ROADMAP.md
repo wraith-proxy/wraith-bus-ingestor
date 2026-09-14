@@ -11,8 +11,9 @@ into its own repo with full git history.
 
 `ghost-runner` (Alpine/musl) got `duckdb` baked in (`ci-images`,
 2026-09-14) -- compiled from source once at image build instead of every
-CI run, since `duckdb` ships no musllinux wheel. `test.yml` is back to
-`uv sync --all-extras` and the "Validate data contracts" step is restored.
+CI run, since `duckdb` ships no musllinux wheel. `test.yml` syncs
+`--extra dev --extra duckdb` now and the "Validate data contracts" step
+is restored.
 
 `dbt-core` is deliberately NOT baked into `ghost-runner`: one of its own
 hard deps, `dbt-core-experimental-parser`, ships no musllinux wheel and
