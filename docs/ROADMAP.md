@@ -28,17 +28,21 @@ ceiling, resets on success) on a dead feed; that was a stale roadmap note,
 not an actual gap. Archiver runs once a day regardless, so a retry storm
 was never a risk there.
 
-## 0.3.0 -- own the data, not borrow it
+**This repo now owns its data.** `maps/` (2.1G), `questdb_data/` (19G) and
+`osrm_data/` (8.3G) were physically migrated out of `ghost-site/` on
+2026-09-14 in a 3m33s window. Same filesystem, so each was a single atomic
+`rename()` -- instant, and QuestDB's uid 10001 ownership survived untouched.
+Verified by an exact row-count match over the pre-migration range
+(279,722,130 rows, not merely "greater than") plus all 20 partitions still
+attached. The nightly dbt cron was also still pointed at the deleted
+`ghost-site/dbt` since the September split and had been silently failing;
+it now points here. Two things the migration taught us, both written up in
+[architecture.md](architecture.md): Compose reads a bare (non-absolute,
+non-`./`) volume path as a named volume, which would silently start QuestDB
+empty; and `ghost-web` caches this stack's container IPs at nginx startup,
+so recreating containers needs an `nginx -s reload` or `/tiles/` 502s.
 
-`maps/`, `questdb_data/` and `osrm_data/` are still physically inside
-`ghost-site/`, referenced here by absolute path (`docker-compose.yml`'s
-`*_PATH` env vars) because QuestDB was live mid-ingest during the split and
-moving them wasn't safe to do at the same time. `wraith-bus-ingestor` is
-what actually owns and writes all three -- they belong here. A maintenance
-window: stop the containers, `mv` (same filesystem, so this is fast), point
-the env vars at the new local paths, restart.
-
-## 0.4.0 -- retire the direction heuristic
+## 0.3.0 -- retire the direction heuristic
 
 `DirectionRef` started arriving in the real feed on 2026-09-12.
 `int_journeys_shaped_and_directed`'s bearing/shoelace inference exists only
@@ -48,9 +52,10 @@ actually disagree, and simplify or retire whichever side loses.
 
 ## 1.0.0
 
-Everything above done, plus: full CI (tests + contracts + dbt build all
-gated, not just pytest) and no repo-local absolute paths reaching into
-`ghost-site` anywhere. Contract versions (`bus-marts.odcs.yaml`,
+Everything above done, plus full CI (tests + contracts + dbt build all
+gated, not just pytest). No repo-local path reaching into `ghost-site`
+remains -- that fell out of the 2026-09-14 data migration above.
+Contract versions (`bus-marts.odcs.yaml`,
 `bus-positions.odcs.yaml`) are already at `2.0.0` from the September
 restructure -- 1.0.0 here is a commitment to no more breaking changes
 without a major bump, not a version reset.

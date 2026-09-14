@@ -48,17 +48,30 @@ this repo's compose declares it `external: true` and joins it. Practically:
   across projects); `web` 502s until this stack's containers are up, same
   as after any reboot.
 
-## A known compromise: shared data volumes are absolute paths, for now
+## This repo owns its own data volumes
 
-`questdb_data/`, `maps/` and `osrm_data/` are large, live, and were not
-physically moved when this repo was split out — moving multi-GB volumes out
-from under a running QuestDB and OSRM was a bigger, separate risk than the
-code split itself needed to take on. `docker-compose.yml` here references
-them by **absolute path back into `ghost-site`'s directory** on the host,
-not by a relative path within this repo. Untangling that fully (physically
-migrating the data, or moving it to a location neither repo's directory
-implies ownership of) is a deliberate follow-up, not an oversight — it needs
-its own maintenance window with the ingestor and archiver stopped.
+`questdb_data/` (19G), `maps/` (2.1G) and `osrm_data/` (8.3G) all live in
+this repo's own directory. They were left behind in `ghost-site/` when the
+code was split out — moving multi-GB volumes out from under a running
+QuestDB and OSRM was a bigger risk than the code split needed to take on —
+and were physically migrated here on 2026-09-14 in a 3m33s maintenance
+window. Same filesystem, so each move was a single atomic `rename()` that
+preserved QuestDB's uid 10001 ownership; verified afterwards by an exact
+row-count match over the pre-migration time range (279,722,130 rows) and by
+confirming all 20 partitions were still attached.
+
+`docker-compose.yml` still reaches them through `${QUESTDB_DATA_PATH}`,
+`${MAPS_PATH}` and `${OSRM_DATA_PATH}` in `.env` rather than hardcoding
+paths — those values are now absolute paths inside this repo. They stay
+env-indirected deliberately: `questdb_data/` is written by a container as
+uid 10001, so a `docker compose` run from another checkout would otherwise
+silently target the wrong tree.
+
+One operational note learned the hard way: `ghost-web` (nginx, in
+`ghost-site`) resolves this stack's container names to IPs once at startup.
+Recreating these containers changes those IPs, so a
+`docker exec ghost-web nginx -s reload` is needed afterwards or `/tiles/`
+and `/api/` 502 while the containers themselves are perfectly healthy.
 
 ## Data contracts and ontology
 
