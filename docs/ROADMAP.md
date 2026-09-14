@@ -1,9 +1,9 @@
 # Roadmap
 
-Where this is now, and what "done" (1.0.0) looks like. Not a schedule --
-just the order things need to happen in, revised as the plan changes.
+Where this is now, and what's next. Not a schedule -- just the order
+things need to happen in, revised as the plan changes.
 
-## Now: 0.2.x
+## Now: 1.0.0
 
 A live, single-NAS deployment. Ingest, storage, transform and API all
 work end to end, verified against real traffic, split out of `ghost-site`
@@ -57,20 +57,28 @@ else available) whatever ETA this bus_id last actually had. Every bus
 gets an ETA wherever one can be honestly produced, not just the ones the
 regression already covered.
 
-## 0.3.0 -- retire the direction heuristic
+## 1.1.0 -- gate dbt in CI
+
+CI still only gates tests + contracts, not a dbt build -- no job anywhere
+actually runs one. `pages.yml` runs `dbt docs generate` on `ubuntu-latest`,
+but that's docs, not a gated build/test. **Blocker:** `ghost-runner`
+(Alpine/musl) can't run dbt at all -- `dbt-core-experimental-parser`, a
+hard dep of `dbt-core`, ships no musllinux wheel and refuses to build from
+source on any platform without a matching prebuilt binary, so no image fix
+closes this. The fix has to be a job on `ubuntu-latest` (glibc, like
+`pages.yml` already uses) that runs `dbt build` + `dbt test` and fails the
+pipeline on a broken model or a failed assertion, not a job on
+`ghost-runner`.
+
+Contract versions (`bus-marts.odcs.yaml`, `bus-positions.odcs.yaml`) are
+already at `2.0.0` from the September restructure -- 1.0.0 was a
+commitment to no more breaking changes without a major bump, not a
+version reset, and that commitment stands regardless of this gap.
+
+## 1.2.0 -- retire the direction heuristic
 
 `DirectionRef` started arriving in the real feed on 2026-09-12.
 `int_journeys_shaped_and_directed`'s bearing/shoelace inference exists only
 for historical data and feed gaps -- once enough real `DirectionRef`-backed
 data has accumulated, measure how often the heuristic and the real field
 actually disagree, and simplify or retire whichever side loses.
-
-## 1.0.0
-
-Everything above done, plus full CI (tests + contracts + dbt build all
-gated, not just pytest). No repo-local path reaching into `ghost-site`
-remains -- that fell out of the 2026-09-14 data migration above.
-Contract versions (`bus-marts.odcs.yaml`,
-`bus-positions.odcs.yaml`) are already at `2.0.0` from the September
-restructure -- 1.0.0 here is a commitment to no more breaking changes
-without a major bump, not a version reset.
