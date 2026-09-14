@@ -79,7 +79,7 @@ docs-api = { shell = "printf '# Python API\\n\\n' > docs/api.md && pydoc-markdow
 # build has run. --static inlines manifest+catalog into one HTML file, since
 # this gets served under /dbt/ (a subpath), not domain root, and the default
 # multi-file output's internal fetches assume the latter.
-docs-dbt = { shell = "cd dbt && ../.venv/bin/dbt docs generate --profiles-dir . --static && mkdir -p ../docs/dbt && cp target/static_index.html ../docs/dbt/index.html" }
+docs-dbt = { shell = "cd dbt && ../.venv/bin/python3 ensure_ci_fixtures.py && ../.venv/bin/dbt docs generate --profiles-dir . --static && mkdir -p ../docs/dbt && cp target/static_index.html ../docs/dbt/index.html" }
 docs-mkdocs = "mkdocs build"
 docs-build = ["docs-api", "docs-dbt", "docs-mkdocs"]
 docs-serve = "mkdocs serve"
