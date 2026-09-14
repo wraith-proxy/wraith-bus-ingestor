@@ -14,25 +14,27 @@ jobs:
         with:
           fetch-depth: 0
       - name: Install dependencies
-        # uv itself is already on ghost-runner. The runner image just stopped
-        # baking project deps (flask etc) in globally, so sync a real venv
-        # instead of relying on that -- `--system` doesn't work here anyway:
-        # ghost-runner's Python is apk-managed (PEP 668), and uv refuses to
-        # touch an externally-managed interpreter without --break-system-packages.
-        run: uv sync --extra dev
+        # uv itself is already on ghost-runner. `--system` doesn't work here
+        # anyway: ghost-runner's Python is apk-managed (PEP 668), and uv
+        # refuses to touch an externally-managed interpreter without
+        # --break-system-packages. duckdb is now baked into the ghost-runner
+        # image itself (see ci-images), so --all-extras just works here too.
+        run: uv sync --all-extras
       - name: Run Tests
-        # Just pytest for now. Contract validation needs duckdb, which has no
-        # musllinux wheel and can't build from source here (no C++ compiler)
-        # -- same reason dbt is a separate extra. backend/app.py and the test
-        # suite both already degrade gracefully with duckdb absent, so this
-        # is the only CI check that can run on ghost-runner as it stands.
-        # See ROADMAP.md for a real runner image with duckdb/dbt baked in,
-        # which is what actually fixes this rather than works around it.
         run: |
           chmod +x bin/run_tests.sh
           ./bin/run_tests.sh
         env:
           PYTHONPATH: .
+      - name: Validate data contracts
+        # No live QuestDB or built marts file exists on this runner, so most
+        # checks here degrade to a graceful skip -- see validate.py's own
+        # handling of an unreachable engine. What this step actually catches
+        # is a syntax/structure error in the ODCS contracts or the ontology
+        # YAML itself (yaml.safe_load runs eagerly, before any skip decision).
+        # The gate that checks real data is dbt/build.sh, which runs this
+        # same script against the live marts before every publish.
+        run: uv run python3 contracts/validate.py
 
   auto-merge:
     needs: test-and-verify
