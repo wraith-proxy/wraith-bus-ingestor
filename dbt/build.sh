@@ -148,10 +148,11 @@ con.execute("detach published")
 con.close()
 PYEOF
 
-# The contract gate. validate.py runs under ghost-site's own uv environment
-# (pyyaml/duckdb are real dependencies there now), not dbt's -- so this
-# subshell steps back to the repo root, where pyproject.toml lives, rather
-# than fighting dbt's own venv or `uv run`'s cwd handling from inside dbt/.
+# The contract gate. validate.py runs under this repo's own uv environment
+# (pyyaml/duckdb are real dependencies here, not borrowed from dbt's venv) --
+# so this subshell steps back to the repo root, where pyproject.toml lives,
+# rather than fighting dbt's own venv or `uv run`'s cwd handling from inside
+# dbt/.
 # By default it checks BOTH contracts (bus-positions against live QuestDB,
 # bus-marts against $STAGED) plus the ontology cross-check -- exactly the
 # "gate a rebuild" mode its own docstring describes. QuestDB being briefly
