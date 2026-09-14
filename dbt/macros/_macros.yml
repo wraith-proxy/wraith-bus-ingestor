@@ -10,16 +10,12 @@ macros:
       journey shape.
     arguments:
       - name: lat1
-        type: SQL expression
         description: Latitude of the first point.
       - name: lon1
-        type: SQL expression
         description: Longitude of the first point.
       - name: lat2
-        type: SQL expression
         description: Latitude of the second point.
       - name: lon2
-        type: SQL expression
         description: Longitude of the second point.
 
   - name: bearing_deg
@@ -29,13 +25,9 @@ macros:
       not supply DirectionRef.
     arguments:
       - name: lat1
-        type: SQL expression
       - name: lon1
-        type: SQL expression
       - name: lat2
-        type: SQL expression
       - name: lon2
-        type: SQL expression
 
   - name: bearing_delta
     description: >
@@ -44,10 +36,8 @@ macros:
       degrees apart, not 340); this handles the wraparound.
     arguments:
       - name: b1
-        type: SQL expression
         description: First bearing, degrees.
       - name: b2
-        type: SQL expression
         description: Second bearing, degrees.
 
   - name: hour_band
@@ -59,7 +49,6 @@ macros:
       should. Must be called with a LOCAL hour, never a UTC one.
     arguments:
       - name: hour_expr
-        type: SQL expression
         description: Integer hour of day (0-23), derived from Europe/London local time.
 
   - name: day_type
@@ -70,7 +59,6 @@ macros:
       called with a LOCAL timestamp, never a UTC one.
     arguments:
       - name: local_ts_expr
-        type: SQL expression
         description: A timestamp already converted to Europe/London local time.
 
   - name: locality_norm
@@ -82,7 +70,6 @@ macros:
       exactly this rule.
     arguments:
       - name: expr
-        type: SQL expression
         description: The raw locality text to normalise.
 
   - name: ping_columns

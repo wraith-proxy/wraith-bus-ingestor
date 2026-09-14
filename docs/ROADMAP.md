@@ -21,6 +21,13 @@ refuses to build from source at all, on any platform, without a matching
 prebuilt binary -- no toolchain fixes that. Not needed there anyway --
 `dbt docs generate` already runs on `ubuntu-latest` (glibc) in `pages.yml`.
 
+`dbt/macros/_macros.yml`'s `type: SQL expression` arguments (not a real
+dbt type) dropped -- the cosmetic invalid-type warning on every
+`dbt docs generate` is gone. Ingestor already backs off (doubling, 15 min
+ceiling, resets on success) on a dead feed; that was a stale roadmap note,
+not an actual gap. Archiver runs once a day regardless, so a retry storm
+was never a risk there.
+
 ## 0.3.0 -- own the data, not borrow it
 
 `maps/`, `questdb_data/` and `osrm_data/` are still physically inside
@@ -38,15 +45,6 @@ the env vars at the new local paths, restart.
 for historical data and feed gaps -- once enough real `DirectionRef`-backed
 data has accumulated, measure how often the heuristic and the real field
 actually disagree, and simplify or retire whichever side loses.
-
-## Smaller, whenever
-
-- `dbt/macros/_macros.yml` argument types (`SQL expression`) aren't in
-  dbt's valid-type set -- cosmetic warning on every `dbt docs generate`,
-  never blocks anything, just noise worth silencing.
-- Ingestor/archiver have no backoff on a genuinely dead feed beyond a flat
-  60s retry -- fine at current reliability, worth revisiting if that stops
-  being true.
 
 ## 1.0.0
 
