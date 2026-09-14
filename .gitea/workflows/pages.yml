@@ -32,11 +32,18 @@ jobs:
         run: uv run poe docs-api
 
       - name: Generate dbt docs
-        # No live QuestDB or built warehouse on this runner, so the catalog
-        # (real column data) is sparse -- but model descriptions, sources
-        # and the lineage graph all come from the parsed project, not a live
-        # connection, and are complete regardless.
-        run: uv run poe docs-dbt
+        # dbt docs are generated LOCALLY, against real live data, and
+        # committed -- this runner has neither QuestDB nor the NaPTAN
+        # register, so its own catalog would be sparse (or, before
+        # ensure_ci_fixtures.py, would fail outright on the empty source
+        # glob). If docs/dbt/index.html is already committed, use it as-is;
+        # only fall back to generating one here if it's genuinely missing.
+        run: |
+          if [ -f docs/dbt/index.html ]; then
+            echo "docs/dbt/index.html already committed -- skipping regeneration"
+          else
+            uv run poe docs-dbt
+          fi
 
       - name: Build Documentation
         run: uv run mkdocs build

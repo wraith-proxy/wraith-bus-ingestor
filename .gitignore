@@ -29,7 +29,9 @@ osrm_data/*
 coverage.xml
 docs/coverage.svg
 docs/api.md
-docs/dbt/
+# docs/dbt/ is NOT ignored: it's generated locally against real live data
+# (the CI runner has none) and committed deliberately -- see docs-dbt in
+# pyproject.toml and pages.yml, which skips regenerating it if present.
 requirements.txt
 site/
 dist/
