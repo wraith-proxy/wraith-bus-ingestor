@@ -75,41 +75,26 @@ already at `2.0.0` from the September restructure -- 1.0.0 was a
 commitment to no more breaking changes without a major bump, not a
 version reset, and that commitment stands regardless of this gap.
 
-## 1.1.1 -- fix line_stops' unbounded memory, not just its ceiling
+## 1.1.1 -- line_stops' unbounded memory
 
-2026-09-14: a `dbt run --select line_stops` test OOM'd the whole host and
-needed a physical reboot (not the clean DuckDB-level error a bumped
-`memory_limit` normally produces). Root cause, confirmed by measurement:
-`observations` unions the raw `int_pings_matched_to_stops` rows FOUR times
-(real-operator/real-day, real-operator/`*`-day, `*`-operator/real-day,
-`*`-operator/`*`-day) before `by_grain` runs an exact `median()` over
-~1.5M distinct (operator, line, direction, day_type, atco_code) groups --
-measured at ~22.7M rows into that aggregate on the current 8-day window.
-Exact `median()` has to hold every row per group in memory until the group
-closes, so this scales with total unioned volume, not with the retention
-window -- it will keep getting worse as more operator-tagged data
-accumulates (operator only started arriving 2026-09-12), independent of
-anything else in this repo.
+Root cause, every fix attempted (including the ones that didn't work and
+why), and the measured data behind the final design are now written up in
+[ADR-0001](adr/0001-line-stops-memory-and-batching.md) and
+[ADR-0002](adr/0002-line-stops-final-assembly.md) rather than repeated
+here -- this section tracks only what's still open.
 
-Tried and rejected as insufficient on its own: swapping `median()` for
-`approx_quantile(secs_from_origin, 0.5)` (bounded t-digest, and this mart
-already documents itself as "roughly how far along the route" -- no real
-precision lost). Tested hard-capped at 12GB RAM / 24GB RAM+swap in an
-isolated `docker run --memory=12g --memory-swap=24g` container (so a
-repeat wouldn't take the host down again) -- it still didn't converge,
-pinned at the cap with climbing disk spill and near-idle CPU, killed after
-5 minutes with no progress. The union-of-4 fanout into a high-cardinality
-exact aggregate is the actual cost; changing which aggregate function runs
-on top of it wasn't enough.
+**Remaining:**
+- No cold-cache validation -- one observed cold/warm swing (588 MiB vs
+  131 MiB, identical query) means the true worst case for a genuinely
+  fresh 3am run isn't fully confirmed.
 
-**The real fix** has to restructure the aggregation itself: compute the
-finest real (operator, day_type) grain once from the raw observations,
-then derive the pooled `'*'` rungs from that already-reduced result rather
-than re-scanning raw rows four times. The model's own docstring rejected a
-"median of medians" for statistical reasons (a pooled median must be a
-true median over every journey in the pool) -- any restructure has to
-keep that property, not trade it away for speed. Worth doing before
-1.2.0: this is a live stability bug now, not a nice-to-have.
+The systemd timer under `ops/systemd/` replaced cron 2026-09-15 (`sudo
+systemctl enable --now wraith-bus-build.timer`, crontab entry removed) --
+`docs/operations.md`, `README.md` and `bus-marts.odcs.yaml`'s `refresh:`
+prose updated to match. Along the way, a real questdb OOM bug (query
+memory unbounded per day) and a native-memory sawtooth (Cairo's mmap'd
+reader pool, not JVM heap) were found and fixed too -- see git log
+2026-09-15 for the four commits.
 
 Also done as a direct result of this incident, outside git (QuestDB's own
 `server.conf` isn't tracked): QuestDB's `ram.usage.limit.bytes` was
@@ -123,3 +108,103 @@ real ceiling on a 15GB host) and is now capped at 8GB explicitly.
 for historical data and feed gaps -- once enough real `DirectionRef`-backed
 data has accumulated, measure how often the heuristic and the real field
 actually disagree, and simplify or retire whichever side loses.
+
+## 1.3.0 -- incident recovery: upserts, replay, drift guards
+
+Landed 2026-09-15, prompted by that day's OOM/timer work exposing that the
+system assumed BODS plus a live QuestDB table WAS the history:
+
+- `bus_positions` now `DEDUP ENABLE UPSERT KEYS(bus_id, timestamp)`.
+  `vehicle_id` was checked first and found 100% null across a 2-day, 31M-row
+  sample -- a dead column, not the real per-vehicle identity, so `bus_id`
+  was the only real choice.
+- Native `TTL 90 DAYS` removed from `bus_positions` (was sitting silently
+  underneath archiver's own 8-day DETACH-and-copy retention -- harmless
+  today only by coincidence of 8 < 90, a real trap if archiver was ever
+  down 82+ days or `RETENTION_DAYS` raised without noticing the table TTL
+  existed). Archiver is now the sole retention mechanism.
+- `ops/incident.py`: `restore <day>` (ATTACH a day back from
+  `/mnt/archive`, idempotent) and `replay <start> <end>` (restore-if-needed
+  + re-extract via `extract.py`'s own `fetch()` + `SKIP_EXTRACT=1
+  FULL_REFRESH=1 build.sh`), one script per the "not two scripts a human
+  has to sequence by hand" requirement. `restore` proven against a real
+  archived day (2026-07-03, 10.6M rows, re-run correctly no-ops).
+- `dbt-expectations` (`metaplane/dbt_expectations` -- the `calogica` one
+  `dbt deps` warns is deprecated) plus two custom macros
+  (`dbt/macros/tests/schema_drift.sql`): dbt_expectations' own
+  `expect_column_values_to_be_of_type` / `expect_table_columns_to_match_set`
+  turned out broken on the duckdb adapter for any table-valued-function
+  source (`describe read_parquet(...)` isn't valid as a subquery) --
+  confirmed by running them, not assumed, and replaced rather than
+  worked around blindly. `_bods__sources.yml`'s `bus_positions` table now
+  carries: source freshness (warn 2d / error 5d), not_null, per-column
+  type validity, GB-bbox range warnings, compound-key
+  (`timestamp, bus_id, line`) uniqueness, and a row-count floor. The
+  schema-drift test was negative-tested by injecting a real extra column
+  into a live parquet chunk and confirming it actually fails, not just
+  parses.
+
+**Remaining:**
+- `ops/incident.py replay` is written but untested -- needs a synthetic
+  "lost N days" scenario run end to end before it's trusted in a real
+  incident.
+- No page/alert on the freshness `warn`/dbt test `severity: warn` results
+  -- they show up in `dbt test` output today, nothing routes them
+  anywhere a human would see them unprompted. Closed by 1.4.0's alerting.
+
+## 1.4.0 -- Grafana: observability, DQ, alerting
+
+Planned 2026-09-15. QuestDB already speaks the Postgres wire protocol on
+8812 (`docker-compose.yml`) -- Grafana's Postgres datasource points
+straight at it, so live metrics ("rows ingested last hour", etc.) are a
+direct QuestDB query, not a hand-rolled semantic layer. No new ingestion
+pipeline for that part.
+
+- **DQ / test results.** Not currently persisted anywhere queryable --
+  `dbt test` only prints to `build.log` and gates the publish. A
+  `build.sh` post-hook writes each run's pass/fail counts and which tests
+  failed into a small QuestDB table (not duckdb -- duckdb has no wire
+  protocol Grafana can reach), so Grafana has something to plot.
+- **Incidents.** Grafana's own annotations API, not a separate hand-built
+  table -- it is built for exactly "mark this moment on the timeline",
+  so this session's OOM incidents etc. become annotations, not another
+  thing to invent storage for.
+- **Alerting.** Grafana Alerting -> self-hosted `ntfy` (one small Go
+  container, added to `docker-compose.yml`) via its webhook contact
+  point, not email -- since 1.5.0 ships a real APK anyway, native push
+  to the device beats a proton-bridge SMTP hop. `ntfy` needs no accounts;
+  the topic name itself is the only thing gating who can subscribe, so
+  it's generated random and treated as a secret / env var -- never
+  committed, never printed to `build.log`, never returned in any HTTP
+  response. Verify this by actually checking (grep, not assumption)
+  before calling it done.
+- **Public hosting.** Anonymous Viewer role for Grafana, same nginx
+  `location` pattern already used for `/tiles/` and `/api/`
+  (`docs/architecture.md`'s existing shape, not a new one). Admin/edit
+  stays authenticated. `ntfy` itself does NOT get a public `location` --
+  only the topic's publish side is reachable (from Grafana, server-side),
+  never exposed for the phone to hit directly; the phone only ever talks
+  to `ntfy`'s own public instance conventions or a narrowly-scoped
+  subscribe-only path, decided when this is actually built, not guessed
+  here.
+
+## 1.5.0 -- Android APK, LineageOS Tegu (Pixel Tablet), Android 16+
+
+Planned 2026-09-15. Full native, not a WebView wrapper -- Jetpack Compose
++ OkHttp, single-device scope (Tegu only, Android 16+ minSdk), two
+screens:
+
+- **Tracking.** Hits the existing `/api/buses`, `/api/bus/<id>`,
+  `/api/route`, `/api/search` directly -- zero new backend work, same
+  endpoints the web map already uses.
+- **Dashboard.** Does NOT query QuestDB or Grafana directly from the
+  phone -- adds a couple of read-only `/api/metrics`-style endpoints to
+  the existing Flask backend instead, reusing the same underlying
+  queries 1.4.0's Grafana panels use. Keeps one API surface for every
+  client (web, Grafana, phone), and keeps QuestDB itself off the public
+  internet regardless of how Grafana ends up exposed.
+- **Push notifications.** Subscribes to 1.4.0's `ntfy` topic natively
+  (Android's own notification channel, no separate push-gateway service
+  needed) -- alerts Grafana fires land on the device directly. Same
+  topic-name-as-secret handling as 1.4.0: shipped to the APK as build
+  config, not hardcoded in a committed source file.

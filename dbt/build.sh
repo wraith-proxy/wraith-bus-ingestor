@@ -95,9 +95,10 @@ fi
 # hole) -- but it is worth saying out loud how much data there is.
 echo "==> $(ls data/bus_positions_*.parquet 2>/dev/null | wc -l) daily parquet files in data/"
 
-# No packages.yml: this project deliberately has no package dependencies, so
-# there is nothing for `dbt deps` to do. The guard is here so that adding one
-# later does not silently break the build.
+# packages.yml landed 2026-09-15 (dbt-expectations, for the bus_positions
+# source's data quality tests -- see docs/ROADMAP.md 1.3.0). The guard stays:
+# cheap insurance against a future packages.yml-less state silently skipping
+# this instead of erring.
 if [[ -f packages.yml ]]; then
     echo "==> dbt deps"
     "${DBT[@]}" deps --profiles-dir .
@@ -117,7 +118,14 @@ if [[ "$FULL_REFRESH" == "1" ]]; then
 fi
 
 echo "==> dbt run   (into $BUILD, at low priority)"
-"${DBT[@]}" run --profiles-dir . "${RUN_FLAGS[@]}"
+# Split in two so the memory-sensitive line_stops grain cluster never runs
+# concurrently with anything else, without touching the project's load-
+# bearing threads:3 default (see profiles.yml) for every other model.
+# int_first_visit_per_journey+ is exactly the five models this cluster
+# comprises (confirmed: nothing else in the project refs either of them),
+# so --threads 1 here costs nothing to the rest of the build.
+"${DBT[@]}" run --profiles-dir . "${RUN_FLAGS[@]}" --exclude int_first_visit_per_journey+
+"${DBT[@]}" run --profiles-dir . "${RUN_FLAGS[@]}" --threads 1 --select int_first_visit_per_journey+
 
 echo "==> dbt test"
 "${DBT[@]}" test --profiles-dir . "${DBT_VARS[@]}"

@@ -25,7 +25,7 @@ BODS SIRI-VM feed (every 60s, mainland GB bbox)
 QuestDB (time-series, ILP)
   ├─ Live table: bus_positions (append-only, partitioned by day)
   └─ Retention: 22 days hot on SSD, older partitions DETACH + archive to separate drive
-  ↓ [dbt/build.sh, nightly 03:00]
+  ↓ [dbt/build.sh, nightly 03:00 via systemd timer]
 dbt models (DuckDB)
   ├─ Staging: one model per source system (bods/, naptan/), views
   ├─ Intermediate: journey cuts, direction inference, stop matching, remaining distance
@@ -115,7 +115,7 @@ docker logs -f archiver     # runs once daily, moves old partitions
 docker logs -f api          # Flask API startup
 
 # Rebuild the dbt warehouse (~5 min once the incremental warehouse is warm,
-# runs nightly at 03:00 via host cron -- see docs/operations.md)
+# runs nightly at 03:00 via host systemd timer -- see docs/operations.md)
 cd dbt
 ./build.sh                  # extract from QuestDB, build, test, validate contracts, publish
 

@@ -38,9 +38,61 @@ wraith_bus_ingestor:
         # in that window now has `operator` populated (the field only
         # started arriving 2026-09-12) -- all 5 operator-specific fallback
         # rungs run in full now, instead of the partial coverage the 22-day
-        # window used to give them. 9 GB leaves ~6 GB RAM plus 9 GB swap
-        # free for everything else on the box during a rebuild.
-        memory_limit: '9GB'
+        # window used to give them.
+        #
+        # Dropped back to 2 GB on 2026-09-14 after fixing the actual cause:
+        # line_stops' by_grain CTE unioned raw rows across all 4 operator/
+        # day_type fallback grains before aggregating, forcing all 4 grains'
+        # exact median() groups open concurrently.
+        #
+        # First fix attempt (2026-09-14) was 4 `AS MATERIALIZED` CTEs inside
+        # one query, betting DuckDB's scheduler would serialize them. That bet
+        # was never verified and is abandoned -- MATERIALIZED is a hint, not a
+        # barrier, and DuckDB's vectorized engine is free to run all 4
+        # hash-aggregate pipelines concurrently anyway.
+        #
+        # Actual fix (2026-09-15): first_visit_per_journey and each of the 4
+        # grains promoted to their own dbt model (int_first_visit_per_journey,
+        # int_line_stops_{real_real,real_star,star_real,star_star} under
+        # models/intermediate/), using approx_quantile() (bounded t-digest)
+        # instead of exact median() (unbounded per-group row buffer), each
+        # contract-enforced against column drift. build.sh runs this 5-model
+        # cluster in a separate `dbt run --threads 1` invocation, so only one
+        # grain's aggregate state is ever open in memory -- a hard scheduling
+        # guarantee from dbt's own single-worker thread pool, not an
+        # optimizer's discretion.
+        #
+        # 2 GB was NOT enough even after that fix: a threads=1, OS-capped
+        # (systemd-run MemoryMax) test still got SIGKILL'd building
+        # int_line_stops_real_real alone -- no concurrency involved, just that
+        # grain's 732K groups. A follow-up fix (2026-09-15) dropped a redundant
+        # count(distinct journey_key) -> count(*) in all 4 grain models
+        # (provably identical result, O(1) per group instead of a per-group
+        # hash set) but a retest at the same 2.2GB OS cap still got killed --
+        # so the 732K groups' t-digest+accumulator state alone genuinely needs
+        # more than 2GB.
+        #
+        # 4 GB and 6 GB also NOT enough, but those two tests were invalid --
+        # they ran through a raw duckdb.connect() that never applied this
+        # setting at all, so DuckDB had no internal limit either time; only
+        # the external OS cap was ever constraining anything. Retested
+        # properly (2026-09-15) with memory_limit actually passed to the
+        # connection at 4GB, OS cap at 5GB to give DuckDB room to react on
+        # its own: still SIGKILL'd at 41% progress, well past its own
+        # configured ceiling, with no DuckDB-level graceful error at any
+        # point (the old median() version DID throw one -- "Out of Memory
+        # Error: failed to pin block..." -- at its own limit). That's a real
+        # limitation, not a config mistake: approx_quantile's per-group
+        # t-digest state appears to sit outside DuckDB's spill-managed pool
+        # for this aggregate shape, so memory_limit cannot bound it here.
+        #
+        # Set back to 4 GB as a reasonable project-wide baseline (every
+        # OTHER model in this project fits comfortably well under this,
+        # per this file's own history) -- NOT a claim that
+        # int_line_stops_real_real fits in it. That grain needs an
+        # architectural fix (batching by line, see docs/ROADMAP.md), not a
+        # bigger number here; no memory_limit value reliably bounds it.
+        memory_limit: '4GB'
         # DO NOT set temp_directory here. dbt-duckdb replays every `settings:`
         # entry on each new connection it opens, and DuckDB refuses to change
         # the temp directory once it has spilled to the current one -- so the

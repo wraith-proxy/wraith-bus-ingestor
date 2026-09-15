@@ -22,6 +22,14 @@
 
   Median rather than mean, because one journey stuck in a road closure would
   otherwise reorder the route and produce confidently wrong next-stop answers.
+  As of 2026-09-14 this is computed as a bounded t-digest approximation
+  (approx_quantile), not DuckDB's exact median() -- see
+  int_line_stops_real_real.sql (and its three sibling grain models) for why,
+  and how the "true median over every journey in the pool" property is
+  preserved anyway. The four grains used to be CTEs inline in this file; they
+  are now their own dbt models under models/intermediate/, split out to fix a
+  repeated full-host OOM -- see docs/ROADMAP.md's 1.1.1 entry for the incident
+  history.
 
   Two row sets are emitted: one per real day_type, and one at day_type = '*'
   fitted across all days, so a lookup always resolves even for a line that only
@@ -39,6 +47,20 @@
   seq order, sum the distance, divide by the route's actual length. A correct
   sequence scores ~1. This one scores 6-9x on a geographically coherent line
   and 200-480x on a line whose number is reused in several towns.
+  (Baseline predates the approx_quantile switch and the by-grain-model split;
+  original example lines were never recorded, only described qualitatively.)
+
+  RE-MEASURED 2026-09-15 (dbt/scripts/measure_route_reliability.py, road
+  distance via the live OSRM-backed /api/route, not the original examples --
+  those were never named, only described): a single-operator tourist loop
+  (Golden_Tours_Hop_On_Hop_Off, 18 stops) scored 0.46x -- correctly BELOW 1,
+  since straight-line distance between stops is always <= real road
+  distance for a coherent route with no backtracking, a different and
+  better signal than the old 6-9x figure (which was capturing zig-zag
+  inflation, not present here). A deliberately worst-case reused line
+  ('1', 558 distinct localities, more extreme than whatever produced the
+  old 200-480x figure) scored ~18,818x. Same qualitative story either way:
+  no regression from the by_grain batching or the approx_quantile switch.
 
   The dominant cause is that journeys on one line start in many different
   places -- the 192 outbound has 24 distinct start locations, because short
@@ -55,100 +77,32 @@
   Secondary artefact: 3-minute sampling quantises the median to multiples of
   180 s, so a run of consecutive stops ties. Stops on both sides of a road can
   both appear, because a bus passing one is within 120 m of the other.
+
+  stop_identity (name/locality/lat/lon per stop) used to be a CTE here,
+  reading straight from int_pings_matched_to_stops. Promoted to its own
+  model, int_stop_identity, because it and the by_grain/window computation
+  below are two independent subtrees feeding one final join -- DuckDB isn't
+  guaranteed to run them sequentially just because they're in the same
+  query, and in practice didn't. See docs/adr/0002 for the measurement.
 #}
 
-with matches as (
+with by_grain as (
 
-    select * from {{ ref('int_pings_matched_to_stops') }}
-
-),
-
-first_visit_per_journey as (
-
-    -- A journey usually matches the same stop on two or three consecutive
-    -- pings (the bus is there for longer than one 3-minute bucket), and a
-    -- circular route can pass the same stop twice. Collapse to one observation
-    -- per (journey, stop): the earliest time the journey reached it.
-    select
-        journey_key,
-        operator,
-        line,
-        direction,
-        day_type,
-        atco_code,
-        min(secs_from_origin) as secs_from_origin
-    from matches
-    group by journey_key, operator, line, direction, day_type, atco_code
-
-),
-
--- The same observations counted up to four times: real-operator/real-day,
--- real-operator/'*'-day, '*'-operator/real-day, '*'-operator/'*'-day. Doing it
--- as a union of the observation rows (rather than merging finished
--- aggregates) means every pooled median is a true median over every journey
--- in the pool, not a median of medians.
---
--- The real-operator branches drop rows with no operator at all (everything
--- before 2026-09-12) rather than group them under a literal NULL: a NULL-
--- operator "real" grain would never be looked up by anything -- a live bus
--- either reports a real operator (and would look for that) or none (and the
--- API skips straight to the '*' rungs) -- so keeping it would only be dead
--- weight in the mart.
-observations as (
-
-    select journey_key, operator, line, direction, day_type, atco_code, secs_from_origin
-    from first_visit_per_journey
-    where operator is not null
-
+    -- A union of small, already-aggregated rows (one per grain), not raw
+    -- observations. Each grain is its own dbt model under
+    -- models/intermediate/ (int_line_stops_real_real, _real_star,
+    -- _star_real, _star_star), each independently materialized as a table
+    -- and run at --threads 1 (see build.sh) so only one grain's
+    -- hash-aggregate state is ever open in memory at a time -- see
+    -- int_line_stops_real_real.sql for the full incident history and why
+    -- this used to be four CTEs unioned inline here instead.
+    select * from {{ ref('int_line_stops_real_real') }}
     union all
-
-    select journey_key, operator, line, direction, '*' as day_type, atco_code, secs_from_origin
-    from first_visit_per_journey
-    where operator is not null
-
+    select * from {{ ref('int_line_stops_real_star') }}
     union all
-
-    select journey_key, '*' as operator, line, direction, day_type, atco_code, secs_from_origin
-    from first_visit_per_journey
-
+    select * from {{ ref('int_line_stops_star_real') }}
     union all
-
-    select journey_key, '*' as operator, line, direction, '*' as day_type, atco_code, secs_from_origin
-    from first_visit_per_journey
-
-),
-
-stop_identity as (
-
-    -- Stop attributes, taken once rather than carried through the aggregation.
-    select
-        atco_code,
-        mode(stop_name) as stop_name,
-        mode(locality)  as locality,
-        avg(stop_lat)   as lat,
-        avg(stop_lon)   as lon
-    from matches
-    group by atco_code
-
-),
-
-by_grain as (
-
-    select
-        operator,
-        line,
-        direction,
-        day_type,
-        atco_code,
-        cast(median(secs_from_origin) as double)      as median_secs_from_origin,
-        -- Only ever used to break ties in the ordering, never published.
-        -- Pings are 3-minute buckets, so secs_from_origin is quantised to
-        -- multiples of 180 and a run of consecutive stops shares one median.
-        -- The mean is continuous and separates them in the right order.
-        avg(secs_from_origin)                         as mean_secs_from_origin,
-        cast(count(distinct journey_key) as bigint)   as n_obs
-    from observations
-    group by operator, line, direction, day_type, atco_code
+    select * from {{ ref('int_line_stops_star_star') }}
 
 ),
 
@@ -192,4 +146,4 @@ select
     q.median_secs_from_origin,
     q.n_obs
 from sequenced q
-join stop_identity i using (atco_code)
+join {{ ref('int_stop_identity') }} i using (atco_code)

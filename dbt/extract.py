@@ -7,7 +7,9 @@ days. One parquet file per day, so a re-run only redoes the days it is asked for
 """
 import json
 import os
+import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 from datetime import date, timedelta
@@ -15,7 +17,41 @@ from datetime import date, timedelta
 QUESTDB = os.environ.get("QUESTDB_HTTP", "http://localhost:9001")
 DAYS = int(os.environ.get("EXTRACT_DAYS", "8"))
 SAMPLE_MINS = int(os.environ.get("EXTRACT_SAMPLE_MINS", "3"))
+# A whole day's SAMPLE BY in one query OOM-killed questdb itself (kernel
+# oom-killer, not a graceful questdb error -- ram.usage.limit.bytes doesn't
+# cover whatever this query allocates) once daily row counts climbed past
+# ~8M, 2026-09-15. Chunking the query bounds each call's group-state the
+# same way line_stops' per-line batching does -- see docs/ROADMAP.md 1.1.1.
+# One file per chunk; dbt's source glob (bus_positions_*.parquet,
+# union_by_name=true) already unions any number of files per day for free.
+CHUNK_HOURS = int(os.environ.get("EXTRACT_CHUNK_HOURS", "4"))
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+
+# Chunking bounds each query's own group-state, but questdb's table-reader
+# pool doesn't hand its mmap'd segments back between queries fired this close
+# together (checked: lowering cairo.inactive.reader.ttl to 1s made no
+# measurable difference after 30s idle) -- so the 48 queries/run still climb
+# cumulatively, observed peaking at ~7.8GB of an 8GB cap. Restarting questdb
+# between days resets that for free: nothing else reads this table, and the
+# cost (~6s/restart, ghost-ingestor's writes retry through the gap same as
+# any other questdb blip) is cheap next to the safety margin it buys. See
+# docs/ROADMAP.md 1.1.1.
+QUESTDB_CONTAINER = os.environ.get("QUESTDB_CONTAINER", "questdb")
+RESTART_QUESTDB_BETWEEN_DAYS = os.environ.get("EXTRACT_RESTART_QUESTDB", "1") == "1"
+
+
+def restart_questdb():
+    subprocess.run(["docker", "restart", QUESTDB_CONTAINER], check=True,
+                    capture_output=True)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(f"{QUESTDB}/exec?query=select+1", timeout=2):
+                return
+        except Exception:
+            time.sleep(1)
+    raise RuntimeError(f"{QUESTDB_CONTAINER} did not come back healthy within 30s of restart")
+
 
 # Columns we take verbatim, and columns we take the last value of within a bucket.
 KEYS = ["timestamp", "bus_id", "line"]
@@ -58,13 +94,17 @@ def build_select(available):
     return select, columns
 
 
-def fetch(con, day, select, columns):
+def fetch(con, day, hour_start, hour_end, select, columns):
+    end_day = day + timedelta(days=1) if hour_end == 24 else day
+    start_ts = f"{day.isoformat()}T{hour_start:02d}:00:00.000000Z"
+    end_ts = f"{end_day.isoformat()}T{hour_end % 24:02d}:00:00.000000Z"
     query = (
         f"SELECT {select} FROM bus_positions "
-        f"WHERE timestamp IN '{day.isoformat()}' SAMPLE BY {SAMPLE_MINS}m"
+        f"WHERE timestamp >= '{start_ts}' AND timestamp < '{end_ts}' "
+        f"SAMPLE BY {SAMPLE_MINS}m"
     )
     url = f"{QUESTDB}/exp?" + urllib.parse.urlencode({"query": query})
-    dest = os.path.join(OUT, f"bus_positions_{day.isoformat()}.parquet")
+    dest = os.path.join(OUT, f"bus_positions_{day.isoformat()}_{hour_start:02d}.parquet")
     # COPY ... TO takes no bind parameters, so quote the literals ourselves.
     src, tgt = url.replace("'", "''"), dest.replace("'", "''")
     con.execute(
@@ -73,9 +113,9 @@ def fetch(con, day, select, columns):
     )
     n = con.execute("SELECT count(*) FROM read_parquet(?)", [dest]).fetchone()[0]
     if n == 0:
-        # The ingestor was down that day. An empty file is worse than no file:
-        # it still joins the glob and contributes nothing but a schema to argue
-        # with, so drop it and let the gap be a gap.
+        # The ingestor was down that window. An empty file is worse than no
+        # file: it still joins the glob and contributes nothing but a schema
+        # to argue with, so drop it and let the gap be a gap.
         os.remove(dest)
         return None, 0
     return dest, n
@@ -89,15 +129,28 @@ def main():
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs;")
     total, gaps = 0, []
-    for i in range(DAYS, 0, -1):
+    for day_num, i in enumerate(range(DAYS, 0, -1)):
+        if day_num > 0 and RESTART_QUESTDB_BETWEEN_DAYS:
+            restart_questdb()
         day = date.today() - timedelta(days=i)
-        dest, n = fetch(con, day, select, columns)
-        total += n
-        if dest is None:
+        # Stale whole-day file from before chunking existed -- if left in
+        # place, it joins the same glob as this day's new chunk files and
+        # double-counts every row.
+        stale = os.path.join(OUT, f"bus_positions_{day.isoformat()}.parquet")
+        if os.path.exists(stale):
+            os.remove(stale)
+        day_total, chunks = 0, []
+        for hour_start in range(0, 24, CHUNK_HOURS):
+            dest, n = fetch(con, day, hour_start, hour_start + CHUNK_HOURS, select, columns)
+            day_total += n
+            if dest is not None:
+                chunks.append(os.path.basename(dest))
+        total += day_total
+        if not chunks:
             gaps.append(day)
             print(f"{day} -> NO DATA (ingest gap), no file written")
         else:
-            print(f"{day} -> {os.path.basename(dest)} ({n:,} rows)")
+            print(f"{day} -> {len(chunks)} chunk(s), {day_total:,} rows")
     con.close()
     if gaps:
         print(f"warning: {len(gaps)} day(s) with no data: "

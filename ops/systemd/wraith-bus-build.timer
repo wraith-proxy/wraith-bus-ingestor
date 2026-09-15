@@ -1,0 +1,10 @@
+[Unit]
+Description=Run wraith-bus-ingestor dbt rebuild nightly at 03:00
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+Unit=wraith-bus-build.service
+
+[Install]
+WantedBy=timers.target

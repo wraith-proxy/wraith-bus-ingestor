@@ -2,12 +2,18 @@
 
 ## The nightly rebuild
 
-`dbt/build.sh` runs from a host cron entry at **03:00** every night — this
-is a host crontab, not a container, since it needs the repo root's `.venv`
-environment and to run at low priority alongside the live stack:
+`dbt/build.sh` runs from a host systemd timer at **03:00** every night —
+`ops/systemd/wraith-bus-build.{service,timer}`, installed to
+`/etc/systemd/system/` (a host unit, not a container, since it needs the
+repo root's `.venv` environment). Replaced the old host crontab entry
+2026-09-15 — the unit also auto-stops `ghost-osrm`/`ghost-backend`/
+`ghost-tiles` for the build window and restarts them after
+(`ExecStartPre`/`ExecStopPost`), which cron never did:
 
 ```
-0 3 * * * cd /path/to/wraith-bus-ingestor/dbt && ./build.sh >> /var/log/wraith-bus-ingestor-build.log 2>&1
+sudo systemctl status wraith-bus-build.timer
+sudo systemctl list-timers wraith-bus-build.timer
+journalctl -u wraith-bus-build.service
 ```
 
 A run does four things in order: extract the last `EXTRACT_DAYS` (default
