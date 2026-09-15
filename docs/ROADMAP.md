@@ -75,57 +75,27 @@ already at `2.0.0` from the September restructure -- 1.0.0 was a
 commitment to no more breaking changes without a major bump, not a
 version reset, and that commitment stands regardless of this gap.
 
-## 1.1.1 -- fix line_stops' unbounded memory, not just its ceiling
+## 1.1.1 -- line_stops' unbounded memory
 
-2026-09-14: a `dbt run --select line_stops` test OOM'd the whole host and
-needed a physical reboot (not the clean DuckDB-level error a bumped
-`memory_limit` normally produces). Root cause, confirmed by measurement:
-`observations` unions the raw `int_pings_matched_to_stops` rows FOUR times
-(real-operator/real-day, real-operator/`*`-day, `*`-operator/real-day,
-`*`-operator/`*`-day) before `by_grain` runs an exact `median()` over
-~1.5M distinct (operator, line, direction, day_type, atco_code) groups --
-measured at ~22.7M rows into that aggregate on the current 8-day window.
-Exact `median()` has to hold every row per group in memory until the group
-closes, so this scales with total unioned volume, not with the retention
-window -- it will keep getting worse as more operator-tagged data
-accumulates (operator only started arriving 2026-09-12), independent of
-anything else in this repo.
+Root cause, every fix attempted (including the ones that didn't work and
+why), and the measured data behind the final design are now written up in
+[ADR-0001](adr/0001-line-stops-memory-and-batching.md) rather than
+repeated here -- this section tracks only what's still open.
 
-Tried and rejected as insufficient on its own: swapping `median()` for
-`approx_quantile(secs_from_origin, 0.5)` (bounded t-digest, and this mart
-already documents itself as "roughly how far along the route" -- no real
-precision lost). Tested hard-capped at 12GB RAM / 24GB RAM+swap in an
-isolated `docker run --memory=12g --memory-swap=24g` container (so a
-repeat wouldn't take the host down again) -- it still didn't converge,
-pinned at the cap with climbing disk spill and near-idle CPU, killed after
-5 minutes with no progress. The union-of-4 fanout into a high-cardinality
-exact aggregate is the actual cost; changing which aggregate function runs
-on top of it wasn't enough.
-
-**The real fix** has to restructure the aggregation itself: compute the
-finest real (operator, day_type) grain once from the raw observations,
-then derive the pooled `'*'` rungs from that already-reduced result rather
-than re-scanning raw rows four times. The model's own docstring rejected a
-"median of medians" for statistical reasons (a pooled median must be a
-true median over every journey in the pool) -- any restructure has to
-keep that property, not trade it away for speed. Worth doing before
-1.2.0: this is a live stability bug now, not a nice-to-have.
-
-**Status (2026-09-15):** implemented, not yet verified by a real run. The
-finest grain (int_first_visit_per_journey) and each of the four
-operator/day_type rungs are now separate dbt models under
-models/intermediate/ (int_line_stops_real_real, int_line_stops_real_star,
-int_line_stops_star_real, int_line_stops_star_star), each independently
-materialized as a table and contract-enforced against column drift.
-build.sh's single dbt run is split so this five-model cluster runs at
---threads 1 -- a hard scheduling guarantee that only one grain's aggregate
-state is ever open, rather than the unverified AS MATERIALIZED hint tried
-first. Still open: no real dbt run/EXPLAIN ANALYZE has executed against
-this shape yet, the docs/operations.md/README.md/bus-marts.odcs.yaml cron
-references are still accurate (the cron trigger has not been swapped for
-the prepared ops/systemd/wraith-bus-build service and timer yet), and the
-route-reliability re-measurement this file's docstring calls for after any
-by_grain change has not been re-run.
+**Remaining:**
+- No real, full `dbt run` of the complete 86-model cluster yet -- every
+  number so far comes from isolated tests, not the actual invocation
+  `build.sh` will use in production.
+- No cold-cache validation -- one observed cold/warm swing (588 MiB vs
+  131 MiB, identical query) means the true worst case for a genuinely
+  fresh 3am run isn't fully confirmed.
+- The systemd timer + service prepared under `ops/systemd/` (to replace
+  the cron trigger) are not yet deployed -- cron still runs the nightly
+  build. `docs/operations.md`, `README.md`, and
+  `bus-marts.odcs.yaml`'s `refresh:` prose should only change once the
+  timer is actually live.
+- Route-reliability re-measurement (this mart's own docstring instruction,
+  after any `by_grain` change) hasn't been re-run against this shape.
 
 Also done as a direct result of this incident, outside git (QuestDB's own
 `server.conf` isn't tracked): QuestDB's `ram.usage.limit.bytes` was
