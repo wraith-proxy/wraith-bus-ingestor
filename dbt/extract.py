@@ -7,7 +7,9 @@ days. One parquet file per day, so a re-run only redoes the days it is asked for
 """
 import json
 import os
+import subprocess
 import sys
+import time
 import urllib.parse
 import urllib.request
 from datetime import date, timedelta
@@ -24,6 +26,32 @@ SAMPLE_MINS = int(os.environ.get("EXTRACT_SAMPLE_MINS", "3"))
 # union_by_name=true) already unions any number of files per day for free.
 CHUNK_HOURS = int(os.environ.get("EXTRACT_CHUNK_HOURS", "4"))
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+
+# Chunking bounds each query's own group-state, but questdb's table-reader
+# pool doesn't hand its mmap'd segments back between queries fired this close
+# together (checked: lowering cairo.inactive.reader.ttl to 1s made no
+# measurable difference after 30s idle) -- so the 48 queries/run still climb
+# cumulatively, observed peaking at ~7.8GB of an 8GB cap. Restarting questdb
+# between days resets that for free: nothing else reads this table, and the
+# cost (~6s/restart, ghost-ingestor's writes retry through the gap same as
+# any other questdb blip) is cheap next to the safety margin it buys. See
+# docs/ROADMAP.md 1.1.1.
+QUESTDB_CONTAINER = os.environ.get("QUESTDB_CONTAINER", "questdb")
+RESTART_QUESTDB_BETWEEN_DAYS = os.environ.get("EXTRACT_RESTART_QUESTDB", "1") == "1"
+
+
+def restart_questdb():
+    subprocess.run(["docker", "restart", QUESTDB_CONTAINER], check=True,
+                    capture_output=True)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(f"{QUESTDB}/exec?query=select+1", timeout=2):
+                return
+        except Exception:
+            time.sleep(1)
+    raise RuntimeError(f"{QUESTDB_CONTAINER} did not come back healthy within 30s of restart")
+
 
 # Columns we take verbatim, and columns we take the last value of within a bucket.
 KEYS = ["timestamp", "bus_id", "line"]
@@ -101,7 +129,9 @@ def main():
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs;")
     total, gaps = 0, []
-    for i in range(DAYS, 0, -1):
+    for day_num, i in enumerate(range(DAYS, 0, -1)):
+        if day_num > 0 and RESTART_QUESTDB_BETWEEN_DAYS:
+            restart_questdb()
         day = date.today() - timedelta(days=i)
         # Stale whole-day file from before chunking existed -- if left in
         # place, it joins the same glob as this day's new chunk files and
