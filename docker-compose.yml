@@ -6,6 +6,13 @@ services:
     image: ghcr.io/maplibre/martin
     container_name: ${TILES_CONTAINER}
     restart: unless-stopped
+    # Caps sized off observed docker stats (2026-09-15) plus margin, not
+    # swarm/deploy.resources -- compose spec honors these directly. swap set
+    # equal to mem_limit so a leak OOM-kills the container instead of
+    # dragging the host through the swap-thrash pattern that took the box
+    # down during line_stops rebuilds (see TJP-14094 memory notes).
+    mem_limit: 256m
+    memswap_limit: 256m
     ports:
       - "${TILES_PORT}:3000"
     volumes:
@@ -18,6 +25,8 @@ services:
     image: questdb/questdb:latest
     container_name: ${QUESTDB_CONTAINER}
     restart: unless-stopped
+    mem_limit: 4g
+    memswap_limit: 4g
     ports:
       - "${QUESTDB_HTTP_PORT}:9000"
       - "${QUESTDB_PG_PORT}:8812"
@@ -33,6 +42,8 @@ services:
       dockerfile: backend/Dockerfile
     container_name: ${API_CONTAINER}
     restart: unless-stopped
+    mem_limit: 1.5g
+    memswap_limit: 1.5g
     environment:
       - QUESTDB_URL=${QUESTDB_URL}
       - OSRM_URL=${OSRM_URL}
@@ -56,6 +67,8 @@ services:
     image: osrm/osrm-backend
     container_name: ${OSRM_CONTAINER}
     restart: unless-stopped
+    mem_limit: 3g
+    memswap_limit: 3g
     command: osrm-routed --algorithm mld /data/great-britain-latest.osrm
     volumes:
       - ${OSRM_DATA_PATH}:/data:ro
@@ -74,6 +87,8 @@ services:
       dockerfile: archiver/Dockerfile
     container_name: ${ARCHIVER_CONTAINER}
     restart: unless-stopped
+    mem_limit: 512m
+    memswap_limit: 512m
     environment:
       - QUESTDB_URL=${QUESTDB_URL}
       - RETENTION_DAYS=${RETENTION_DAYS}
@@ -94,6 +109,8 @@ services:
       - 194.242.2.2
       - 1.1.1.1
     restart: unless-stopped
+    mem_limit: 768m
+    memswap_limit: 768m
     environment:
       - BODS_API_KEY=${BODS_API_KEY}
       - QUESTDB_URL=${QUESTDB_URL}
