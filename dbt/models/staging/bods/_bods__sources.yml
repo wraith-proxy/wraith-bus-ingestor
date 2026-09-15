@@ -29,20 +29,98 @@ sources:
           of erroring on the schema mismatch.
         meta:
           external_location: "read_parquet('data/bus_positions_*.parquet', union_by_name=true)"
+        # extract.py runs once nightly at 03:00 and its window ends "yesterday"
+        # (never today -- see extract.py's day loop), so the freshest row is
+        # always at least ~24h old even on a perfectly healthy run. The one
+        # documented feed outage (2026-08-28..30, see stg_bods__vehicle_pings)
+        # was 3 days -- warn before that, error well past it rather than
+        # matching it exactly and paging on every repeat of a known-survivable gap.
+        loaded_at_field: "\"timestamp\""
+        freshness:
+          warn_after: {count: 2, period: day}
+          error_after: {count: 5, period: day}
         columns:
           - name: timestamp
             description: End of the 3-minute sample bucket, UTC (TIMESTAMPTZ on disk).
+            tests:
+              - not_null
+              - castable_as:
+                  arguments:
+                    type: "TIMESTAMP WITH TIME ZONE"
           - name: bus_id
             description: >
               Operator vehicle ref. REUSED across journeys and even across
               operators, so it is never a key on its own --
               int_pings_segmented_to_journeys exists precisely to cut this
               stream into journeys.
+            tests: [not_null]
           - name: line
             description: Public-facing service number, e.g. '88'. NOT unique across operators.
           - name: lat
             description: WGS84 latitude. Occasionally 0 or out-of-country when the vehicle's GPS has not fixed yet.
+            tests:
+              - castable_as:
+                  arguments:
+                    type: DOUBLE
+              # severity: warn, not error -- stg_bods__vehicle_pings already
+              # filters out-of-bbox/unfixed-GPS rows downstream (a single bad
+              # fix is normal feed noise), so this only WARNS, never blocks a
+              # publish, and exists to surface the raw feed going haywire.
+              - dbt_expectations.expect_column_values_to_be_between:
+                  arguments:
+                    min_value: 49.8
+                    max_value: 61.0
+                  config:
+                    severity: warn
           - name: lon
             description: WGS84 longitude, same caveats as lat.
+            tests:
+              - castable_as:
+                  arguments:
+                    type: DOUBLE
+              - dbt_expectations.expect_column_values_to_be_between:
+                  arguments:
+                    min_value: -8.7
+                    max_value: 2.0
+                  config:
+                    severity: warn
           - name: bearing
             description: Degrees clockwise from north; carried through for the map arrow, not used in modelling.
+            tests:
+              - castable_as:
+                  arguments:
+                    type: DOUBLE
+          - name: origin_aimed_dep
+            description: >
+              SIRI aimed departure, epoch MILLIS as a LONG. NULL before
+              2026-09-12 and for any operator that omits it.
+            tests:
+              - castable_as:
+                  arguments:
+                    type: BIGINT
+          - name: dest_aimed_arr
+            description: >
+              SIRI aimed arrival, epoch MILLIS as a LONG. NULL before
+              2026-09-12 and for any operator that omits it.
+            tests:
+              - castable_as:
+                  arguments:
+                    type: BIGINT
+        tests:
+          - columns_match_set:
+              arguments:
+                column_list: ["timestamp", "bus_id", "line", "lat", "lon", "bearing", "direction", "operator", "journey_ref", "origin_ref", "origin_name", "dest_ref", "dest_name", "origin_aimed_dep", "dest_aimed_arr"]
+          # Regression guard for the exact bug extract.py's own main() comments
+          # warn about: a stale whole-day file left alongside the new chunked
+          # files double-counts every row in that day.
+          - dbt_expectations.expect_compound_columns_to_be_unique:
+              arguments:
+                column_list: ["timestamp", "bus_id", "line"]
+          # A near-empty glob (extraction silently produced almost nothing)
+          # should fail loudly here rather than surface later as suspiciously
+          # thin marts. 500k is well under even the thinnest real day observed
+          # (2026-08-31, a partial bank-holiday day, was ~450k on its own --
+          # this is the full multi-day glob, so real runs are two orders up).
+          - dbt_expectations.expect_table_row_count_to_be_between:
+              arguments:
+                min_value: 500000
