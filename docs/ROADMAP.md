@@ -87,11 +87,14 @@ here -- this section tracks only what's still open.
 - No cold-cache validation -- one observed cold/warm swing (588 MiB vs
   131 MiB, identical query) means the true worst case for a genuinely
   fresh 3am run isn't fully confirmed.
-- The systemd timer + service prepared under `ops/systemd/` (to replace
-  the cron trigger) are not yet deployed -- cron still runs the nightly
-  build. `docs/operations.md`, `README.md`, and
-  `bus-marts.odcs.yaml`'s `refresh:` prose should only change once the
-  timer is actually live.
+
+The systemd timer under `ops/systemd/` replaced cron 2026-09-15 (`sudo
+systemctl enable --now wraith-bus-build.timer`, crontab entry removed) --
+`docs/operations.md`, `README.md` and `bus-marts.odcs.yaml`'s `refresh:`
+prose updated to match. Along the way, a real questdb OOM bug (query
+memory unbounded per day) and a native-memory sawtooth (Cairo's mmap'd
+reader pool, not JVM heap) were found and fixed too -- see git log
+2026-09-15 for the four commits.
 
 Also done as a direct result of this incident, outside git (QuestDB's own
 `server.conf` isn't tracked): QuestDB's `ram.usage.limit.bytes` was

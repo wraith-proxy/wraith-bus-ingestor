@@ -40,7 +40,8 @@ description:
     as 'weekday'. Fitted on a non-contiguous date range; a feed outage on
     2026-08-28..30 removed one weekend from the sample.
   refresh: >-
-    Marts refresh nightly at 03:00 via cron (dbt/build.sh). The journey/stop-match
+    Marts refresh nightly at 03:00 via a host systemd timer (dbt/build.sh).
+    The journey/stop-match
     layer (int_pings_segmented_to_journeys, int_pings_matched_to_stops) is
     incremental, reprocessing only the trailing ~2 days each run; everything
     downstream, including every mart in this contract, is still fully rebuilt
