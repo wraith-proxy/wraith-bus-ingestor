@@ -1,8 +1,7 @@
-# UNVALIDATED: written against the docs, never booted -- expect field-name
-# corrections on the first real Grafana start.
-#
-# dbt_build_runs is not created anywhere in this repo yet, so its column names
-# (timestamp / result / tests_failed) are assumed, not confirmed.
+# Validated on Grafana 13.2.2: all three rules provision, schedule and evaluate
+# to health=ok against live QuestDB. dbt_build_runs is created by the first
+# dbt/publish_run_results.py run, so these rules sit in health=error until a
+# build has happened -- that is the expected cold-start state, not a fault.
 #
 # Each rule computes its own threshold in SQL and hands a single number to a
 # __expr__ condition, because the time window belongs in the query where it is

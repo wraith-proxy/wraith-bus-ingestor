@@ -2,11 +2,10 @@
 # to it -- so it comes from the NTFY_TOPIC env var passed into the grafana
 # container, never hardcoded here.
 #
-# CAVEAT, unverified: Grafana's env-var interpolation in provisioning files is
-# documented for datasources; whether it resolves here in the alerting
-# provisioner needs confirming by running it, not assuming. If it does not, the
-# fallback is to template this file at container start rather than hardcode the
-# topic.
+# Env-var interpolation DOES resolve here, confirmed by running it on Grafana
+# 13.2.2 rather than trusting the docs, which only spell it out for datasources:
+# the provisioned contact point read back from the API carries the real topic
+# from .env, not the literal $NTFY_TOPIC.
 apiVersion: 1
 
 contactPoints:
