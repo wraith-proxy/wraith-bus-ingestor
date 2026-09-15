@@ -60,11 +60,21 @@ wraith_bus_ingestor:
         # cluster in a separate `dbt run --threads 1` invocation, so only one
         # grain's aggregate state is ever open in memory -- a hard scheduling
         # guarantee from dbt's own single-worker thread pool, not an
-        # optimizer's discretion. Actual memory need should now be far under
-        # 9 GB -- 2 GB is a deliberately conservative retest value, not a
-        # measured floor. Raise only if a real run needs it, and note the
-        # measured number here when you do.
-        memory_limit: '2GB'
+        # optimizer's discretion.
+        #
+        # 2 GB was NOT enough even after that fix: a threads=1, OS-capped
+        # (systemd-run MemoryMax) test still got SIGKILL'd building
+        # int_line_stops_real_real alone -- no concurrency involved, just that
+        # grain's 732K groups. A follow-up fix (2026-09-15) dropped a redundant
+        # count(distinct journey_key) -> count(*) in all 4 grain models
+        # (provably identical result, O(1) per group instead of a per-group
+        # hash set) but a retest at the same 2.2GB OS cap still got killed --
+        # so the 732K groups' t-digest+accumulator state alone genuinely needs
+        # more than 2GB. Escalating in measured steps (4GB, then 6GB if
+        # needed) rather than guessing a large number outright, each retested
+        # under a matching OS-level cap first -- see the systemd-run commands
+        # in git history / session notes for the exact cap used at each step.
+        memory_limit: '4GB'
         # DO NOT set temp_directory here. dbt-duckdb replays every `settings:`
         # entry on each new connection it opens, and DuckDB refuses to change
         # the temp directory once it has spilled to the current one -- so the
