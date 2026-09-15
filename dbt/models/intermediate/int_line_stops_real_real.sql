@@ -34,7 +34,16 @@ select
     -- multiples of 180 and a run of consecutive stops shares one median.
     -- The mean is continuous and separates them in the right order.
     avg(secs_from_origin)                                  as mean_secs_from_origin,
-    cast(count(distinct journey_key) as bigint)            as n_obs
+    -- count(*), not count(distinct journey_key): int_first_visit_per_journey's
+    -- own GROUP BY (journey_key, operator, line, direction, day_type,
+    -- atco_code) already guarantees journey_key can't repeat within a group
+    -- here, since this grain groups by a strict subset of those columns.
+    -- DISTINCT was therefore always redundant -- and expensive: it forces a
+    -- per-group hash set to dedupe, the same unbounded-per-group memory
+    -- shape as the exact median() this restructure exists to avoid. Measured
+    -- 2026-09-15: this alone OOM'd a 2.2GB-capped run on this grain's 732K
+    -- groups even after the concurrency and median() fixes had landed.
+    cast(count(*) as bigint)                               as n_obs
 from {{ ref('int_first_visit_per_journey') }}
 where operator is not null
 group by operator, line, direction, day_type, atco_code

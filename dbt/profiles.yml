@@ -43,13 +43,27 @@ wraith_bus_ingestor:
         # Dropped back to 2 GB on 2026-09-14 after fixing the actual cause:
         # line_stops' by_grain CTE unioned raw rows across all 4 operator/
         # day_type fallback grains before aggregating, forcing all 4 grains'
-        # exact median() groups open concurrently. Restructured into 4
-        # independent `AS MATERIALIZED` passes (only one grain's aggregate
-        # state open at a time) using approx_quantile() (bounded t-digest)
-        # instead of exact median() (unbounded per-group row buffer). Actual
-        # memory need should now be far under 9 GB -- 2 GB is a deliberately
-        # conservative retest value, not a measured floor. Raise only if a
-        # real run needs it, and note the measured number here when you do.
+        # exact median() groups open concurrently.
+        #
+        # First fix attempt (2026-09-14) was 4 `AS MATERIALIZED` CTEs inside
+        # one query, betting DuckDB's scheduler would serialize them. That bet
+        # was never verified and is abandoned -- MATERIALIZED is a hint, not a
+        # barrier, and DuckDB's vectorized engine is free to run all 4
+        # hash-aggregate pipelines concurrently anyway.
+        #
+        # Actual fix (2026-09-15): first_visit_per_journey and each of the 4
+        # grains promoted to their own dbt model (int_first_visit_per_journey,
+        # int_line_stops_{real_real,real_star,star_real,star_star} under
+        # models/intermediate/), using approx_quantile() (bounded t-digest)
+        # instead of exact median() (unbounded per-group row buffer), each
+        # contract-enforced against column drift. build.sh runs this 5-model
+        # cluster in a separate `dbt run --threads 1` invocation, so only one
+        # grain's aggregate state is ever open in memory -- a hard scheduling
+        # guarantee from dbt's own single-worker thread pool, not an
+        # optimizer's discretion. Actual memory need should now be far under
+        # 9 GB -- 2 GB is a deliberately conservative retest value, not a
+        # measured floor. Raise only if a real run needs it, and note the
+        # measured number here when you do.
         memory_limit: '2GB'
         # DO NOT set temp_directory here. dbt-duckdb replays every `settings:`
         # entry on each new connection it opens, and DuckDB refuses to change

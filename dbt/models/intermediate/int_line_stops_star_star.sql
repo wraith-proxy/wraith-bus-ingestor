@@ -27,6 +27,10 @@ select
     atco_code,
     cast(approx_quantile(secs_from_origin, 0.5) as double) as median_secs_from_origin,
     avg(secs_from_origin)                                  as mean_secs_from_origin,
-    cast(count(distinct journey_key) as bigint)            as n_obs
+    -- count(*), not count(distinct journey_key) -- see int_line_stops_real_real
+    -- for why the two are provably identical here and why DISTINCT alone
+    -- was measured OOM'ing a 2.2GB-capped run despite the median()/
+    -- concurrency fixes already being in place.
+    cast(count(*) as bigint)                               as n_obs
 from {{ ref('int_first_visit_per_journey') }}
 group by line, direction, atco_code
