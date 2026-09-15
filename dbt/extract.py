@@ -15,6 +15,14 @@ from datetime import date, timedelta
 QUESTDB = os.environ.get("QUESTDB_HTTP", "http://localhost:9001")
 DAYS = int(os.environ.get("EXTRACT_DAYS", "8"))
 SAMPLE_MINS = int(os.environ.get("EXTRACT_SAMPLE_MINS", "3"))
+# A whole day's SAMPLE BY in one query OOM-killed questdb itself (kernel
+# oom-killer, not a graceful questdb error -- ram.usage.limit.bytes doesn't
+# cover whatever this query allocates) once daily row counts climbed past
+# ~8M, 2026-09-15. Chunking the query bounds each call's group-state the
+# same way line_stops' per-line batching does -- see docs/ROADMAP.md 1.1.1.
+# One file per chunk; dbt's source glob (bus_positions_*.parquet,
+# union_by_name=true) already unions any number of files per day for free.
+CHUNK_HOURS = int(os.environ.get("EXTRACT_CHUNK_HOURS", "4"))
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 # Columns we take verbatim, and columns we take the last value of within a bucket.
@@ -58,13 +66,17 @@ def build_select(available):
     return select, columns
 
 
-def fetch(con, day, select, columns):
+def fetch(con, day, hour_start, hour_end, select, columns):
+    end_day = day + timedelta(days=1) if hour_end == 24 else day
+    start_ts = f"{day.isoformat()}T{hour_start:02d}:00:00.000000Z"
+    end_ts = f"{end_day.isoformat()}T{hour_end % 24:02d}:00:00.000000Z"
     query = (
         f"SELECT {select} FROM bus_positions "
-        f"WHERE timestamp IN '{day.isoformat()}' SAMPLE BY {SAMPLE_MINS}m"
+        f"WHERE timestamp >= '{start_ts}' AND timestamp < '{end_ts}' "
+        f"SAMPLE BY {SAMPLE_MINS}m"
     )
     url = f"{QUESTDB}/exp?" + urllib.parse.urlencode({"query": query})
-    dest = os.path.join(OUT, f"bus_positions_{day.isoformat()}.parquet")
+    dest = os.path.join(OUT, f"bus_positions_{day.isoformat()}_{hour_start:02d}.parquet")
     # COPY ... TO takes no bind parameters, so quote the literals ourselves.
     src, tgt = url.replace("'", "''"), dest.replace("'", "''")
     con.execute(
@@ -73,9 +85,9 @@ def fetch(con, day, select, columns):
     )
     n = con.execute("SELECT count(*) FROM read_parquet(?)", [dest]).fetchone()[0]
     if n == 0:
-        # The ingestor was down that day. An empty file is worse than no file:
-        # it still joins the glob and contributes nothing but a schema to argue
-        # with, so drop it and let the gap be a gap.
+        # The ingestor was down that window. An empty file is worse than no
+        # file: it still joins the glob and contributes nothing but a schema
+        # to argue with, so drop it and let the gap be a gap.
         os.remove(dest)
         return None, 0
     return dest, n
@@ -91,13 +103,24 @@ def main():
     total, gaps = 0, []
     for i in range(DAYS, 0, -1):
         day = date.today() - timedelta(days=i)
-        dest, n = fetch(con, day, select, columns)
-        total += n
-        if dest is None:
+        # Stale whole-day file from before chunking existed -- if left in
+        # place, it joins the same glob as this day's new chunk files and
+        # double-counts every row.
+        stale = os.path.join(OUT, f"bus_positions_{day.isoformat()}.parquet")
+        if os.path.exists(stale):
+            os.remove(stale)
+        day_total, chunks = 0, []
+        for hour_start in range(0, 24, CHUNK_HOURS):
+            dest, n = fetch(con, day, hour_start, hour_start + CHUNK_HOURS, select, columns)
+            day_total += n
+            if dest is not None:
+                chunks.append(os.path.basename(dest))
+        total += day_total
+        if not chunks:
             gaps.append(day)
             print(f"{day} -> NO DATA (ingest gap), no file written")
         else:
-            print(f"{day} -> {os.path.basename(dest)} ({n:,} rows)")
+            print(f"{day} -> {len(chunks)} chunk(s), {day_total:,} rows")
     con.close()
     if gaps:
         print(f"warning: {len(gaps)} day(s) with no data: "
