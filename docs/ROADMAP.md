@@ -108,3 +108,46 @@ real ceiling on a 15GB host) and is now capped at 8GB explicitly.
 for historical data and feed gaps -- once enough real `DirectionRef`-backed
 data has accumulated, measure how often the heuristic and the real field
 actually disagree, and simplify or retire whichever side loses.
+
+## 1.3.0 -- incident recovery: upserts, replay, drift guards
+
+Landed 2026-09-15, prompted by that day's OOM/timer work exposing that the
+system assumed BODS plus a live QuestDB table WAS the history:
+
+- `bus_positions` now `DEDUP ENABLE UPSERT KEYS(bus_id, timestamp)`.
+  `vehicle_id` was checked first and found 100% null across a 2-day, 31M-row
+  sample -- a dead column, not the real per-vehicle identity, so `bus_id`
+  was the only real choice.
+- Native `TTL 90 DAYS` removed from `bus_positions` (was sitting silently
+  underneath archiver's own 8-day DETACH-and-copy retention -- harmless
+  today only by coincidence of 8 < 90, a real trap if archiver was ever
+  down 82+ days or `RETENTION_DAYS` raised without noticing the table TTL
+  existed). Archiver is now the sole retention mechanism.
+- `ops/incident.py`: `restore <day>` (ATTACH a day back from
+  `/mnt/archive`, idempotent) and `replay <start> <end>` (restore-if-needed
+  + re-extract via `extract.py`'s own `fetch()` + `SKIP_EXTRACT=1
+  FULL_REFRESH=1 build.sh`), one script per the "not two scripts a human
+  has to sequence by hand" requirement. `restore` proven against a real
+  archived day (2026-07-03, 10.6M rows, re-run correctly no-ops).
+- `dbt-expectations` (`metaplane/dbt_expectations` -- the `calogica` one
+  `dbt deps` warns is deprecated) plus two custom macros
+  (`dbt/macros/tests/schema_drift.sql`): dbt_expectations' own
+  `expect_column_values_to_be_of_type` / `expect_table_columns_to_match_set`
+  turned out broken on the duckdb adapter for any table-valued-function
+  source (`describe read_parquet(...)` isn't valid as a subquery) --
+  confirmed by running them, not assumed, and replaced rather than
+  worked around blindly. `_bods__sources.yml`'s `bus_positions` table now
+  carries: source freshness (warn 2d / error 5d), not_null, per-column
+  type validity, GB-bbox range warnings, compound-key
+  (`timestamp, bus_id, line`) uniqueness, and a row-count floor. The
+  schema-drift test was negative-tested by injecting a real extra column
+  into a live parquet chunk and confirming it actually fails, not just
+  parses.
+
+**Remaining:**
+- `ops/incident.py replay` is written but untested -- needs a synthetic
+  "lost N days" scenario run end to end before it's trusted in a real
+  incident.
+- No page/alert on the freshness `warn`/dbt test `severity: warn` results
+  -- they show up in `dbt test` output today, nothing routes them
+  anywhere a human would see them unprompted.

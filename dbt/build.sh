@@ -95,9 +95,10 @@ fi
 # hole) -- but it is worth saying out loud how much data there is.
 echo "==> $(ls data/bus_positions_*.parquet 2>/dev/null | wc -l) daily parquet files in data/"
 
-# No packages.yml: this project deliberately has no package dependencies, so
-# there is nothing for `dbt deps` to do. The guard is here so that adding one
-# later does not silently break the build.
+# packages.yml landed 2026-09-15 (dbt-expectations, for the bus_positions
+# source's data quality tests -- see docs/ROADMAP.md 1.3.0). The guard stays:
+# cheap insurance against a future packages.yml-less state silently skipping
+# this instead of erring.
 if [[ -f packages.yml ]]; then
     echo "==> dbt deps"
     "${DBT[@]}" deps --profiles-dir .
