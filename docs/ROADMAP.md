@@ -79,13 +79,16 @@ version reset, and that commitment stands regardless of this gap.
 
 Root cause, every fix attempted (including the ones that didn't work and
 why), and the measured data behind the final design are now written up in
-[ADR-0001](adr/0001-line-stops-memory-and-batching.md) rather than
-repeated here -- this section tracks only what's still open.
+[ADR-0001](adr/0001-line-stops-memory-and-batching.md) and
+[ADR-0002](adr/0002-line-stops-final-assembly.md) rather than repeated
+here -- this section tracks only what's still open.
+
+**Done:** a real, full `dbt run` of the complete 97-model cluster now
+completes cleanly (line_stops itself needed a second fix -- see ADR-0002 --
+`stop_identity` promoted to its own model and `mode()` swapped for
+`any_value()`, both measured, not assumed). 786/786 tests pass.
 
 **Remaining:**
-- No real, full `dbt run` of the complete 86-model cluster yet -- every
-  number so far comes from isolated tests, not the actual invocation
-  `build.sh` will use in production.
 - No cold-cache validation -- one observed cold/warm swing (588 MiB vs
   131 MiB, identical query) means the true worst case for a genuinely
   fresh 3am run isn't fully confirmed.
