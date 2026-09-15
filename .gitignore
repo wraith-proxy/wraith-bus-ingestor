@@ -1,7 +1,9 @@
 # Live data volumes -- 29GB, owned and written by this repo's containers,
 # physically migrated in from ghost-site/ on 2026-09-14. questdb_data/ is
-# written by the QuestDB container as uid 10001, not by you.
+# written by the QuestDB container as uid 10001 and grafana_data/ by the
+# Grafana container as uid 472, not by you.
 questdb_data/
+grafana_data/
 maps/
 *.log
 

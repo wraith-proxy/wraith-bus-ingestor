@@ -8,6 +8,8 @@
 #   FULL_REFRESH=1 ./build.sh   wipe the scratch warehouse and rebuild every
 #                               incremental model from scratch (schema change,
 #                               suspected drift -- not needed routinely)
+#   REPLAY=1 ./build.sh         skip the incremental models' retention
+#                               post-hooks -- for ops/incident.py replay only
 #
 # THINGS THIS SCRIPT IS CAREFUL ABOUT, all learned the hard way:
 #
@@ -51,6 +53,7 @@ PY="../.venv/bin/python"
 : "${EXTRACT_DAYS:=8}"
 : "${SKIP_EXTRACT:=0}"
 : "${FULL_REFRESH:=0}"
+: "${REPLAY:=0}"
 
 export QUESTDB_HTTP EXTRACT_DAYS
 
@@ -71,7 +74,16 @@ DBT=("${NICE[@]}" ../.venv/bin/dbt)
 # extract_days is a dbt var, not just a shell/Python env var, because the
 # incremental models' retention post-hooks prune to this same window --
 # one number, not two to keep in sync with extract.py.
-DBT_VARS=(--vars "{extract_days: ${EXTRACT_DAYS}}")
+# ops/incident.py sets REPLAY=1. It replays days deliberately OLDER than the
+# retention window, and the incremental models' own post-hooks would delete
+# exactly those rows again in the same run (they prune to max(date) - N days,
+# and max is still today). The var switches those hooks off for this run only.
+if [[ "$REPLAY" == "1" ]]; then
+    DBT_VARS=(--vars "{extract_days: ${EXTRACT_DAYS}, replay: true}")
+    echo "==> REPLAY=1: retention post-hooks disabled for this run"
+else
+    DBT_VARS=(--vars "{extract_days: ${EXTRACT_DAYS}}")
+fi
 
 started=$(date +%s)
 
@@ -127,8 +139,22 @@ echo "==> dbt run   (into $BUILD, at low priority)"
 "${DBT[@]}" run --profiles-dir . "${RUN_FLAGS[@]}" --exclude int_first_visit_per_journey+
 "${DBT[@]}" run --profiles-dir . "${RUN_FLAGS[@]}" --threads 1 --select int_first_visit_per_journey+
 
+# 'set -e' would exit here on a failed test, which is right for the publish
+# gate but wrong for the metrics: a failing test is the single most important
+# thing for the DQ dashboard to record, and it is the one case that would
+# never be written. Capture the code, publish the results either way, then
+# re-raise before anything is published.
 echo "==> dbt test"
-"${DBT[@]}" test --profiles-dir . "${DBT_VARS[@]}"
+test_rc=0
+"${DBT[@]}" test --profiles-dir . "${DBT_VARS[@]}" || test_rc=$?
+
+echo "==> publishing run results to QuestDB"
+"$PY" publish_run_results.py || true
+
+if [[ "$test_rc" != "0" ]]; then
+    echo "!! dbt test failed (exit $test_rc) -- not publishing; previous marts keep serving" >&2
+    exit "$test_rc"
+fi
 
 # ---------------------------------------------------------------------------
 # Publish. Only the five marts are copied: the API reads nothing else, and the

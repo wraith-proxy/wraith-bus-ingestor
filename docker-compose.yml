@@ -129,6 +129,51 @@ services:
     depends_on:
       - db
 
+  # Reads QuestDB over the Postgres wire protocol on 8812 (already published by
+  # the db service), so a dashboard panel is a direct query against the live
+  # table rather than a second pipeline to build and keep in sync. Anonymous
+  # Viewer is deliberate: nginx exposes this publicly read-only, so the admin
+  # password gates only edit/admin, not reading. No host port -- only nginx
+  # talks to it, over ghost-net, same as api and osrm.
+  # ${GRAFANA_DATA_PATH} is written by Grafana's own in-container uid 472, so it
+  # has to be chowned once before first boot or Grafana exits on a permission
+  # error -- the same class of gotcha as QuestDB's uid 10001 next door.
+  grafana:
+    image: grafana/grafana
+    container_name: ${GRAFANA_CONTAINER}
+    restart: unless-stopped
+    mem_limit: 512m
+    memswap_limit: 512m
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL}
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+      - NTFY_TOPIC=${NTFY_TOPIC}
+    volumes:
+      - ${GRAFANA_DATA_PATH}:/var/lib/grafana
+      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - ghost-net
+    depends_on:
+      - db
+
+  # Alert delivery. Grafana Alerting's webhook contact point posts here
+  # server-side over ghost-net, so no host port and no browser involvement.
+  # The topic name is the only thing gating who can subscribe to these alerts,
+  # which makes it a credential: it is generated random and treated as a
+  # secret, never committed.
+  ntfy:
+    image: binwiederhier/ntfy
+    container_name: ${NTFY_CONTAINER}
+    restart: unless-stopped
+    mem_limit: 128m
+    memswap_limit: 128m
+    command: serve
+    networks:
+      - ghost-net
+
 networks:
   # Owned by ghost-site's own compose file (name: ghost-net, driver: bridge).
   # ghost-site must be brought up first on a cold boot so this network

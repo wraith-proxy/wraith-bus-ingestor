@@ -3,7 +3,12 @@
 Where this is now, and what's next. Not a schedule -- just the order
 things need to happen in, revised as the plan changes.
 
-## Now: 1.0.0
+These `1.x.y` headings are planning milestones, not release tags. The `v*`
+tags `cz` cuts on every merge to `main` are an independent sequence --
+`.gitea/workflows/release.yml` bumps them per merge, so the two numbers
+drift apart by design and neither is wrong.
+
+## 1.0.0 -- single-NAS deployment, data owned
 
 A live, single-NAS deployment. Ingest, storage, transform and API all
 work end to end, verified against real traffic, split out of `ghost-site`
@@ -109,7 +114,7 @@ for historical data and feed gaps -- once enough real `DirectionRef`-backed
 data has accumulated, measure how often the heuristic and the real field
 actually disagree, and simplify or retire whichever side loses.
 
-## 1.3.0 -- incident recovery: upserts, replay, drift guards
+## Now: 1.3.0 -- incident recovery: upserts, replay, drift guards
 
 Landed 2026-09-15, prompted by that day's OOM/timer work exposing that the
 system assumed BODS plus a live QuestDB table WAS the history:

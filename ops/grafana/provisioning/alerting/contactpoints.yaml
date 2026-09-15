@@ -1,0 +1,26 @@
+# The topic name is the credential -- anyone who knows it can read and publish
+# to it -- so it comes from the NTFY_TOPIC env var passed into the grafana
+# container, never hardcoded here.
+#
+# CAVEAT, unverified: Grafana's env-var interpolation in provisioning files is
+# documented for datasources; whether it resolves here in the alerting
+# provisioner needs confirming by running it, not assuming. If it does not, the
+# fallback is to template this file at container start rather than hardcode the
+# topic.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: ntfy
+    receivers:
+      - uid: ntfy-webhook
+        type: webhook
+        settings:
+          url: http://ntfy:80/$NTFY_TOPIC
+          httpMethod: POST
+
+policies:
+  - orgId: 1
+    receiver: ntfy
+    group_by:
+      - alertname
