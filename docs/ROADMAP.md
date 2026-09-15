@@ -150,4 +150,61 @@ system assumed BODS plus a live QuestDB table WAS the history:
   incident.
 - No page/alert on the freshness `warn`/dbt test `severity: warn` results
   -- they show up in `dbt test` output today, nothing routes them
-  anywhere a human would see them unprompted.
+  anywhere a human would see them unprompted. Closed by 1.4.0's alerting.
+
+## 1.4.0 -- Grafana: observability, DQ, alerting
+
+Planned 2026-09-15. QuestDB already speaks the Postgres wire protocol on
+8812 (`docker-compose.yml`) -- Grafana's Postgres datasource points
+straight at it, so live metrics ("rows ingested last hour", etc.) are a
+direct QuestDB query, not a hand-rolled semantic layer. No new ingestion
+pipeline for that part.
+
+- **DQ / test results.** Not currently persisted anywhere queryable --
+  `dbt test` only prints to `build.log` and gates the publish. A
+  `build.sh` post-hook writes each run's pass/fail counts and which tests
+  failed into a small QuestDB table (not duckdb -- duckdb has no wire
+  protocol Grafana can reach), so Grafana has something to plot.
+- **Incidents.** Grafana's own annotations API, not a separate hand-built
+  table -- it is built for exactly "mark this moment on the timeline",
+  so this session's OOM incidents etc. become annotations, not another
+  thing to invent storage for.
+- **Alerting.** Grafana Alerting -> self-hosted `ntfy` (one small Go
+  container, added to `docker-compose.yml`) via its webhook contact
+  point, not email -- since 1.5.0 ships a real APK anyway, native push
+  to the device beats a proton-bridge SMTP hop. `ntfy` needs no accounts;
+  the topic name itself is the only thing gating who can subscribe, so
+  it's generated random and treated as a secret / env var -- never
+  committed, never printed to `build.log`, never returned in any HTTP
+  response. Verify this by actually checking (grep, not assumption)
+  before calling it done.
+- **Public hosting.** Anonymous Viewer role for Grafana, same nginx
+  `location` pattern already used for `/tiles/` and `/api/`
+  (`docs/architecture.md`'s existing shape, not a new one). Admin/edit
+  stays authenticated. `ntfy` itself does NOT get a public `location` --
+  only the topic's publish side is reachable (from Grafana, server-side),
+  never exposed for the phone to hit directly; the phone only ever talks
+  to `ntfy`'s own public instance conventions or a narrowly-scoped
+  subscribe-only path, decided when this is actually built, not guessed
+  here.
+
+## 1.5.0 -- Android APK, LineageOS Tegu (Pixel Tablet), Android 16+
+
+Planned 2026-09-15. Full native, not a WebView wrapper -- Jetpack Compose
++ OkHttp, single-device scope (Tegu only, Android 16+ minSdk), two
+screens:
+
+- **Tracking.** Hits the existing `/api/buses`, `/api/bus/<id>`,
+  `/api/route`, `/api/search` directly -- zero new backend work, same
+  endpoints the web map already uses.
+- **Dashboard.** Does NOT query QuestDB or Grafana directly from the
+  phone -- adds a couple of read-only `/api/metrics`-style endpoints to
+  the existing Flask backend instead, reusing the same underlying
+  queries 1.4.0's Grafana panels use. Keeps one API surface for every
+  client (web, Grafana, phone), and keeps QuestDB itself off the public
+  internet regardless of how Grafana ends up exposed.
+- **Push notifications.** Subscribes to 1.4.0's `ntfy` topic natively
+  (Android's own notification channel, no separate push-gateway service
+  needed) -- alerts Grafana fires land on the device directly. Same
+  topic-name-as-secret handling as 1.4.0: shipped to the APK as build
+  config, not hardcoded in a committed source file.
