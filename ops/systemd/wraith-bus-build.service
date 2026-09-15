@@ -8,15 +8,31 @@ Type=oneshot
 User=thomaspeoples
 Group=thomaspeoples
 WorkingDirectory=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt
+# osrm/backend/tiles are pure downstream consumers of the published marts --
+# zero involvement in extract/run/test/publish (confirmed 2026-09-15, see
+# docs/ROADMAP.md 1.1.1) -- stopping them for the build window is free real
+# headroom on a 15GB host, not just a paper cap. ghost-ingestor and questdb
+# stay up: ingestor is needed for build.sh's own positions_ingest_is_live
+# contract check post-publish, questdb for extraction itself. `- ` (dash
+# prefix) so one already-stopped container doesn't fail the whole unit.
+ExecStartPre=-/usr/bin/docker stop ghost-osrm ghost-backend ghost-tiles
+ExecStopPost=/usr/bin/docker start ghost-osrm ghost-backend ghost-tiles
+
 ExecStart=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/build.sh
 StandardOutput=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/build.log
 StandardError=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/build.log
 
-# Hard OS-level ceiling -- same numbers already proven interactively via
-# systemd-run --scope --user -p MemoryMax=2200M -p MemorySwapMax=0. Set as
-# persistent unit properties here instead of a --user scope: this runs
-# unattended off a system timer with no logind session / linger for a
-# --user scope to attach to (confirmed: this host's crontab-driven nightly
-# run has neither).
-MemoryMax=2200M
+# 2200M was a guess written before any of the real measurement work (this
+# commit predates the day's memory_limit settling at 4GB and predates ever
+# testing the extraction phase at all). Retested for real 2026-09-15:
+# dbt phase alone (SKIP_EXTRACT=1) completed clean at 6600M. The extraction
+# phase (extract.py, uncapped by dbt's memory_limit -- separate pandas/
+# pyarrow process) got 7 of 8 days through clean under 6000M before an
+# unrelated interruption; also found and fixed a real bug on the way here --
+# questdb's own 4g container cap was OOM-killing IT mid-extraction (kernel
+# oom-killer, confirmed via journalctl -k), now 8g. 9000M gives ~3GB margin
+# over every number actually measured, with osrm/backend/tiles now stopped
+# for the whole window above (not true during the extraction test, which
+# had to fight for headroom against them still running).
+MemoryMax=9000M
 MemorySwapMax=0
