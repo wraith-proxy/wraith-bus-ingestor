@@ -66,15 +66,16 @@
   Secondary artefact: 3-minute sampling quantises the median to multiples of
   180 s, so a run of consecutive stops ties. Stops on both sides of a road can
   both appear, because a bus passing one is within 120 m of the other.
+
+  stop_identity (name/locality/lat/lon per stop) used to be a CTE here,
+  reading straight from int_pings_matched_to_stops. Promoted to its own
+  model, int_stop_identity, because it and the by_grain/window computation
+  below are two independent subtrees feeding one final join -- DuckDB isn't
+  guaranteed to run them sequentially just because they're in the same
+  query, and in practice didn't. See docs/adr/0002 for the measurement.
 #}
 
-with matches as (
-
-    select * from {{ ref('int_pings_matched_to_stops') }}
-
-),
-
-by_grain as (
+with by_grain as (
 
     -- A union of small, already-aggregated rows (one per grain), not raw
     -- observations. Each grain is its own dbt model under
@@ -91,20 +92,6 @@ by_grain as (
     select * from {{ ref('int_line_stops_star_real') }}
     union all
     select * from {{ ref('int_line_stops_star_star') }}
-
-),
-
-stop_identity as (
-
-    -- Stop attributes, taken once rather than carried through the aggregation.
-    select
-        atco_code,
-        mode(stop_name) as stop_name,
-        mode(locality)  as locality,
-        avg(stop_lat)   as lat,
-        avg(stop_lon)   as lon
-    from matches
-    group by atco_code
 
 ),
 
@@ -148,4 +135,4 @@ select
     q.median_secs_from_origin,
     q.n_obs
 from sequenced q
-join stop_identity i using (atco_code)
+join {{ ref('int_stop_identity') }} i using (atco_code)

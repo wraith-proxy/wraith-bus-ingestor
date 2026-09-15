@@ -465,3 +465,27 @@ models:
         data_type: bigint
         description: Distinct journeys observed at this stop in this grain.
         tests: [not_null]
+
+  - name: int_stop_identity
+    description: >
+      Stop attributes (name, locality, lat/lon) per atco_code, taken once
+      rather than carried through line_stops' aggregation. Promoted out of
+      line_stops.sql -- see docs/adr/0002 -- because it and the by_grain/
+      window computation are two independent subtrees under one final join,
+      and DuckDB isn't guaranteed to run those sequentially just because
+      they're in the same query.
+    columns:
+      - name: atco_code
+        description: The stop. Primary key.
+        tests: [not_null, unique]
+      - name: stop_name
+        description: Display name. Not unique -- opposite sides of a road share it.
+        tests: [not_null]
+      - name: locality
+        description: Place the stop is in.
+      - name: lat
+        description: Stop latitude.
+        tests: [not_null]
+      - name: lon
+        description: Stop longitude.
+        tests: [not_null]
