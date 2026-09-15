@@ -70,11 +70,14 @@ wraith_bus_ingestor:
         # (provably identical result, O(1) per group instead of a per-group
         # hash set) but a retest at the same 2.2GB OS cap still got killed --
         # so the 732K groups' t-digest+accumulator state alone genuinely needs
-        # more than 2GB. Escalating in measured steps (4GB, then 6GB if
-        # needed) rather than guessing a large number outright, each retested
-        # under a matching OS-level cap first -- see the systemd-run commands
-        # in git history / session notes for the exact cap used at each step.
-        memory_limit: '4GB'
+        # more than 2GB.
+        #
+        # 4 GB also NOT enough: same isolated real_real test under a 4.4GB OS
+        # cap was SIGKILL'd too, measured peak RSS 4.28GiB (journalctl -k) --
+        # still climbing right past the cap, not close to converging.
+        # Escalating in measured steps rather than guessing a large number
+        # outright, each retested under a matching OS-level cap first.
+        memory_limit: '6GB'
         # DO NOT set temp_directory here. dbt-duckdb replays every `settings:`
         # entry on each new connection it opens, and DuckDB refuses to change
         # the temp directory once it has spilled to the current one -- so the
