@@ -92,8 +92,6 @@ here -- this section tracks only what's still open.
   build. `docs/operations.md`, `README.md`, and
   `bus-marts.odcs.yaml`'s `refresh:` prose should only change once the
   timer is actually live.
-- Route-reliability re-measurement (this mart's own docstring instruction,
-  after any `by_grain` change) hasn't been re-run against this shape.
 
 Also done as a direct result of this incident, outside git (QuestDB's own
 `server.conf` isn't tracked): QuestDB's `ram.usage.limit.bytes` was

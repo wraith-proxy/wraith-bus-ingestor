@@ -48,8 +48,19 @@
   sequence scores ~1. This one scores 6-9x on a geographically coherent line
   and 200-480x on a line whose number is reused in several towns.
   (Baseline predates the approx_quantile switch and the by-grain-model split;
-  re-measure after either change and expect no material regression; see
-  migration notes.)
+  original example lines were never recorded, only described qualitatively.)
+
+  RE-MEASURED 2026-09-15 (dbt/scripts/measure_route_reliability.py, road
+  distance via the live OSRM-backed /api/route, not the original examples --
+  those were never named, only described): a single-operator tourist loop
+  (Golden_Tours_Hop_On_Hop_Off, 18 stops) scored 0.46x -- correctly BELOW 1,
+  since straight-line distance between stops is always <= real road
+  distance for a coherent route with no backtracking, a different and
+  better signal than the old 6-9x figure (which was capturing zig-zag
+  inflation, not present here). A deliberately worst-case reused line
+  ('1', 558 distinct localities, more extreme than whatever produced the
+  old 200-480x figure) scored ~18,818x. Same qualitative story either way:
+  no regression from the by_grain batching or the approx_quantile switch.
 
   The dominant cause is that journeys on one line start in many different
   places -- the 192 outbound has 24 distinct start locations, because short
