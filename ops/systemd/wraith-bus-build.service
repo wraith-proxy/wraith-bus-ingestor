@@ -1,0 +1,22 @@
+[Unit]
+Description=wraith-bus-ingestor nightly dbt rebuild
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=thomaspeoples
+Group=thomaspeoples
+WorkingDirectory=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt
+ExecStart=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/build.sh
+StandardOutput=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/build.log
+StandardError=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/build.log
+
+# Hard OS-level ceiling -- same numbers already proven interactively via
+# systemd-run --scope --user -p MemoryMax=2200M -p MemorySwapMax=0. Set as
+# persistent unit properties here instead of a --user scope: this runs
+# unattended off a system timer with no logind session / linger for a
+# --user scope to attach to (confirmed: this host's crontab-driven nightly
+# run has neither).
+MemoryMax=2200M
+MemorySwapMax=0

@@ -38,9 +38,19 @@ wraith_bus_ingestor:
         # in that window now has `operator` populated (the field only
         # started arriving 2026-09-12) -- all 5 operator-specific fallback
         # rungs run in full now, instead of the partial coverage the 22-day
-        # window used to give them. 9 GB leaves ~6 GB RAM plus 9 GB swap
-        # free for everything else on the box during a rebuild.
-        memory_limit: '9GB'
+        # window used to give them.
+        #
+        # Dropped back to 2 GB on 2026-09-14 after fixing the actual cause:
+        # line_stops' by_grain CTE unioned raw rows across all 4 operator/
+        # day_type fallback grains before aggregating, forcing all 4 grains'
+        # exact median() groups open concurrently. Restructured into 4
+        # independent `AS MATERIALIZED` passes (only one grain's aggregate
+        # state open at a time) using approx_quantile() (bounded t-digest)
+        # instead of exact median() (unbounded per-group row buffer). Actual
+        # memory need should now be far under 9 GB -- 2 GB is a deliberately
+        # conservative retest value, not a measured floor. Raise only if a
+        # real run needs it, and note the measured number here when you do.
+        memory_limit: '2GB'
         # DO NOT set temp_directory here. dbt-duckdb replays every `settings:`
         # entry on each new connection it opens, and DuckDB refuses to change
         # the temp directory once it has spilled to the current one -- so the

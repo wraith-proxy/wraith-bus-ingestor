@@ -246,3 +246,208 @@ models:
       - name: locality_norm
         description: Normalised place name of the matched stop; the key line_localities groups on.
         tests: [not_null]
+
+  - name: int_first_visit_per_journey
+    description: >
+      One row per (journey, stop): the earliest time that journey reached
+      it, collapsed from int_pings_matched_to_stops' possibly-repeated pings
+      at the same stop. Promoted out of line_stops.sql so each of the four
+      by-grain aggregations below reads this once instead of recomputing it
+      four times.
+    columns:
+      - name: journey_key
+        description: The journey this observation belongs to.
+        tests: [not_null]
+      - name: operator
+        description: National Operator Code, or NULL for pings from before 2026-09-12.
+      - name: line
+        description: Service number.
+        tests: [not_null]
+      - name: direction
+        description: Journey direction, inferred or observed.
+        tests: [not_null]
+      - name: day_type
+        description: Service pattern of the day the journey ran.
+        tests: [not_null]
+      - name: atco_code
+        description: The matched stop.
+        tests: [not_null]
+      - name: secs_from_origin
+        description: Earliest seconds-from-origin this journey was seen at this stop.
+        tests: [not_null]
+
+  - name: int_line_stops_real_real
+    description: >
+      One of the four line_stops grain models -- real operator, real
+      day_type. See models/marts/line_stops.sql and this model's own header
+      for the OOM history behind splitting these out. Column types are
+      enforced by a dbt contract so this grain and its three siblings stay
+      UNION-ALL-compatible with a compile-time error, not a silent runtime
+      mismatch, if one of the four ever drifts.
+    columns:
+      - name: operator
+        data_type: varchar
+        description: National Operator Code. Never NULL here -- this grain filters those rows out.
+        tests: [not_null]
+      - name: line
+        data_type: varchar
+        description: Service number.
+        tests: [not_null]
+      - name: direction
+        data_type: varchar
+        description: Journey direction.
+        tests: [not_null]
+      - name: day_type
+        data_type: varchar
+        description: Service pattern of the day.
+        tests: [not_null]
+      - name: atco_code
+        data_type: varchar
+        description: The stop.
+        tests: [not_null]
+      - name: median_secs_from_origin
+        data_type: double
+        description: Median seconds from journey origin to this stop, over every journey in this grain (approx_quantile, bounded t-digest).
+        tests: [not_null]
+      - name: mean_secs_from_origin
+        data_type: double
+        description: Mean seconds from journey origin to this stop. Tie-break only, never published.
+        tests: [not_null]
+      - name: n_obs
+        data_type: bigint
+        description: Distinct journeys observed at this stop in this grain.
+        tests: [not_null]
+
+  - name: int_line_stops_real_star
+    description: >
+      One of the four line_stops grain models -- real operator, day_type
+      pooled as '*'. See int_line_stops_real_real for the shared OOM history
+      and column-contract rationale.
+    columns:
+      - name: operator
+        data_type: varchar
+        description: National Operator Code. Never NULL here -- this grain filters those rows out.
+        tests: [not_null]
+      - name: line
+        data_type: varchar
+        description: Service number.
+        tests: [not_null]
+      - name: direction
+        data_type: varchar
+        description: Journey direction.
+        tests: [not_null]
+      - name: day_type
+        data_type: varchar
+        description: Always the literal '*' in this grain.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['*']
+      - name: atco_code
+        data_type: varchar
+        description: The stop.
+        tests: [not_null]
+      - name: median_secs_from_origin
+        data_type: double
+        description: Median seconds from journey origin to this stop, over every journey in this grain (approx_quantile, bounded t-digest).
+        tests: [not_null]
+      - name: mean_secs_from_origin
+        data_type: double
+        description: Mean seconds from journey origin to this stop. Tie-break only, never published.
+        tests: [not_null]
+      - name: n_obs
+        data_type: bigint
+        description: Distinct journeys observed at this stop in this grain.
+        tests: [not_null]
+
+  - name: int_line_stops_star_real
+    description: >
+      One of the four line_stops grain models -- operator pooled as '*',
+      real day_type. See int_line_stops_real_real for the shared OOM history
+      and column-contract rationale.
+    columns:
+      - name: operator
+        data_type: varchar
+        description: Always the literal '*' in this grain.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['*']
+      - name: line
+        data_type: varchar
+        description: Service number.
+        tests: [not_null]
+      - name: direction
+        data_type: varchar
+        description: Journey direction.
+        tests: [not_null]
+      - name: day_type
+        data_type: varchar
+        description: Service pattern of the day.
+        tests: [not_null]
+      - name: atco_code
+        data_type: varchar
+        description: The stop.
+        tests: [not_null]
+      - name: median_secs_from_origin
+        data_type: double
+        description: Median seconds from journey origin to this stop, over every journey in this grain (approx_quantile, bounded t-digest).
+        tests: [not_null]
+      - name: mean_secs_from_origin
+        data_type: double
+        description: Mean seconds from journey origin to this stop. Tie-break only, never published.
+        tests: [not_null]
+      - name: n_obs
+        data_type: bigint
+        description: Distinct journeys observed at this stop in this grain.
+        tests: [not_null]
+
+  - name: int_line_stops_star_star
+    description: >
+      One of the four line_stops grain models -- both operator and
+      day_type pooled as '*', the original fully-merged behaviour kept as
+      the last-resort fallback. See int_line_stops_real_real for the shared
+      OOM history and column-contract rationale.
+    columns:
+      - name: operator
+        data_type: varchar
+        description: Always the literal '*' in this grain.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['*']
+      - name: line
+        data_type: varchar
+        description: Service number.
+        tests: [not_null]
+      - name: direction
+        data_type: varchar
+        description: Journey direction.
+        tests: [not_null]
+      - name: day_type
+        data_type: varchar
+        description: Always the literal '*' in this grain.
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['*']
+      - name: atco_code
+        data_type: varchar
+        description: The stop.
+        tests: [not_null]
+      - name: median_secs_from_origin
+        data_type: double
+        description: Median seconds from journey origin to this stop, over every journey in this grain (approx_quantile, bounded t-digest).
+        tests: [not_null]
+      - name: mean_secs_from_origin
+        data_type: double
+        description: Mean seconds from journey origin to this stop. Tie-break only, never published.
+        tests: [not_null]
+      - name: n_obs
+        data_type: bigint
+        description: Distinct journeys observed at this stop in this grain.
+        tests: [not_null]

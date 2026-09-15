@@ -111,6 +111,22 @@ true median over every journey in the pool) -- any restructure has to
 keep that property, not trade it away for speed. Worth doing before
 1.2.0: this is a live stability bug now, not a nice-to-have.
 
+**Status (2026-09-15):** implemented, not yet verified by a real run. The
+finest grain (int_first_visit_per_journey) and each of the four
+operator/day_type rungs are now separate dbt models under
+models/intermediate/ (int_line_stops_real_real, int_line_stops_real_star,
+int_line_stops_star_real, int_line_stops_star_star), each independently
+materialized as a table and contract-enforced against column drift.
+build.sh's single dbt run is split so this five-model cluster runs at
+--threads 1 -- a hard scheduling guarantee that only one grain's aggregate
+state is ever open, rather than the unverified AS MATERIALIZED hint tried
+first. Still open: no real dbt run/EXPLAIN ANALYZE has executed against
+this shape yet, the docs/operations.md/README.md/bus-marts.odcs.yaml cron
+references are still accurate (the cron trigger has not been swapped for
+the prepared ops/systemd/wraith-bus-build service and timer yet), and the
+route-reliability re-measurement this file's docstring calls for after any
+by_grain change has not been re-run.
+
 Also done as a direct result of this incident, outside git (QuestDB's own
 `server.conf` isn't tracked): QuestDB's `ram.usage.limit.bytes` was
 unset (defaulting to 90% of host RAM, ~14.9GB observed -- effectively no

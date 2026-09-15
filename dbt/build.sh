@@ -117,7 +117,14 @@ if [[ "$FULL_REFRESH" == "1" ]]; then
 fi
 
 echo "==> dbt run   (into $BUILD, at low priority)"
-"${DBT[@]}" run --profiles-dir . "${RUN_FLAGS[@]}"
+# Split in two so the memory-sensitive line_stops grain cluster never runs
+# concurrently with anything else, without touching the project's load-
+# bearing threads:3 default (see profiles.yml) for every other model.
+# int_first_visit_per_journey+ is exactly the five models this cluster
+# comprises (confirmed: nothing else in the project refs either of them),
+# so --threads 1 here costs nothing to the rest of the build.
+"${DBT[@]}" run --profiles-dir . "${RUN_FLAGS[@]}" --exclude int_first_visit_per_journey+
+"${DBT[@]}" run --profiles-dir . "${RUN_FLAGS[@]}" --threads 1 --select int_first_visit_per_journey+
 
 echo "==> dbt test"
 "${DBT[@]}" test --profiles-dir . "${DBT_VARS[@]}"
