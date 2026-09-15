@@ -23,6 +23,8 @@ nav:
   - Contracts: contracts.md
   - Operations: operations.md
   - Roadmap: ROADMAP.md
+  - Architecture Decisions:
+      - "0001 - line_stops memory & batching": adr/0001-line-stops-memory-and-batching.md
   - Python API: api.md
   - dbt Docs: dbt/index.html
 
