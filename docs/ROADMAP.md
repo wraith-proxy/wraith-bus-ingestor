@@ -83,11 +83,6 @@ why), and the measured data behind the final design are now written up in
 [ADR-0002](adr/0002-line-stops-final-assembly.md) rather than repeated
 here -- this section tracks only what's still open.
 
-**Done:** a real, full `dbt run` of the complete 97-model cluster now
-completes cleanly (line_stops itself needed a second fix -- see ADR-0002 --
-`stop_identity` promoted to its own model and `mode()` swapped for
-`any_value()`, both measured, not assumed). 786/786 tests pass.
-
 **Remaining:**
 - No cold-cache validation -- one observed cold/warm swing (588 MiB vs
   131 MiB, identical query) means the true worst case for a genuinely
