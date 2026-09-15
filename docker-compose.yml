@@ -25,8 +25,12 @@ services:
     image: questdb/questdb:latest
     container_name: ${QUESTDB_CONTAINER}
     restart: unless-stopped
-    mem_limit: 4g
-    memswap_limit: 4g
+    # 4g OOM-killed the real java process mid-extraction, 2026-09-15
+    # (confirmed via journalctl -k, not app-level) -- extract.py's 8-day
+    # SAMPLE BY 3m aggregation query is heavier than idle/steady-state
+    # ingest load. See docs/ROADMAP.md 1.1.1.
+    mem_limit: 8g
+    memswap_limit: 8g
     ports:
       - "${QUESTDB_HTTP_PORT}:9000"
       - "${QUESTDB_PG_PORT}:8812"
