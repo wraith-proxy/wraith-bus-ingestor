@@ -67,8 +67,14 @@ services:
     image: osrm/osrm-backend
     container_name: ${OSRM_CONTAINER}
     restart: unless-stopped
-    mem_limit: 3g
-    memswap_limit: 3g
+    # Measured 2026-09-15: the 3g cap set here initially left ~0 headroom --
+    # osrm-routed's actual startup RSS (anon-rss ~3.06GB per dmesg) sat right
+    # at the 3GB ceiling, so it OOM'd and crash-looped on every restart
+    # attempt (confirmed via `docker inspect --format '{{.State.OOMKilled}}'`
+    # and `journalctl -k`, both pointing at this container's own memcg, not
+    # host-wide pressure). Raised to 5g for real margin above the measured need.
+    mem_limit: 5g
+    memswap_limit: 5g
     command: osrm-routed --algorithm mld /data/great-britain-latest.osrm
     volumes:
       - ${OSRM_DATA_PATH}:/data:ro
