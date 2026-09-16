@@ -348,3 +348,45 @@ of this repo.
 single-device app with no store distribution -- the debug build is
 already a real, installable APK, and there is nothing a release
 signing config would buy here beyond ceremony.
+
+**Shipped, then found broken on the real device, twice -- both fixed
+same-day:**
+
+- **The dashboard showed "No data" everywhere.** `/api/metrics/summary`
+  404'd in production. Merging `feature/TJP-16090` to `main` never
+  deploys `api` -- nothing in `.gitea/workflows/` rebuilds it, a gap
+  that had simply never been hit before because nothing had changed
+  `backend/app.py` and needed shipping on its own since the split from
+  `ghost-site`. Fixed by rebuilding and recreating `ghost-backend` by
+  hand and reloading `ghost-web`'s nginx; verified against the real
+  public URL afterward, not just "container came up healthy." Full
+  writeup: [ADR-0004](adr/0004-api-container-has-no-deploy-automation.md).
+- **The map showed no buses.** Not a missing-data bug -- `/buses`
+  returned 18,001 real features. 77% of them carry `status: "unknown"`
+  (confirmed against the live feed), and `TrackingScreen.kt`'s
+  `StatusUnknownColor` (`#6D7787`, correctly copied from the web map's
+  own palette) is near-identical to `style.json`'s own `roads-major`
+  color (`#6b7889`) -- most dots were camouflaged against major roads,
+  not absent. The web map's own palette already has a `busStroke`
+  (`#12161c`) that the Kotlin translation simply never carried over.
+  Fixed by adding the missing stroke (verified against the real
+  `PropertyFactory`/`CircleLayer` API by disassembling the compiled
+  MapLibre jar with `javap`, not assumed) and bumping the circle radius
+  slightly. `setGeoJson()` vs. `setGeoJsonSync()` was investigated as a
+  second possible cause -- confirmed real (the jar exports both, with
+  different threading semantics) but left as async on purpose: the feed
+  runs to ~18k features GB-wide, and parsing that synchronously on the
+  main thread every 60s would trade a visibility bug for a jank one.
+
+**Logo redesigned.** The first cut (`ic_launcher_foreground.xml`) was a
+bare orange rectangle with two dots for wheels -- functional, not a real
+icon. Three independent design directions were generated (a realistic
+coach silhouette, a bold geometric bus-front mark, a map-pin-with-bus
+glyph), each rendered to PNG at both full size and actual 48px launcher
+size with `resvg` and inspected before picking one -- the map-pin
+candidate lost specifically at 48px, where its interior bus glyph turned
+to mud. The coach silhouette won: most recognizable, holds up small,
+fits the brand's palette. The shipped XML was verified by re-extracting
+its own `pathData` values into a throwaway SVG and re-rendering *that*,
+so what was inspected is provably what ships, not a hand-typed
+approximation of it.
