@@ -22,9 +22,9 @@ plugins {
 android {
     namespace = "com.thomaspeoples.wraithbus"
     // Android 16 (API 36) end to end -- see docs/ROADMAP.md 1.5.0. This app
-    // targets exactly one device (Tegu, a Pixel Tablet running LineageOS),
-    // so there is no reason to widen minSdk for compatibility it will never
-    // need to exercise.
+    // targets exactly one device (Tegu, a Pixel 9a phone running
+    // LineageOS), so there is no reason to widen minSdk for compatibility
+    // it will never need to exercise.
     compileSdk = 36
 
     defaultConfig {
@@ -33,6 +33,14 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
+
+        // Single-device scope (Tegu, a Pixel 9a phone) -- arm64-v8a is the
+        // only architecture that will ever run this APK. Shipping the
+        // other three (armeabi-v7a, x86, x86_64) MapLibre native slices
+        // quadruples the native-lib payload for zero real devices.
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
 
         buildConfigField(
             "String", "API_BASE_URL",
