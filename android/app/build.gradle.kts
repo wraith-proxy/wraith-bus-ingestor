@@ -31,8 +31,15 @@ android {
         applicationId = "com.thomaspeoples.wraithbus"
         minSdk = 36
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        // versionCode/versionName are the source of truth now, not the
+        // android-X.Y.Z-debug Gitea release tags -- those get cut FROM
+        // this value at ship time, never invented independently of it.
+        // versionCode was never actually bumped for the 1.0.0 -> 1.0.1
+        // re-ship (both carried code 1 internally, only the release-tag
+        // label changed) -- code 2 is the true count of distinct builds,
+        // not a made-up 3rd number matching the tag names.
+        versionCode = 2
+        versionName = "1.0.2"
 
         // Single-device scope (Tegu, a Pixel 9a phone) -- arm64-v8a is the
         // only architecture that will ever run this APK. Shipping the

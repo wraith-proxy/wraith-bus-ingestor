@@ -1,7 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- MapLibre's own manifest declares both location permissions for its
+         optional LocationComponent ("show my position on the map"), which
+         this app never enables: it only ever draws live bus positions,
+         never the device's own. Stripped rather than carried silently, since
+         an app requesting location it doesn't use is exactly the kind of
+         thing an F-Droid reviewer would rightly flag. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />
     <!-- Runtime-requested on first launch (MainActivity): required on
          API 33+, and minSdk here is 36, so it is always required. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
