@@ -202,6 +202,12 @@ echo "==> validating contracts against the candidate marts"
 mv -f "$STAGED" "$SERVED"
 rm -f "$SERVED.wal"
 
+# Reads $SERVED, the file just published above -- the same snapshot the API
+# now serves, not the scratch build warehouse. Never fails the build; see
+# the script's own docstring for why.
+echo "==> publishing punctuality/model-fit summary to QuestDB"
+"$PY" publish_punctuality_summary.py "$SERVED" || true
+
 elapsed=$(( $(date +%s) - started ))
 echo
 echo "==> published $SERVED ($(du -h "$SERVED" | cut -f1)) in $((elapsed / 60))m $((elapsed % 60))s"

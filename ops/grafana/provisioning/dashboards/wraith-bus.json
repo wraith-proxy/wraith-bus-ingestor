@@ -457,45 +457,50 @@
       }
     },
     {
-      "type": "timeseries",
-      "title": "Build duration",
-      "description": "Wall-clock seconds per dbt run. Worth watching after any change to the line_stops cluster: that model has a history of turning a slow build into a host-level OOM.",
+      "type": "table",
+      "title": "Slowest tests (latest build)",
+      "description": "The fifteen most expensive assertions on the last run. dbt test time is a real share of the nightly window, so this is where to look before assuming a slow build is the models' fault.",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
       "targets": [
         {
           "refId": "A",
           "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
-          "format": "time_series",
+          "format": "table",
           "rawQuery": true,
-          "rawSql": "select timestamp as time, elapsed_s from dbt_build_runs where $__timeFilter(timestamp) order by timestamp"
+          "rawSql": "select test, status, exec_ms from dbt_test_results where timestamp = (select max(timestamp) from dbt_test_results) order by exec_ms desc limit 15"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
-          "color": { "mode": "fixed", "fixedColor": "purple" },
           "custom": {
-            "drawStyle": "line",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "gradientMode": "opacity",
-            "showPoints": "always",
-            "pointSize": 6,
-            "spanNulls": true,
-            "axisLabel": "duration",
-            "axisPlacement": "auto",
-            "lineInterpolation": "linear",
-            "scaleDistribution": { "type": "linear" },
-            "stacking": { "mode": "none", "group": "A" },
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false }
-          }
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "filterable": false,
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "exec_ms" },
+            "properties": [
+              { "id": "unit", "value": "ms" },
+              { "id": "decimals", "value": 0 },
+              {
+                "id": "custom.cellOptions",
+                "value": { "type": "gauge", "mode": "gradient" }
+              },
+              { "id": "color", "value": { "mode": "continuous-YlRd" } }
+            ]
+          }
+        ]
       },
       "options": {
-        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false, "calcs": [] },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": { "show": false, "reducer": ["sum"], "countRows": false, "fields": "" }
       }
     },
     {
@@ -553,9 +558,9 @@
       }
     },
     {
-      "type": "table",
-      "title": "Slowest tests (latest build)",
-      "description": "The fifteen most expensive assertions on the last run. dbt test time is a real share of the nightly window, so this is where to look before assuming a slow build is the models' fault.",
+      "type": "stat",
+      "title": "Build duration",
+      "description": "Wall-clock seconds for the latest dbt run, and the change from the run before it. Was a timeseries graph, but the build only runs nightly -- one point a day reads better as a number than a chart. Worth watching after any change to the line_stops cluster: that model has a history of turning a slow build into a host-level OOM.",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
       "targets": [
@@ -564,7 +569,266 @@
           "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "select test, status, exec_ms from dbt_test_results where timestamp = (select max(timestamp) from dbt_test_results) order by exec_ms desc limit 15"
+          "rawSql": "select a.elapsed_s as duration_s, a.elapsed_s - b.elapsed_s as vs_previous_s from (select elapsed_s from dbt_build_runs order by timestamp desc limit 1) a cross join (select elapsed_s from dbt_build_runs order by timestamp desc limit 1,2) b"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "color": { "mode": "fixed", "fixedColor": "text" },
+          "mappings": []
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "vs_previous_s" },
+            "properties": [
+              { "id": "displayName", "value": "vs previous build" },
+              { "id": "color", "value": { "mode": "thresholds" } },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "red", "value": 0.001 }
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/.*/", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "orientation": "horizontal",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "row",
+      "title": "Punctuality & ETA models",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "System on-time %",
+      "description": "Share of journeys classified on-time by line_punctuality's per-(line, direction, day_type, hour_band) median delay, weighted by journey volume and rolled up from dbt/publish_punctuality_summary.py. 'On-time' uses the DfT Traffic Commissioner standard for local bus services: 1 minute early to 5 minutes 59 seconds late. 95% is the statutory target operators are held to -- thresholds below match that, not a number picked for this dashboard.",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 41 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select 100.0*sum(on_time_journeys)/sum(n_journeys) as pct_on_time from line_punctuality_summary where timestamp=(select max(timestamp) from line_punctuality_summary)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 0,
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 85 },
+              { "color": "green", "value": 95 }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "System median delay",
+      "description": "Volume-weighted average of each line's median delay, from the same rollup as on-time %. Negative means the typical bus is running early, not late -- delay and lateness aren't the same thing here, and a negative number isn't necessarily good if it means stops are being missed early.",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 41 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select sum(median_delay_s*n_journeys)/sum(n_journeys) as median_delay_s from line_punctuality_summary where timestamp=(select max(timestamp) from line_punctuality_summary)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "decimals": 0,
+          "color": { "mode": "fixed", "fixedColor": "text" },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Avg model fit (r2)",
+      "description": "Mean r-squared across every eta_models row (one per operator/line/direction/day_type/hour_band regression). Below 0.5 is the same 'weak fit' cutoff the panel to the right counts against -- a chosen line, not a standard, named as such in dbt/publish_punctuality_summary.py.",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 41 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select avg_r2 from eta_model_summary where timestamp=(select max(timestamp) from eta_model_summary)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "decimals": 2,
+          "min": 0,
+          "max": 1,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "green", "value": 0.7 }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Weak model fit",
+      "description": "Share of eta_models rows with r2 below 0.5. Not a failure by itself -- the API's predict() already falls back to a schedule-adjusted timetable and then the bare timetable when a regression is weak (see docs/ROADMAP.md 1.0.0) -- but a rising trend here means more of the fleet's ETAs are running on the fallback chain rather than a fitted model.",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 41 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select pct_weak_fit from eta_model_summary where timestamp=(select max(timestamp) from eta_model_summary)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 0,
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "red", "value": 25 }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Avg modeled speed",
+      "description": "Mean of eta_models' mean_speed_kmh across every regression. A sanity gauge more than an alert -- a sudden system-wide jump or collapse is more likely a feed or grain problem than every bus actually changing speed.",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 41 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select avg_speed_kmh from eta_model_summary where timestamp=(select max(timestamp) from eta_model_summary)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "velocitykmh",
+          "decimals": 1,
+          "color": { "mode": "fixed", "fixedColor": "text" },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "textMode": "auto",
+        "orientation": "auto",
+        "wideLayout": true
+      }
+    },
+    {
+      "type": "table",
+      "title": "Worst lines by delay (latest build)",
+      "description": "Every line with at least 50 journeys in the latest build, worst median delay first. The 50-journey floor exists because rarely-run lines (school routes, a handful of trips a day) produce noisy medians from a handful of journeys -- see dbt/publish_punctuality_summary.py's per-line rollup for exactly what's being averaged and how.",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 45 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "select line, n_journeys, 100.0*on_time_journeys/n_journeys as pct_on_time, median_delay_s, p90_delay_s from line_punctuality_summary where timestamp=(select max(timestamp) from line_punctuality_summary) and n_journeys>=50 order by median_delay_s desc limit 25"
         }
       ],
       "fieldConfig": {
@@ -572,7 +836,7 @@
           "custom": {
             "align": "auto",
             "cellOptions": { "type": "auto" },
-            "filterable": false,
+            "filterable": true,
             "inspect": false
           },
           "mappings": [],
@@ -580,16 +844,36 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "exec_ms" },
+            "matcher": { "id": "byName", "options": "pct_on_time" },
             "properties": [
-              { "id": "unit", "value": "ms" },
+              { "id": "displayName", "value": "on-time %" },
+              { "id": "unit", "value": "percent" },
               { "id": "decimals", "value": 0 },
-              {
-                "id": "custom.cellOptions",
-                "value": { "type": "gauge", "mode": "gradient" }
-              },
-              { "id": "color", "value": { "mode": "continuous-YlRd" } }
+              { "id": "custom.cellOptions", "value": { "type": "gauge", "mode": "gradient" } },
+              { "id": "color", "value": { "mode": "continuous-RdYlGr" } },
+              { "id": "min", "value": 0 },
+              { "id": "max", "value": 100 }
             ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "median_delay_s" },
+            "properties": [
+              { "id": "displayName", "value": "median delay" },
+              { "id": "unit", "value": "s" },
+              { "id": "decimals", "value": 0 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "p90_delay_s" },
+            "properties": [
+              { "id": "displayName", "value": "p90 delay" },
+              { "id": "unit", "value": "s" },
+              { "id": "decimals", "value": 0 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "n_journeys" },
+            "properties": [{ "id": "displayName", "value": "journeys" }]
           }
         ]
       },
