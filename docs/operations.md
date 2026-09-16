@@ -75,7 +75,35 @@ Other flags:
 
 ```bash
 SKIP_EXTRACT=1 ./build.sh   # reuse the parquet already in data/, skip the QuestDB pull
+REPLAY=1 ./build.sh         # disable the incremental models' retention post-hooks
+                            # (set by ops/incident.py — see below)
 ```
+
+### Test results are recorded, pass or fail
+
+Straight after `dbt test`, `build.sh` runs `publish_run_results.py`, which
+reads `dbt/target/run_results.json` and writes two tables into QuestDB over
+ILP: **`dbt_test_results`**, a row per test with its status, failure count
+and execution time, and **`dbt_build_runs`**, a row per run with the
+overall result, elapsed seconds, model count and the passed/failed/warned
+test counts. `run_results.json` rather than `build.log` because it is
+structured, versioned by dbt, and written even when the run fails.
+
+The ordering in `build.sh` is deliberately awkward. `set -e` would abort
+the script the moment `dbt test` returned non-zero — correct for the
+publish gate, but it would mean the single most interesting run, the
+failing one, was the only one never recorded. So the exit code is captured,
+the results are published either way, and the code is re-raised before
+anything reaches the marts. Publishing is itself best-effort: a failure
+there prints a warning and exits 0, because a dashboard missing a datapoint
+is a far smaller problem than a nightly build that dies because its metrics
+sink was down.
+
+The effect is that a failed night is now visible on the dashboard and
+pages a phone (see below), instead of being a non-zero exit sitting in
+`build.log` waiting for somebody to think to open it. Warn-severity test
+results and freshness warnings — which never failed the build, and so
+previously surfaced nowhere at all — are counted in the same rows.
 
 ## Archiving, not deleting
 
@@ -105,6 +133,79 @@ directly for orphaned `.detached` directories first, before looking at
 what's newly eligible, so this resumes cleanly rather than being silently
 skipped.
 
+## Recovering a lost day: `ops/incident.py`
+
+`ops/incident.py` is the other half of the archive: `archive.py` moves
+partitions out, this brings them back and rebuilds whatever depended on
+them. It runs on the host rather than in a container because it needs both
+`docker` (to reach into QuestDB's uid-10001-owned partition directory —
+the same workaround used for `server.conf` edits) and this repo's
+virtualenv, since it imports `extract.py` and reuses its chunked fetch
+rather than reimplementing it.
+
+```bash
+ops/incident.py restore 2026-08-02             # one archived day back into QuestDB
+ops/incident.py replay 2026-08-01 2026-08-03   # restore + re-extract + rebuild
+```
+
+`restore <day>` copies the archived partition into the container, chowns it
+to uid 10001, and `ALTER TABLE bus_positions ATTACH PARTITION LIST '<day>'`.
+It then polls `table_partitions()` for up to 10s instead of trusting the
+DDL's own return, because "accepted" and "visible as attached" are not the
+same moment. It is idempotent — a day already attached is a no-op, not an
+error — which is what makes it safe for `replay` to call blindly.
+
+`replay <start> <end>` is built on `restore` rather than duplicating it.
+For each day in the range it restores the day if that day falls outside the
+hot `RETENTION_DAYS` window, re-extracts it into `dbt/data/` through
+`extract.py`'s own `fetch()`, and then covers the whole range with a single
+`SKIP_EXTRACT=1 FULL_REFRESH=1 REPLAY=1 ./build.sh` at the end rather than
+one rebuild per day.
+
+Two details in there matter more than they look:
+
+- The extract deletes `data/bus_positions_<day>.parquet` before it starts.
+  That whole-day filename predates the 4-hour chunking but still matches
+  the glob the chunks are read back through, so one left behind by an older
+  run silently double-counts the day. `extract.py`'s own `main()` does the
+  same thing for the same reason.
+- Replay leans on `bus_positions`' `DEDUP UPSERT KEYS(bus_id, timestamp)`.
+  Replaying a day that was only *partially* lost re-inserts rows that are
+  already there; without dedup those land as duplicates instead of no-ops.
+
+### What `REPLAY=1` does to retention
+
+`incident.py` always sets `REPLAY=1`, which makes `build.sh` pass
+`--vars '{replay: true}'`. Both incremental models
+(`int_pings_segmented_to_journeys` and `int_pings_matched_to_stops`)
+collapse their retention `post_hook` to an empty list when that var is
+true.
+
+Without it, a replay quietly undoes itself. Those hooks prune each model to
+`max(journey_local_date)` minus the retention window, and `max` is still
+today — so replaying days deliberately *older* than the window rebuilds
+exactly the rows the post-hook then deletes, in the same run, with every
+step reporting success. The var applies to that one run only; the next
+nightly prunes as normal.
+
+### The day you cannot get back
+
+`replay` only helps for days that still exist in cold storage. A day lost
+*inside* the hot `RETENTION_DAYS` window is not recoverable — not by this
+script, and not by anything else:
+
+- `extract_day()` re-reads the day from QuestDB, which is precisely where
+  the rows are already missing.
+- The archive does not have it. That is what "inside the window" means.
+- BODS serves live positions only. There is no backfill API and no second
+  source to go back to.
+
+Which is why the feed-stale alert pages a phone rather than sitting on a
+dashboard someone opens on Mondays. An ingest outage is not a backlog to
+catch up on afterwards: every minute the ingestor is down is a minute no
+tool in this repo can ever fill in. Noticing quickly is the whole
+mitigation.
+
 ## The API never needs a restart
 
 `backend/app.py` opens `wraith_bus_ingestor.duckdb` (mounted read-only from `dbt/`)
@@ -119,6 +220,173 @@ active and how stale the served marts are.
 Practically: after `FULL_REFRESH=1 ./build.sh` completes, there is nothing
 further to do — the API picks up the new marts on its own within a minute,
 with no `docker compose restart` and no downtime.
+
+## Dashboards and alerting
+
+### Reaching Grafana
+
+Grafana is public and read-only at the site's `/grafana/` path. The nginx
+`location` that proxies it lives in `ghost-site`, not here (see
+[Architecture](architecture.md)); this repo only puts the container on
+`ghost-net`, with no host port, exactly like `api` and `osrm`.
+
+Anonymous access is on with the `Viewer` role, so the dashboards read
+without a login. That is the load-bearing setting: the admin password gates
+*editing*, not *reading*, and anything the panels can see is public by
+definition. Editing and admin need a login as `admin` with
+`GRAFANA_ADMIN_PASSWORD` from `.env`.
+
+Two settings have to agree or the page comes up broken rather than erroring:
+`GRAFANA_ROOT_URL` must match the nginx location *including its trailing
+slash*, since Grafana builds every asset URL by appending to that string,
+and `GF_SERVER_SERVE_FROM_SUB_PATH=true` must be set for a subpath to be
+served at all.
+
+Datasource, dashboards, contact point and alert rules are all provisioned
+from `ops/grafana/provisioning/`, mounted read-only, with
+`allowUiUpdates: false`. The files in git are the source of truth, so an
+edit made in the UI does not survive — change the file and the provisioner
+picks it up within 30s. All three alert rules provision, schedule and
+evaluate to `health=ok` against live QuestDB — confirmed live, not just
+written against the docs.
+
+### The Grafana image is pinned to `11.6.16` — do not casually bump it
+
+`:latest` first shipped Grafana 13's "Dynamic dashboards" (GA and on by
+default since 2026-04-08): a provisioned classic-schema dashboard like
+this one renders fine — layout, titles, panels all correct — but its
+frontend never issues the panel query request at all. Confirmed live by
+watching nginx's access log across four full page loads from a real
+device: zero `/api/ds/query` calls, ever, while the exact same query
+worked correctly through `curl`. Every panel showed "No data". Known
+upstream issue: [grafana/grafana#122663](https://github.com/grafana/grafana/issues/122663).
+
+`12.3.11` did **not** fix it — that version runs the same
+apiserver-backed dashboard path under a `v1beta1` API instead of `v2`,
+and setting `GF_FEATURE_TOGGLES_KUBERNETESDASHBOARDS=false` (plus the
+three `dashboardScene*` toggles) had no effect: `/api/frontend/settings`
+reported them back as `true` regardless of the setting. That toggle is
+locked at General Availability, not merely defaulted on — no config
+combination turns it off.
+
+`11.6.16` predates Dynamic Dashboards existing in any form (introduced in
+12.0, May 2025). Both `/apis/dashboard.grafana.app/v1beta1/...` and
+`/apis/dashboard.grafana.app/v2/...` genuinely 404 on it — the code isn't
+there, not just hidden. Before bumping this image, confirm those
+endpoints still 404 on whatever version you're moving to; if either
+responds, the dashboard will silently stop querying.
+
+`GRAFANA_DATA_PATH` has two traps of its own. It is written by Grafana's
+in-container uid 472, so it must be `chown`ed once before first boot or
+Grafana exits on a permission error — the same class of problem as
+QuestDB's uid 10001 next door. And it must be absolute or `./`-prefixed: a
+bare name is read by Compose as a *named volume*, so Grafana would come up
+empty every time with nothing obviously wrong.
+
+`ghost-site`'s `proxy_pass` for `/grafana/` has a trap too, found the hard
+way as a `net::ERR_TOO_MANY_REDIRECTS` incident: it must have **no
+trailing slash and no path** (`proxy_pass http://upstream;`). A trailing
+slash strips the matched `/grafana/` prefix, which `GF_SERVER_SERVE_FROM_SUB_PATH=true`
+needs preserved — stripped, Grafana 301s to re-add it, nginx strips it
+again, forever. See [Architecture](architecture.md).
+
+### What's on the dashboard
+
+`ops/grafana/provisioning/dashboards/wraith-bus.json` — "Wraith Bus
+Platform", four rows:
+
+- **Is the pipeline alive?** Feed age, buses tracked (5 min), positions
+  ingested (1 h), hours since last dbt build, DQ issues on the last
+  build — the five things worth glancing at first.
+- **Ingest over time / Fleet right now.** Positions-per-hour and
+  distinct-buses trends, busiest operators and lines in the last 15
+  minutes.
+- **Data quality.** dbt test outcomes and build duration per run (a
+  callout with the delta from the previous build, not a graph — the
+  build only runs nightly, so one point a day reads better as a number),
+  slowest tests and any non-passing tests on the latest build.
+- **Punctuality & ETA models.** System on-time % (DfT standard, see
+  below), system median delay, average model fit (r2), % of ETA-model
+  grains with a weak fit, average modelled speed, and a full table of
+  every line with 50+ journeys ranked by delay. Backed by
+  `dbt/publish_punctuality_summary.py`, which collapses the
+  `line_punctuality` and `eta_models` dbt marts (otherwise stuck in
+  duckdb, same problem as the DQ results) into QuestDB after every
+  build. "On-time" is the DfT Traffic Commissioner standard for local
+  bus services — 1 minute early to 5 minutes 59 seconds late, 95% the
+  statutory target — not a number picked for this dashboard. The rollup
+  is a volume-weighted approximation from grain-level medians, not a
+  true per-journey percentage: no per-journey delay is stored anywhere
+  in this pipeline, only the medians dbt already computes.
+
+`slaycoach.quest/oma` 302-redirects straight to this dashboard — a
+redirect rather than a proxy, since Grafana's `GF_SERVER_ROOT_URL` is
+fixed to the `thomaspeoples.com` domain and serving the dashboard under a
+second domain would break its own generated asset URLs.
+
+### Where the alerts actually go
+
+A rule fires in Grafana Alerting, Grafana's webhook contact point POSTs to
+`http://ntfy:80/<topic>`, the self-hosted `ntfy` container holds that topic,
+and the stock ntfy Android app — subscribed to the same topic — raises the
+notification on the phone. No SMTP hop, no mail account, no third-party push
+service in the middle.
+
+Three rules are provisioned today:
+
+- **feed stale** — nothing written to `bus_positions` for 15 minutes, which
+  never happens during service hours. `NoData` counts as alerting here: a
+  query that cannot run is its own outage, not a reason to stay quiet.
+- **nightly build missing or failed** — no successful `dbt_build_runs` row
+  in the last 26 hours. 26 rather than 24 gives the nightly job room to
+  drift or run long without flapping, and one rule covers both "never ran"
+  and "ran and failed" — the first being the failure that went unnoticed
+  for weeks after the September repo split, because a build that never runs
+  produces no output to read.
+- **dbt test failures or warnings** — the most recent run's
+  `tests_failed` plus `tests_warned` is above zero. Warnings count
+  deliberately: a warn-severity result (a freshness check, say) exits the
+  build green and publishes anyway, so before this rule existed it
+  reached nothing but `build.log` — this is the alert that closes that
+  gap, not just the outright failures.
+
+### The topic name is the credential
+
+`ntfy` runs here with no accounts and no auth. Anyone who knows the topic
+name can subscribe to it, and anyone who knows it can publish to it — that
+is the whole access model, so `NTFY_TOPIC` is a secret in the ordinary
+sense: random, kept in `.env`, never committed, never printed to
+`build.log`, never returned in an HTTP response. Grafana's POST is
+server-side over `ghost-net`, so the topic never appears in anything a
+browser loads.
+
+### Rotating the topic
+
+1. Change `NTFY_TOPIC` in `.env`.
+2. `docker compose up -d --force-recreate grafana ntfy`. The value is
+   injected into `grafana`'s environment and read by the alerting
+   provisioner, so a restart is not enough — the container has to be
+   recreated. `ntfy` carries no topic configuration of its own; it goes in
+   the same command so nothing cached against the old topic outlives it.
+3. `docker exec ghost-web nginx -s reload`, because recreating containers
+   changes their IPs and nginx cached the old ones (see
+   [Architecture](architecture.md)).
+4. Re-subscribe the phone in the ntfy app, and delete the old subscription.
+
+Nothing else stores it. `ntfy` creates topics on demand and keeps no
+registry, so there is nothing server-side to pre-create or to delete — the
+new topic exists the first time Grafana posts to it. Grafana picks the name
+up from its environment each time it provisions the contact point, so
+recreating the container is the whole update; there is no copy anywhere to
+hand-edit. `$NTFY_TOPIC` interpolation in `contactpoints.yaml` is
+confirmed to resolve — Grafana documents env-var interpolation for
+datasource provisioning only, but reading the contact point back from
+the API after a recreate shows the real topic, not the literal
+`$NTFY_TOPIC` string, so the same mechanism covers the alerting
+provisioner too.
+
+The old topic keeps working for anyone who still knows it. That is the
+point: a leaked topic cannot be revoked, only abandoned.
 
 ## Container lifecycle
 

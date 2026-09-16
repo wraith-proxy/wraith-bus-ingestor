@@ -2,7 +2,7 @@
     materialized='incremental',
     incremental_strategy='delete+insert',
     unique_key='journey_local_date',
-    post_hook="delete from {{ this }} where journey_local_date < (select max(journey_local_date) from {{ this }}) - interval '{{ retention_days() }} days'"
+    post_hook=[] if var('replay', false) else ["delete from {{ this }} where journey_local_date < (select max(journey_local_date) from {{ this }}) - interval '{{ retention_days() }} days'"]
 ) }}
 
 {#
@@ -62,7 +62,10 @@
   `delete+insert` with `unique_key='journey_local_date'` is the same
   partition-replace pattern as int_pings_segmented_to_journeys: delete every existing row
   whose journey_local_date appears in the new batch, then insert the batch.
-  The post-hook prunes to the same retention window as extract.py.
+  The post-hook prunes to the same retention window as extract.py, except
+  under `--vars '{replay: true}'` -- see ops/incident.py, which replays days
+  deliberately older than that window and would otherwise have them deleted
+  by this hook in the same run.
 #}
 
 with journeys as (

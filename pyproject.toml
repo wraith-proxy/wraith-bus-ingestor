@@ -97,6 +97,13 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
 
+[tool.ruff.lint.per-file-ignores]
+# This generator emits dbt YAML from triple-quoted templates. Two `description:`
+# lines exceed 99 chars, but they are the emitted payload, not source: a `# noqa`
+# would be written into the generated file, and wrapping them would desync the
+# generator from the committed _generated_line_stops_batches.yml it produces.
+"dbt/scripts/generate_line_stops_batches.py" = ["E501"]
+
 [tool.pytest.ini_options]
 xfail_strict = true
 addopts = [

@@ -1,0 +1,147 @@
+# Validated on Grafana 13.2.2: all three rules provision, schedule and evaluate
+# to health=ok against live QuestDB. dbt_build_runs is created by the first
+# dbt/publish_run_results.py run, so these rules sit in health=error until a
+# build has happened -- that is the expected cold-start state, not a fault.
+#
+# Each rule computes its own threshold in SQL and hands a single number to a
+# __expr__ condition, because the time window belongs in the query where it is
+# readable rather than split between relativeTimeRange and the evaluator.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: wraith
+    folder: Wraith
+    interval: 5m
+    rules:
+      - uid: wraith-feed-stale
+        title: feed stale
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: questdb
+            relativeTimeRange:
+              from: 900
+              to: 0
+            model:
+              refId: A
+              format: table
+              rawQuery: true
+              rawSql: >-
+                select count() from bus_positions
+                where timestamp > dateadd('m', -15, now())
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              # lt 1 rather than eq 0 -- Grafana's threshold evaluator has no
+              # equality operator.
+              conditions:
+                - evaluator:
+                    type: lt
+                    params:
+                      - 1
+        # NoData means the query itself could not run, which is its own outage,
+        # so it alerts rather than sitting silent.
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: No bus positions written in the last 15 minutes.
+          description: >-
+            The ingest pipeline is dead or BODS is down. Nothing has landed in
+            bus_positions for 15 minutes, which never happens during normal
+            service hours.
+
+      - uid: wraith-nightly-build
+        title: nightly build missing or failed
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: questdb
+            relativeTimeRange:
+              from: 93600
+              to: 0
+            model:
+              refId: A
+              format: table
+              rawQuery: true
+              # 26h not 24h -- gives the nightly job slack to drift or run long
+              # without flapping. count() = 0 catches "never ran", last(result)
+              # catches "ran and failed"; last() follows the designated
+              # timestamp, so it is the most recent run.
+              rawSql: >-
+                select case when count() = 0 or last(result) != 'success'
+                then 1 else 0 end from dbt_build_runs
+                where timestamp > dateadd('h', -26, now())
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: No successful dbt build in the last 26 hours.
+          description: >-
+            Either the nightly dbt job did not run or its most recent run did
+            not succeed. After the September repo split the nightly job pointed
+            at a deleted directory and failed silently for weeks -- nobody
+            noticed because a build that never runs produces no output to read.
+            That is exactly the class of failure this rule catches.
+
+      - uid: wraith-dbt-test-failures
+        title: dbt test failures or warnings
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: questdb
+            relativeTimeRange:
+              from: 93600
+              to: 0
+            model:
+              refId: A
+              format: table
+              rawQuery: true
+              # warned, not just failed. A failing test exits build.sh non-zero
+              # and blocks the publish, so it is already loud. A warn -- source
+              # freshness, or any test at severity: warn -- leaves the build
+              # green and reaches nothing but build.log, which is the actual
+              # gap this rule exists to close.
+              rawSql: >-
+                select last(tests_failed) + last(tests_warned) from dbt_build_runs
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: NoData
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The most recent dbt build had failing or warning tests.
+          description: >-
+            Closes the gap where dbt's freshness warn and severity:warn results
+            only ever reached build.log -- a warn exits the build green, so
+            nothing surfaced it and nobody opened the log to find out.

@@ -1,0 +1,25 @@
+# The topic name is the credential -- anyone who knows it can read and publish
+# to it -- so it comes from the NTFY_TOPIC env var passed into the grafana
+# container, never hardcoded here.
+#
+# Env-var interpolation DOES resolve here, confirmed by running it on Grafana
+# 13.2.2 rather than trusting the docs, which only spell it out for datasources:
+# the provisioned contact point read back from the API carries the real topic
+# from .env, not the literal $NTFY_TOPIC.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: ntfy
+    receivers:
+      - uid: ntfy-webhook
+        type: webhook
+        settings:
+          url: http://ntfy:80/$NTFY_TOPIC
+          httpMethod: POST
+
+policies:
+  - orgId: 1
+    receiver: ntfy
+    group_by:
+      - alertname

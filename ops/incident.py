@@ -16,6 +16,12 @@ restore()'d if it's outside the hot RETENTION_DAYS window, then extracted
 via the same fetch() extract.py's own nightly run uses, then one
 SKIP_EXTRACT=1 FULL_REFRESH=1 build.sh call covers the whole range.
 
+replay only helps for days that still exist in cold storage. A day lost
+INSIDE the hot RETENTION_DAYS window cannot be recovered by anything here:
+extract_day() re-reads that day from QuestDB, which is exactly where the
+rows are already missing, and BODS serves live positions only -- there is
+no backfill API to go back to. That case needs the archive, or it is gone.
+
 Depends on bus_positions' DEDUP UPSERT KEYS(bus_id, timestamp) (enabled
 2026-09-15, see docs/ROADMAP.md 1.3.0) -- without it, replaying a day that
 was only partially lost (not fully missing) double-counts the rows that
@@ -29,7 +35,7 @@ import sys
 import time
 import urllib.parse
 import urllib.request
-from datetime import date, datetime, timedelta, UTC
+from datetime import date, timedelta
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DBT_DIR = os.path.join(REPO_ROOT, "dbt")
@@ -87,7 +93,10 @@ def restore(day):
     dest_in_container = f"/var/lib/questdb/db/{tdir}/{day}.attachable"
     print(f"{day}: copying {src} -> {QUESTDB_CONTAINER}:{dest_in_container}")
     docker("cp", src, f"{QUESTDB_CONTAINER}:{dest_in_container}")
-    docker("exec", "-u", "root", QUESTDB_CONTAINER, "chown", "-R", "10001:10001", dest_in_container)
+    docker(
+        "exec", "-u", "root", QUESTDB_CONTAINER,
+        "chown", "-R", "10001:10001", dest_in_container,
+    )
 
     resp = qdb_exec(f"ALTER TABLE {TABLE} ATTACH PARTITION LIST '{day}'")
     if "ddl" not in resp:
@@ -112,9 +121,17 @@ def extract_day(day_obj):
     select, columns = extract.build_select(extract.questdb_columns())
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs;")
+    # extract.py's main() does the same before its chunk loop: the pre-chunking
+    # single-file name joins the same glob as the 4-hour chunks, so leaving one
+    # behind double-counts the day.
+    stale = os.path.join(extract.OUT, f"bus_positions_{day_obj.isoformat()}.parquet")
+    if os.path.exists(stale):
+        os.remove(stale)
     total = 0
     for hour_start in range(0, 24, extract.CHUNK_HOURS):
-        dest, n = extract.fetch(con, day_obj, hour_start, hour_start + extract.CHUNK_HOURS, select, columns)
+        dest, n = extract.fetch(
+            con, day_obj, hour_start, hour_start + extract.CHUNK_HOURS, select, columns
+        )
         total += n
     con.close()
     print(f"{day_obj.isoformat()}: extracted {total:,} rows")
@@ -141,18 +158,22 @@ def replay(start_str, end_str):
         extract_day(d)
 
     print(f"==> re-running dbt for {start}..{end} (SKIP_EXTRACT=1 FULL_REFRESH=1)")
-    env = dict(os.environ, SKIP_EXTRACT="1", FULL_REFRESH="1")
+    env = dict(os.environ, SKIP_EXTRACT="1", FULL_REFRESH="1", REPLAY="1")
     subprocess.run(["./build.sh"], cwd=DBT_DIR, env=env, check=True)
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("restore", help="ATTACH one archived day back into live QuestDB")
     r.add_argument("day", help="YYYY-MM-DD")
 
-    rp = sub.add_parser("replay", help="restore (if needed) + re-extract + full-refresh dbt over a day range")
+    rp = sub.add_parser(
+        "replay", help="restore (if needed) + re-extract + full-refresh dbt over a day range"
+    )
     rp.add_argument("start", help="YYYY-MM-DD")
     rp.add_argument("end", help="YYYY-MM-DD")
 

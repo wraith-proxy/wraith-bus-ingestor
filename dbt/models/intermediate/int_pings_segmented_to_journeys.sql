@@ -2,7 +2,7 @@
     materialized='incremental',
     incremental_strategy='delete+insert',
     unique_key='ping_local_date',
-    post_hook="delete from {{ this }} where ping_local_date < (select max(ping_local_date) from {{ this }}) - interval '{{ retention_days() }} days'"
+    post_hook=[] if var('replay', false) else ["delete from {{ this }} where ping_local_date < (select max(ping_local_date) from {{ this }}) - interval '{{ retention_days() }} days'"]
 ) }}
 
 {#

@@ -1,0 +1,15 @@
+# allowUiUpdates is false on purpose -- the dashboard JSON is the source of
+# truth, so the UI cannot drift away from git.
+apiVersion: 1
+
+providers:
+  - name: wraith
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

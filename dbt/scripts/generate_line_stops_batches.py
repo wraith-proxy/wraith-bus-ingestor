@@ -153,7 +153,8 @@ def batch_sql(grain, cfg, i):
     owns = (
         f"This batch ({i} of {n}) owns line '{cfg['heavy'][i]}' plus its 1/{n} share of the tail."
         if i < len(cfg['heavy'])
-        else f"This batch ({i} of {n}) holds no dedicated heavy line -- tail only, via hash(line) % {n} = {i}."
+        else f"This batch ({i} of {n}) holds no dedicated heavy line -- tail only, "
+        f"via hash(line) % {n} = {i}."
     )
     return f"""{{{{ config(materialized='table', contract={{'enforced': true}}) }}}}
 
@@ -233,7 +234,10 @@ def yml_entry(grain, cfg, i):
     op_tests = (
         "        tests: [not_null]"
         if cfg['operator_lit'] is None
-        else "        tests:\n          - not_null\n          - accepted_values:\n              arguments:\n                values: ['*']"
+        else (
+            "        tests:\n          - not_null\n          - accepted_values:\n"
+            "              arguments:\n                values: ['*']"
+        )
     )
     dt_desc = (
         "Service pattern of the day."
@@ -243,7 +247,10 @@ def yml_entry(grain, cfg, i):
     dt_tests = (
         "        tests: [not_null]"
         if cfg['day_type_lit'] is None
-        else "        tests:\n          - not_null\n          - accepted_values:\n              arguments:\n                values: ['*']"
+        else (
+            "        tests:\n          - not_null\n          - accepted_values:\n"
+            "              arguments:\n                values: ['*']"
+        )
     )
     return f"""  - name: int_line_stops_{grain}_b{i}
     description: >
@@ -309,7 +316,10 @@ def main():
         f.write('version: 2\n\nmodels:\n')
         f.write('\n'.join(yml_blocks))
     total = sum(cfg['n_batches'] for cfg in GRAINS.values())
-    print(f'wrote {total} batch model files + 4 wrapper files + {yml_out} ({len(yml_blocks)} yml entries)')
+    print(
+        f'wrote {total} batch model files + 4 wrapper files + '
+        f'{yml_out} ({len(yml_blocks)} yml entries)'
+    )
 
 
 if __name__ == '__main__':

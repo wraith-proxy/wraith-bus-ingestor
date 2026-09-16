@@ -3,7 +3,12 @@
 Where this is now, and what's next. Not a schedule -- just the order
 things need to happen in, revised as the plan changes.
 
-## Now: 1.0.0
+These `1.x.y` headings are planning milestones, not release tags. The `v*`
+tags `cz` cuts on every merge to `main` are an independent sequence --
+`.gitea/workflows/release.yml` bumps them per merge, so the two numbers
+drift apart by design and neither is wrong.
+
+## 1.0.0 -- single-NAS deployment, data owned
 
 A live, single-NAS deployment. Ingest, storage, transform and API all
 work end to end, verified against real traffic, split out of `ghost-site`
@@ -144,49 +149,129 @@ system assumed BODS plus a live QuestDB table WAS the history:
   into a live parquet chunk and confirming it actually fails, not just
   parses.
 
-**Remaining:**
-- `ops/incident.py replay` is written but untested -- needs a synthetic
-  "lost N days" scenario run end to end before it's trusted in a real
-  incident.
-- No page/alert on the freshness `warn`/dbt test `severity: warn` results
-  -- they show up in `dbt test` output today, nothing routes them
-  anywhere a human would see them unprompted. Closed by 1.4.0's alerting.
+Both of this section's open items closed in 1.4.0. `replay` turned out to
+be broken rather than merely untested -- see 1.4.0 below and
+[ADR-0003](adr/0003-replay-verified-by-construction.md), which also
+records why the full end-to-end rehearsal was deliberately not run.
 
-## 1.4.0 -- Grafana: observability, DQ, alerting
+## Now: 1.4.0 -- Grafana: observability, DQ, alerting
 
-Planned 2026-09-15. QuestDB already speaks the Postgres wire protocol on
-8812 (`docker-compose.yml`) -- Grafana's Postgres datasource points
-straight at it, so live metrics ("rows ingested last hour", etc.) are a
-direct QuestDB query, not a hand-rolled semantic layer. No new ingestion
-pipeline for that part.
+Landed 2026-09-15. QuestDB already speaks the Postgres wire protocol on
+8812, so Grafana's built-in Postgres datasource points straight at it and
+live metrics are a direct query -- no plugin, no second pipeline, no
+hand-rolled semantic layer.
 
-- **DQ / test results.** Not currently persisted anywhere queryable --
-  `dbt test` only prints to `build.log` and gates the publish. A
-  `build.sh` post-hook writes each run's pass/fail counts and which tests
-  failed into a small QuestDB table (not duckdb -- duckdb has no wire
-  protocol Grafana can reach), so Grafana has something to plot.
-- **Incidents.** Grafana's own annotations API, not a separate hand-built
-  table -- it is built for exactly "mark this moment on the timeline",
-  so this session's OOM incidents etc. become annotations, not another
-  thing to invent storage for.
-- **Alerting.** Grafana Alerting -> self-hosted `ntfy` (one small Go
-  container, added to `docker-compose.yml`) via its webhook contact
-  point, not email -- since 1.5.0 ships a real APK anyway, native push
-  to the device beats a proton-bridge SMTP hop. `ntfy` needs no accounts;
-  the topic name itself is the only thing gating who can subscribe, so
-  it's generated random and treated as a secret / env var -- never
-  committed, never printed to `build.log`, never returned in any HTTP
-  response. Verify this by actually checking (grep, not assumption)
-  before calling it done.
-- **Public hosting.** Anonymous Viewer role for Grafana, same nginx
-  `location` pattern already used for `/tiles/` and `/api/`
-  (`docs/architecture.md`'s existing shape, not a new one). Admin/edit
-  stays authenticated. `ntfy` itself does NOT get a public `location` --
-  only the topic's publish side is reachable (from Grafana, server-side),
-  never exposed for the phone to hit directly; the phone only ever talks
-  to `ntfy`'s own public instance conventions or a narrowly-scoped
-  subscribe-only path, decided when this is actually built, not guessed
-  here.
+- **DQ / test results.** `dbt test` used to print to `build.log`, gate
+  the publish, and be forgotten. `dbt/publish_run_results.py` now reads
+  `target/run_results.json` -- structured, and written even when the run
+  fails, which `build.log` parsing would not have given us -- and pushes
+  `dbt_test_results` (per test) and `dbt_build_runs` (per run) into
+  QuestDB over ILP, reusing the `/write` transport `ingestor/ingest.py`
+  already uses rather than adding a dependency. Not duckdb: it has no
+  wire protocol Grafana can reach.
+- **`build.sh` had to stop dying before it could record a death.**
+  `set -e` exited on a failed `dbt test`, so test failures -- the single
+  most valuable rows for a DQ dashboard -- were the one case that could
+  never be written. It now captures the exit code, publishes either way,
+  then re-raises. The publish gate is unchanged: a red build still leaves
+  the previous good marts serving.
+- **`replay` was deleting its own recovered data.** Both incremental
+  models' retention post-hooks prune to `max(date) - 8 days`, and
+  `replay` only restores days older than `today - RETENTION_DAYS`. Same
+  boundary: every day old enough to need restoring was old enough to be
+  pruned again in the same run. Confirmed by measurement, fixed with a
+  `replay` dbt var, and verified by parsing the project both ways. See
+  [ADR-0003](adr/0003-replay-verified-by-construction.md).
+- **Alerting.** Grafana Alerting -> self-hosted `ntfy` via a webhook
+  contact point, not email. Three rules, deliberately not one per test:
+  feed stale (nothing in `bus_positions` for 15 min), nightly build
+  missing or failed (the silent-cron class that went unnoticed for weeks
+  after the September split), and dbt tests failed **or warned** --
+  warned matters, because a warn exits the build green and was exactly
+  the gap this milestone existed to close. All three provision and
+  evaluate to `health=ok` against live QuestDB, and delivery is verified
+  end to end, not just configured: a message published server-side from
+  Grafana to `ntfy` was read back off the topic.
+- **Everything is file-provisioned.** Datasource, dashboard, contact
+  point and rules all live in `ops/grafana/provisioning/`, with
+  `allowUiUpdates: false`, so the UI cannot drift away from git. The
+  dashboard's 19 panels were each run against live QuestDB before being
+  committed.
+- **Grafana is pinned to `11.6.16`, not `:latest` -- this cost a real
+  incident to learn.** `:latest` first shipped 13.x's "Dynamic
+  dashboards", GA'd and on by default 2026-04-08: a provisioned
+  classic-schema dashboard renders (layout, titles, panels, all correct)
+  but the frontend never issues the query request at all -- confirmed
+  live by watching nginx's access log across four full page loads from a
+  real device: zero `/api/ds/query` calls, ever. Every panel showed "No
+  data". Known upstream issue, not specific to this dashboard:
+  [grafana/grafana#122663](https://github.com/grafana/grafana/issues/122663).
+  Pinning to `12.3.11` did not fix it -- that version runs the same
+  apiserver-backed dashboard path under a `v1beta1` API instead of `v2`,
+  and setting `GF_FEATURE_TOGGLES_KUBERNETESDASHBOARDS=false` (and the
+  three `dashboardScene*` toggles) had no effect: Grafana reported them
+  back as `true` regardless, meaning this toggle is locked at General
+  Availability, not merely defaulted on. `11.6.16` predates Dynamic
+  Dashboards existing in any form (introduced in 12.0, May 2025) -- both
+  the `v1beta1` and `v2` dashboard-dto endpoints genuinely 404 on it, not
+  just hidden behind a flag. Do not bump this image without checking
+  `/apis/dashboard.grafana.app/` 404s on the target version first.
+- **The `/grafana/` redirect loop, and what actually caused it.** After
+  first wiring the nginx location, the dashboard hit
+  `net::ERR_TOO_MANY_REDIRECTS` in a real browser. First fix attempt --
+  hardcoding `X-Forwarded-Proto: https` because the Cloudflare tunnel
+  forwards plain HTTP and `$scheme` is always `http` here -- was a real
+  bug (confirmed: with `$scheme`'s `http` header Grafana 301'd, with
+  `https` it 200'd) but did not stop the loop through nginx. Actual
+  cause: `proxy_pass http://upstream/;` (trailing slash) strips the
+  matched `/grafana/` prefix before forwarding, but
+  `GF_SERVER_SERVE_FROM_SUB_PATH=true` means Grafana expects that prefix
+  preserved on every request -- stripped, it 301s to re-add it, and
+  nginx strips it again on the retry. Fixed by dropping the trailing
+  slash and path from `proxy_pass` in both `/grafana/` locations, so
+  nginx forwards the full original URI unchanged. This lives in
+  `ghost-site`'s nginx template, not this repo, but the two settings
+  that have to agree (`GRAFANA_ROOT_URL`, `GF_SERVER_SERVE_FROM_SUB_PATH`)
+  are both here -- see [Architecture](architecture.md).
+- **Punctuality & ETA model panels**, added after the first cut landed.
+  `line_punctuality` and `eta_models` are real dbt marts (median/p90
+  delay per line, regression fit per grain) that were already computed
+  but, like `dbt test` results, lived only in duckdb -- unreachable from
+  Grafana. `dbt/publish_punctuality_summary.py` collapses both into
+  QuestDB after every `build.sh` publish: one row per line and one
+  system-wide model-fit summary. "On-time" uses the DfT Traffic
+  Commissioner standard for local bus services -- 1 minute early to 5
+  minutes 59 seconds late, 95% the statutory target -- not an invented
+  threshold. The rollup is a volume-weighted approximation from
+  grain-level medians, not a true per-journey percentage, because no
+  per-journey delay is stored anywhere in this pipeline; both the script
+  and every panel description say so.
+- **Public hosting.** Anonymous `Viewer` for Grafana behind
+  `/grafana/` on `ghost-site`'s nginx, the same `location` shape
+  `/tiles/` and `/api/` already use. Verified: anonymous read returns
+  200, anonymous write returns 403. `ntfy` gets `/ntfy/` but
+  **subscribe-side only** -- `limit_except GET HEAD` denies the publish
+  side, so a POST from the internet is 403 while Grafana still publishes
+  server-side over `ghost-net`. That means the stock ntfy Android app
+  works today; 1.5.0's APK reuses the same topic rather than inventing a
+  delivery path. `slaycoach.quest/oma` 302-redirects to the dashboard
+  directly -- a redirect, not a proxy, since Grafana's
+  `GF_SERVER_ROOT_URL` is fixed to the `thomaspeoples.com` domain and
+  serving it under a second domain would break its own generated asset
+  URLs.
+- **Secret hygiene, verified by grep rather than assumed** -- as this
+  section demanded before it was allowed to close. The topic name is the
+  only credential: absent from both repos' full git history, absent from
+  both working trees, absent from container logs, and absent from the
+  public API surface. Both `.env` files are untracked. Grafana's env-var
+  interpolation was also confirmed to resolve inside the *alerting*
+  provisioner (documented only for datasources), by reading the contact
+  point back from the API -- verified across every version tried in the
+  pin saga above, `11.6.16` included.
+
+**Deliberately skipped:** Grafana annotations for past incidents. The
+plan called for them, nothing consumes them today, and the volume is
+there whenever a real incident wants marking.
 
 ## 1.5.0 -- Android APK, LineageOS Tegu (Pixel Tablet), Android 16+
 

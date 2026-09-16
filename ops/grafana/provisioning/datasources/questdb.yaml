@@ -1,0 +1,23 @@
+# This is Grafana's BUILT-IN Postgres datasource, not the QuestDB plugin --
+# QuestDB already speaks the Postgres wire protocol on 8812, so this needs
+# nothing installed.
+#
+# admin/quest are QuestDB's shipped pg defaults. server.conf is not tracked in
+# this repo, so if those were changed on the host, this file is what needs
+# updating.
+apiVersion: 1
+
+datasources:
+  - name: QuestDB
+    type: postgres
+    uid: questdb
+    access: proxy
+    url: db:8812
+    user: admin
+    database: qdb
+    isDefault: true
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1200
+    secureJsonData:
+      password: quest

@@ -56,7 +56,10 @@ def main():
     print(f'ok: {len(ok)}/{len(results)}')
     if ok:
         times = sorted(r[1] for r in ok)
-        print(f'per-query time: min={times[0]:.2f}s max={times[-1]:.2f}s median={times[len(times)//2]:.2f}s')
+        print(
+            f'per-query time: min={times[0]:.2f}s max={times[-1]:.2f}s '
+            f'median={times[len(times)//2]:.2f}s'
+        )
     if failed:
         print(f'FAILED: {len(failed)}')
         for name, elapsed, err, _ in failed:
