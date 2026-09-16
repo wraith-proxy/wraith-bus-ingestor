@@ -320,7 +320,17 @@ Platform", four rows:
   build — the five things worth glancing at first.
 - **Ingest over time / Fleet right now.** Positions-per-hour and
   distinct-buses trends, busiest operators and lines in the last 15
-  minutes.
+  minutes. Operators show by real name ("Transport for London"), not the
+  raw four-letter NOC code ("TFLO") — a `LEFT JOIN` against a small
+  `operator_names` table, `COALESCE`d back to the raw code for anything
+  unmapped so an unrecognised operator never disappears from the panel.
+  That table is loaded by `dbt/publish_operator_names.py` from
+  `dbt/noc_operator_names.csv`, a curated extract of the real National
+  Operator Code database (`travelinedata.org.uk`) covering the operators
+  this feed has actually seen, not the full ~3,300-operator UK-wide
+  database. It's reference data, not build output, so nothing calls this
+  script automatically — run it by hand when a new operator's code shows
+  up unmapped on the dashboard.
 - **Data quality.** dbt test outcomes and build duration per run (a
   callout with the delta from the previous build, not a graph — the
   build only runs nightly, so one point a day reads better as a number),
