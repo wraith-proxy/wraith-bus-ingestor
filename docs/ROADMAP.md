@@ -273,7 +273,7 @@ hand-rolled semantic layer.
 plan called for them, nothing consumes them today, and the volume is
 there whenever a real incident wants marking.
 
-## Now: 1.5.0 -- Android APK, LineageOS Tegu (Pixel Tablet), Android 16+
+## Now: 1.5.0 -- Android APK, LineageOS Tegu (Pixel 9a), Android 16+
 
 Landed 2026-09-16. Full native, not a WebView wrapper -- Jetpack Compose
 + OkHttp, single-device scope (Tegu only, minSdk 36), two screens plus
