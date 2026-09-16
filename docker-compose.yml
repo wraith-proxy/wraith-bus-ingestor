@@ -141,17 +141,19 @@ services:
   grafana:
     # Pinned, unlike questdb/osrm-backend elsewhere in this file: `:latest`
     # silently pulled in Grafana 13's "Dynamic dashboards", GA'd and on by
-    # default 2026-04-08. A hand-provisioned classic-schema (v1) dashboard
-    # like ops/grafana/provisioning/dashboards/wraith-bus.json still renders
-    # under it -- panels, titles, layout all correct -- but the frontend
-    # never issues the query request at all: confirmed live, zero
-    # /api/ds/query calls across repeated full page loads, while the exact
-    # same query executed correctly through curl and through the classic
-    # /api/dashboards/uid/ path. Every panel showed "No data". Known issue,
-    # not specific to this dashboard: grafana/grafana#122663. 12.4.x also
-    # has a reported Dynamic Dashboard regression, so this sits one line
-    # below that too, on the last known-good 12.3.x patch.
-    image: grafana/grafana:12.3.11
+    # default 2026-04-08 (grafana/grafana#122663) -- a hand-provisioned
+    # classic-schema (v1) dashboard renders (layout, titles, panels all
+    # correct) but the frontend never issues the query request at all.
+    #
+    # Confirmed live, the hard way, across three attempts: 13.x (zero real
+    # /api/ds/query calls from an actual device), then 12.3.11 with the
+    # kubernetesDashboards/dashboardScene* toggles set false explicitly
+    # (still zero -- Grafana reported the toggles back as true regardless,
+    # meaning this line's toggle is locked GA and not configurable, not
+    # just defaulted-on). 11.6.16 predates the whole apiserver-backed
+    # dashboard path -- it does not exist as a toggle to fight in this
+    # version at all -- and that's what actually fixed it.
+    image: grafana/grafana:11.6.16
     container_name: ${GRAFANA_CONTAINER}
     restart: unless-stopped
     mem_limit: 512m
