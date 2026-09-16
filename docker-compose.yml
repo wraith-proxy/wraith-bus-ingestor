@@ -139,7 +139,19 @@ services:
   # has to be chowned once before first boot or Grafana exits on a permission
   # error -- the same class of gotcha as QuestDB's uid 10001 next door.
   grafana:
-    image: grafana/grafana
+    # Pinned, unlike questdb/osrm-backend elsewhere in this file: `:latest`
+    # silently pulled in Grafana 13's "Dynamic dashboards", GA'd and on by
+    # default 2026-04-08. A hand-provisioned classic-schema (v1) dashboard
+    # like ops/grafana/provisioning/dashboards/wraith-bus.json still renders
+    # under it -- panels, titles, layout all correct -- but the frontend
+    # never issues the query request at all: confirmed live, zero
+    # /api/ds/query calls across repeated full page loads, while the exact
+    # same query executed correctly through curl and through the classic
+    # /api/dashboards/uid/ path. Every panel showed "No data". Known issue,
+    # not specific to this dashboard: grafana/grafana#122663. 12.4.x also
+    # has a reported Dynamic Dashboard regression, so this sits one line
+    # below that too, on the last known-good 12.3.x patch.
+    image: grafana/grafana:12.3.11
     container_name: ${GRAFANA_CONTAINER}
     restart: unless-stopped
     mem_limit: 512m
