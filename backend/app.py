@@ -1434,5 +1434,85 @@ def model_info():
     })
 
 
+# 1.5.0's Android dashboard screen deliberately does not query QuestDB or
+# Grafana directly -- it goes through here instead, reusing the exact SQL
+# 1.4.0's Grafana panels already run, so there is one API surface for every
+# client (web, Grafana, phone) rather than the phone learning QuestDB's wire
+# protocol just to draw the same numbers a second way.
+
+# DfT's Traffic Commissioner standard for local bus services -- see
+# dbt/publish_punctuality_summary.py, which computes on_time_journeys with
+# this same window before it ever reaches line_punctuality_summary. Not
+# re-derived here: this endpoint reads the column QuestDB already has.
+WORST_LINES_MIN_JOURNEYS = 50
+
+
+@app.route('/metrics/summary', methods=['GET'])
+def metrics_summary():
+    """The five headline numbers from the dashboard's top row. Each is its
+    own qdb_exec call and fails independently -- a QuestDB hiccup on one
+    query shouldn't blank out the four that would have worked, the same
+    reasoning bus_detail() already applies to last_stop/next_stop."""
+    def scalar(sql, key):
+        try:
+            rows = qdb_rows(sql)
+            return rows[0].get(key) if rows else None
+        except Exception as exc:
+            log_once(f'qdb-metrics-{key}', f'metrics query failed for {key}: {exc}')
+            return None
+
+    return jsonify({
+        "feed_age_s": scalar(
+            "select datediff('s', max(timestamp), now()) as v from bus_positions", 'v'),
+        "buses_tracked_5m": scalar(
+            "select count_distinct(bus_id) as v from bus_positions "
+            "where timestamp > dateadd('m', -5, now())", 'v'),
+        "positions_1h": scalar(
+            "select count() as v from bus_positions "
+            "where timestamp > dateadd('h', -1, now())", 'v'),
+        "hours_since_build": scalar(
+            "select datediff('h', max(timestamp), now()) as v from dbt_build_runs", 'v'),
+        "dq_issues_last_build": scalar(
+            "select last(tests_failed) + last(tests_warned) as v from dbt_build_runs", 'v'),
+    })
+
+
+@app.route('/metrics/punctuality', methods=['GET'])
+def metrics_punctuality():
+    """System-wide on-time %, delay and ETA model fit, plus the worst lines
+    table -- the same rollup dbt/publish_punctuality_summary.py writes into
+    QuestDB and the same queries the dashboard's 'Punctuality & ETA models'
+    row runs. The per-line rollup is a volume-weighted approximation from
+    grain-level medians, not a true per-journey percentage -- see that
+    script's own docstring for what it does and doesn't measure."""
+    try:
+        system = qdb_rows(
+            "select 100.0*sum(on_time_journeys)/sum(n_journeys) as pct_on_time, "
+            "sum(median_delay_s*n_journeys)/sum(n_journeys) as median_delay_s "
+            "from line_punctuality_summary "
+            "where timestamp=(select max(timestamp) from line_punctuality_summary)"
+        )
+        model = qdb_rows(
+            "select avg_r2, pct_weak_fit, avg_speed_kmh, n_models from eta_model_summary "
+            "where timestamp=(select max(timestamp) from eta_model_summary)"
+        )
+        worst_lines = qdb_rows(
+            "select line, n_journeys, 100.0*on_time_journeys/n_journeys as pct_on_time, "
+            "median_delay_s, p90_delay_s from line_punctuality_summary "
+            "where timestamp=(select max(timestamp) from line_punctuality_summary) "
+            f"and n_journeys>={WORST_LINES_MIN_JOURNEYS} "
+            "order by median_delay_s desc limit 25"
+        )
+    except Exception as exc:
+        log_once('qdb-punctuality', f'punctuality metrics unavailable: {exc}')
+        return jsonify({"error": "upstream unavailable"}), 503
+
+    return jsonify({
+        "system": system[0] if system else None,
+        "model_fit": model[0] if model else None,
+        "worst_lines": worst_lines,
+    })
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
