@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Pure Compose UI: everything real happens in ui/theme/Theme.kt via
+         MaterialTheme, including actual light/dark switching via
+         isSystemInDarkTheme(). This XML theme exists only so the manifest
+         has a valid android:theme to point at before Compose ever runs.
+         "DayNight" is an AppCompat/Material-Components concept, not a real
+         AOSP platform style, so this uses the plain platform base rather
+         than pulling in com.google.android.material for one attribute set.
+         The windowBackground is a fixed navy (this app's own brand color,
+         not day/night dependent) so the launch frame isn't a white flash
+         before Compose's first frame. -->
+    <style name="Theme.WraithBus" parent="android:Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">#0B1F45</item>
+        <item name="android:statusBarColor">#0B1F45</item>
+        <item name="android:navigationBarColor">#0B1F45</item>
+    </style>
+</resources>

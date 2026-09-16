@@ -1086,6 +1086,69 @@ def test_road_snapped_geometry_parses_osrm_response():
         app.urllib.request.urlopen = real_urlopen
 
 
+def test_metrics_summary_degrades_quietly_without_questdb():
+    # QUESTDB_URL is unset in this test environment, same as CI -- every
+    # qdb_exec call fails, and this endpoint's whole point is that one
+    # failing query doesn't blank the others: still 200, each key present,
+    # each value null.
+    client = app.app.test_client()
+    r = client.get('/metrics/summary')
+    assert r.status_code == 200
+    body = r.get_json()
+    assert set(body) == {
+        'feed_age_s', 'buses_tracked_5m', 'positions_1h',
+        'hours_since_build', 'dq_issues_last_build',
+    }
+    assert all(v is None for v in body.values())
+
+
+def test_metrics_punctuality_degrades_to_503_without_questdb():
+    client = app.app.test_client()
+    r = client.get('/metrics/punctuality')
+    assert r.status_code == 503
+
+
+def test_metrics_punctuality_parses_real_response_shape():
+    """Fakes QuestDB's /exec JSON shape for the three queries this endpoint
+    runs, in the order it runs them -- proves qdb_rows()'s
+    columns/dataset-zip actually lines fields up right, not just that the
+    failure path returns 503."""
+    real_urlopen = app.urllib.request.urlopen
+    responses = [
+        {'columns': [{'name': 'pct_on_time'}, {'name': 'median_delay_s'}],
+         'dataset': [[92.5, -30.0]]},
+        {'columns': [{'name': 'avg_r2'}, {'name': 'pct_weak_fit'},
+                     {'name': 'avg_speed_kmh'}, {'name': 'n_models'}],
+         'dataset': [[0.8, 5.0, 22.0, 100]]},
+        {'columns': [{'name': 'line'}, {'name': 'n_journeys'}, {'name': 'pct_on_time'},
+                     {'name': 'median_delay_s'}, {'name': 'p90_delay_s'}],
+         'dataset': [['1', 100, 80.0, 60.0, 200.0]]},
+    ]
+    calls = iter(responses)
+
+    class FakeResp:
+        def __init__(self, payload):
+            self.payload = payload
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return json.dumps(self.payload).encode()
+
+    try:
+        app.urllib.request.urlopen = lambda *a, **k: FakeResp(next(calls))
+        client = app.app.test_client()
+        r = client.get('/metrics/punctuality')
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body['system'] == {'pct_on_time': 92.5, 'median_delay_s': -30.0}
+        assert body['model_fit']['n_models'] == 100
+        assert body['worst_lines'] == [
+            {'line': '1', 'n_journeys': 100, 'pct_on_time': 80.0,
+             'median_delay_s': 60.0, 'p90_delay_s': 200.0}
+        ]
+    finally:
+        app.urllib.request.urlopen = real_urlopen
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_') and callable(v)]
     for fn in tests:

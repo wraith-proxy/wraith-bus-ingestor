@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Minimal bus glyph, drawn flat (no image asset). Kept inside the
+     adaptive-icon safe zone (inner ~66dp circle of the 108dp viewport). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M22,36 L86,36 L86,64 L22,64 Z"
+        android:fillColor="#FF5A1F" />
+    <path
+        android:pathData="M28,40 L80,40 L80,52 L28,52 Z"
+        android:fillColor="#F3EFE6" />
+    <path
+        android:pathData="M28,68 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0"
+        android:fillColor="#071534" />
+    <path
+        android:pathData="M68,68 a6,6 0 1,0 12,0 a6,6 0 1,0 -12,0"
+        android:fillColor="#071534" />
+</vector>

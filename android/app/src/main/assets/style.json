@@ -1,0 +1,88 @@
+{
+  "version": 8,
+  "glyphs": "https://www.thomaspeoples.com/vendor/fonts/{fontstack}/{range}.pbf",
+  "sources": {
+    "uk-source": {
+      "type": "vector",
+      "tiles": ["https://www.thomaspeoples.com/tiles/great-britain/{z}/{x}/{y}"],
+      "minzoom": 0,
+      "maxzoom": 14,
+      "attribution": "© OpenStreetMap"
+    }
+  },
+  "layers": [
+    { "id": "bg", "type": "background", "paint": { "background-color": "#12161c" } },
+    {
+      "id": "earth", "type": "fill", "source": "uk-source", "source-layer": "earth",
+      "paint": { "fill-color": "#1e242d" }
+    },
+    {
+      "id": "landcover", "type": "fill", "source": "uk-source", "source-layer": "landcover",
+      "paint": { "fill-color": "#212b2a", "fill-opacity": 0.7 }
+    },
+    {
+      "id": "water", "type": "fill", "source": "uk-source", "source-layer": "water",
+      "paint": { "fill-color": "#12161c" }
+    },
+    {
+      "id": "boundaries", "type": "line", "source": "uk-source", "source-layer": "boundaries",
+      "paint": {
+        "line-color": "#5c6673", "line-width": 0.8,
+        "line-dasharray": [3, 2], "line-opacity": 0.5
+      }
+    },
+    {
+      "id": "roads-minor", "type": "line", "source": "uk-source", "source-layer": "roads",
+      "minzoom": 9,
+      "filter": ["!", ["in", ["get", "kind"], ["literal", ["highway", "major_road"]]]],
+      "paint": {
+        "line-color": "#39434f",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 9, 0.4, 14, 1.5]
+      }
+    },
+    {
+      "id": "roads-major", "type": "line", "source": "uk-source", "source-layer": "roads",
+      "minzoom": 6, "filter": ["==", ["get", "kind"], "major_road"],
+      "paint": {
+        "line-color": "#6b7889",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 6, 0.4, 12, 1.8],
+        "line-opacity": 0.8
+      }
+    },
+    {
+      "id": "roads-highway", "type": "line", "source": "uk-source", "source-layer": "roads",
+      "filter": ["==", ["get", "kind"], "highway"],
+      "paint": {
+        "line-color": "#d18a3d",
+        "line-width": ["interpolate", ["linear"], ["zoom"], 5, 0.6, 12, 2.5],
+        "line-opacity": 0.75
+      }
+    },
+    {
+      "id": "places-locality", "type": "symbol", "source": "uk-source", "source-layer": "places",
+      "minzoom": 7, "filter": ["==", ["get", "kind"], "locality"],
+      "layout": {
+        "text-field": ["get", "name"],
+        "text-font": ["Noto Sans Regular"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 7, 10, 12, 15]
+      },
+      "paint": {
+        "text-color": "#8a93a2", "text-halo-color": "#12161c", "text-halo-width": 1.2
+      }
+    },
+    {
+      "id": "places-major", "type": "symbol", "source": "uk-source", "source-layer": "places",
+      "filter": ["in", ["get", "kind"], ["literal", ["country", "region"]]],
+      "layout": {
+        "text-field": ["get", "name"],
+        "text-font": ["Noto Sans Regular"],
+        "text-size": ["match", ["get", "kind"], "country", 16, 12],
+        "text-transform": ["match", ["get", "kind"], "country", "uppercase", "none"],
+        "text-letter-spacing": ["match", ["get", "kind"], "country", 0.15, 0]
+      },
+      "paint": {
+        "text-color": "#dcd6c8", "text-halo-color": "#12161c", "text-halo-width": 1.5
+      }
+    }
+  ]
+}
