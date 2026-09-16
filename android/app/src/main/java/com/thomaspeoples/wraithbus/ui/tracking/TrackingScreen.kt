@@ -149,7 +149,7 @@ fun TrackingScreen() {
                 style.addSource(GeoJsonSource(BUSES_SOURCE_ID))
                 style.addLayer(
                     CircleLayer(BUSES_LAYER_ID, BUSES_SOURCE_ID).withProperties(
-                        PropertyFactory.circleRadius(6f),
+                        PropertyFactory.circleRadius(7f),
                         PropertyFactory.circleColor(
                             Expression.match(
                                 Expression.get("status"),
@@ -159,6 +159,16 @@ fun TrackingScreen() {
                                 Expression.stop("early", Expression.color(StatusEarlyColor)),
                             ),
                         ),
+                        // The web map's own MAP_PALETTE.dark carries a
+                        // 'busStroke' (#12161c) that never made it into this
+                        // translation -- without it, StatusUnknownColor
+                        // (#6D7787, correctly copied) reads as near-identical
+                        // to style.json's own roads-major (#6b7889). 77% of
+                        // live buses carry status "unknown" (confirmed
+                        // against the real feed), so most dots were
+                        // camouflaged against major roads, not missing.
+                        PropertyFactory.circleStrokeWidth(1.5f),
+                        PropertyFactory.circleStrokeColor(Color(0xFF12161C).toArgb()),
                     ),
                 )
                 mapStyle = style
@@ -186,6 +196,11 @@ fun TrackingScreen() {
                 addStringProperty("bus_id", bus.busId ?: "")
             }
         }
+        // setGeoJson(), not setGeoJsonSync(): the live feed runs to ~18k
+        // features GB-wide, and parsing that synchronously on the main
+        // thread (LaunchedEffect runs on Dispatchers.Main) every 60s would
+        // jank the UI. setGeoJson() parses off-thread and applies once
+        // ready -- the right tradeoff for a dataset this size.
         source.setGeoJson(FeatureCollection.fromFeatures(features))
     }
 

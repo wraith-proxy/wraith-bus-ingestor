@@ -221,6 +221,26 @@ Practically: after `FULL_REFRESH=1 ./build.sh` completes, there is nothing
 further to do — the API picks up the new marts on its own within a minute,
 with no `docker compose restart` and no downtime.
 
+That is data. A change to `backend/app.py` itself is a different thing
+entirely, and easy to conflate with the above: **merging a PR does not
+deploy it.** See [ADR-0004](adr/0004-api-container-has-no-deploy-automation.md)
+for the full story — none of the three `.gitea/workflows/*.yml` files
+rebuild `api`, so a merged, released, tagged change sits inert in the
+image until someone runs, by hand, on the host:
+
+```bash
+docker compose build api
+docker compose up -d --force-recreate api
+docker exec ghost-web nginx -s reload
+```
+
+The `nginx -s reload` is not optional: recreating a container changes its
+IP on `ghost-net`, and `ghost-web` cached the old one at its own startup
+(see [Architecture](architecture.md)). Skipping it means the new code is
+running but unreachable, which looks identical from the outside to the
+old code still running — check with `curl` against a route the change
+actually touches, not just that the container is healthy.
+
 ## Dashboards and alerting
 
 ### Reaching Grafana
