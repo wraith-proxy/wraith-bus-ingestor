@@ -1,0 +1,370 @@
+operator_code,operator_name
+A2BR,A2B Bus and Coach
+A2BV,A2B Travel
+ABUS,ABUS
+ACME,Acme Transport Services
+ACYM,Arriva Wales
+ADER,Arriva Derby
+AINT,Aintree Coachlines
+AJCO,A & J Coaches
+AJTX,A and J Taxis
+AKSS,Arriva Kent and Surrey
+ALSC,Al's Coaches
+AMBS,Ambassador Travel
+AMGR,Flexibus
+AMID,Arriva Midlands
+AMKC,AMK
+AMNO,Arriva Midlands
+AMSY,Arriva North West
+AMTM,Arriva Kent and Surrey
+ANEA,Arriva North East
+ANTR,Andrews of Tideswell
+ANUM,Arriva North East
+ANWE,Arriva North West
+ARBB,Arriva Beds and Bucks
+ARCT,Archway Travel
+ARHE,Arriva Herts and Essex
+ASCT,Ashbourne Community Transport
+ASDC,ASD Coaches
+ASHT,Ashcroft Travel
+ASTC,Astons Coaches
+ATBC,Albatross Coaches
+ATWE,Atwest
+AUTO,Autocar Bus & Coach Services
+AVMT,Axe Valley Mini-Travel
+BANG,Banga Buses
+BBCG,Globe Holidays
+BDOL,Bakers Dolphin
+BDRB,Borderbus
+BEAR,Bear Buses
+BEES,Beestons
+BEVC,Belle Vue Coaches
+BHBC,Brighton & Hove Bus and Coach Company
+BJCO,Brian Jones Coaches
+BLAC,Blackpool Transport
+BLCO,Belle Coaches
+BLCT,Black Cat Travel
+BLET,Bayliss Executive Travel
+BLUS,Bluestar
+BNDB,Bee Network
+BNFM,Bee Network
+BNGN,Bee Network
+BNML,Bee Network
+BNSM,Bee Network
+BNVB,Bee Network
+BORD,Borders Buses
+BPHI,Blueworks Private Hire
+BPTR,The Burnley Bus Company
+BRCS,Border Rambler
+BRLN,Brookline
+BRTB,trentbarton
+BRYL,Brylaine Travel
+BULI,Bus Link
+BYCO,Berry's Coaches
+BZCO,Beeline Coaches
+CACC,Coastal and Country Coaches
+CARD,Cardinal Buses
+CAVE,Cavern City Tours
+CBBH,Centrebus
+CBNL,Centrebus
+CHLK,Chalkwell Garage & Coach Hire
+CKMR,Cuckmere Buses
+CLNB,Carlone Buses
+CNTC,Centaur Coaches
+CNTY,Country Bus
+COAC,Coachstyle
+COEV,Coach Events Services
+COMI,Coventry Minibuses
+COMT,Compass Travel
+COTS,Cotswold Green
+CPTR,Coopers Tours
+CRDR,Chaserider
+CRES,Cresta Coaches
+CRKC,Crosskeys Coaches
+CRLN,Carolean Coaches
+CSLB,Carousel Buses
+CSVC,Coach Services
+CTCO,CT Coaches
+CTLL,Catterall's
+CTNY,Thames Valley Buses
+CTSW,Community Transport South Wiltshire
+CUBU,Cumfybus
+CVSE,CVS Ltd
+DAGC,D & G Bus
+DAMY,Damory Coaches
+DDIS,Dales and District
+DDLT,Discover Dorset Tours
+DELA,Delaine Buses
+DENN,J R Dent Coaches
+DEWS,Dews Coaches
+DGTR,David Goodfellow Travel
+DIAM,Diamond Bus
+DJWA,Torbay Buses
+DMMS,DM Motor Services
+DNCT,Dan's Coach Travel
+DRMC,DRM Bus
+DTCO,Dartline
+EDTM,Edward Thomas
+ELNV,Ellenvale Coaches
+ENSB,Ensignbus
+ESTS,Stotts Coaches
+ESTW,Royal Buses
+EUTX,Eurocoaches
+EVOL,Evolve Bus & Coach
+EYMS,East Yorkshire
+FALC,Falcon Buses
+FALM,First & Last Mile
+FARG,Fargo Coaches
+FAST,Fastrack (operated by Go Ahead)
+FBOS,First Buses of Somerset
+FBRA,First Bradford
+FBRI,"First Bristol, Bath & the West"
+FBSM,1st Bus Stop
+FCYM,First South & West Wales
+FDOR,"First Wessex, Dorset & South Somerset"
+FECS,First Norfolk & Suffolk
+FESX,First Essex
+FHAL,"First Halifax, Calder Valley & Huddersfield"
+FHAM,"First Portsmouth, Fareham & Gosport"
+FHUD,"First Halifax, Calder Valley & Huddersfield"
+FLDS,First Leeds
+FLEI,First Leicester
+FLYE,Flyer
+FPOT,First Potteries
+FRDS,Fords Coaches
+FRMN,FromeBus
+FSMR,First Worcestershire
+FSRV,Faresaver
+FSYO,First South Yorkshire
+FTVA,First Berkshire & The Thames Valley
+FXTX,Felix Taxis & Co.
+FYOR,First York
+GATS,Gem Travel
+GAWY,Go Ahead West Yorkshire
+GHCT,Gateshead Central Buses
+GHOP,Gatwick Hoppa
+GLCS,Globe Coaches
+GNEL,Go North East
+GNSL,Greenslades Tours
+GOCH,Go Bus
+GPLM,Grant Palmer
+GRIN,Grindles Coaches
+GRYC,Grayscroft Coaches
+GTRI,Diamond Bus North West
+GVTR,Glen Valley Tours
+GWIL,F R Willetts
+HAIN,Haines Coaches
+HAMM,Hammonds Coaches
+HAMS,Hams Travel
+HASO,Harpurs Coaches
+HATT,Hattons Travel
+HCTY,Connexions Buses
+HDGS,Hodgsons
+HDGT,Peter Hodgson Travel
+HEDG,Hedge The Distance
+HEDO,Central Connect
+HGCO,Hatch Green Coaches
+HIPK,High Peak
+HNTC,Hunts Coaches
+HNTS,Hornsbys Bus & Coach
+HOGG,Peter Hogg of Jedburgh
+HOPE,Hopleys Coaches
+HOTS,Hotspur
+HOWT,Howards Travel
+HRGT,The Harrogate Bus Company
+HULS,Hulleys by High Peak
+HUYT,Huyton Travel
+HWCO,Holmeswood Coaches Ltd
+IPCO,Imperial Coaches Ltd
+IPSW,Ipswich Buses
+IRVD,Irving of Dalston
+IVTR,Isle Valley Transport
+JASI,Jacksons of Silsden Ltd
+JDXT,John Dix Travel
+JHCL,JH Coaches
+KBUS,Kinchbus
+KCTB,Central Connect
+KDTR,The Keighley Bus Company
+KEMT,Kempsford Transport UK Ltd
+KEVE,Kevendys Travel
+KEVS,Kevs Cars and Coaches
+KJTR,York Pullman
+KLCO,Lonsdale Buses
+KNCO,Kent Country
+KPCA,KP Cabs
+LAGC,L & G Coaches
+LAKC,Lakeside Coaches
+LATR,South Staffs Coach Hire
+LCAC,Lakeland Commercials
+LEMB,The Big Lemon
+LEMN,The Big Lemon
+LEWO,Sweyne Coaches
+LIHO,MD Coaches
+LLCO,Lloyds Coaches
+LMST,LMS Travel
+LNGS,A Lyles and Son
+LNUD,The Blackburn Bus Company
+LTEA,Lord's Travel
+LTKR,Langston & Tasker
+LTLS,Littles Travel
+LTRV,Libra Travel
+LUCW,Lucketts of Watford
+LYNX,Lynx
+MAGH,Maghull Coaches
+MAND,M & R Travel
+MARC,Marchants Coaches
+MBCH,Stowmarket Minibus and Coach Hire
+MBTO,TransporaBus
+MBTR,Bland's
+MBUP,Minibus Plus.com
+MDBC,Link Network
+MDCL,Diamond Bus East Midlands
+METR,Metrobus
+MHCO,M & H Coaches
+MIKO,Mikro Coaches
+MINI,Cruisers
+MINS,Minsterley Motors
+MNCT,Mendip Community Transport
+MNSC,Metro Network
+MNWB,Metro Network
+MOVP,Moving People
+MSOT,Marshalls of Sutton on Trent
+MULM,Mulleys Motorways
+MYAL,C G Myall & Son
+NADS,Newbury & District
+NATX,National Express
+NBMH,NBM Hire Ltd
+NCTR,Nottingham City Transport
+NDTR,Notts and Derby
+NIBS,NIBSbuses
+NMCO,Nick Maddy Coaches
+NOST,Northstar
+NOTB,Nottinghamshire County Council Fleet Services
+NOTL,Northumberland Travel Ltd
+NRTL,Redwoods Travel
+NTMY,Ashwood Travel
+NUTT,Coastliner Buses
+NVTR,Nu-Venture
+NWBT,Pilkingtonbus
+NWPT,Newport Bus
+OBUS,Our Bus
+OTSS,OTS
+OWNC,Owen's Travelmaster
+OXBC,Oxford Bus Company
+PATS,Pat's Coaches
+PBLT,Preston Bus
+PCCO,PC Coaches
+PCNE,Phoenix Coaches
+PERY,Borders Buses
+PLYC,Plymouth Citybus
+PPBU,Peoples Bus
+PULH,Pulhams Coaches
+RBTS,Roberts Travel Group
+RBUS,Reading Buses
+RCHC,Richmonds Coaches
+REDE,Red Eagle
+REPT,Reptons Coaches
+RGNT,Regent Coaches
+RJCO,R & J Coaches
+RLNE,Redline
+ROOS,Rooster Bus
+ROSS,Ross Travel
+RRAR,Reading RailAir
+RRTR,Red Rose Travel
+RSTY,Tyrers Coaches
+SARG,Sargeants Brothers
+SCCM,Stagecoach East
+SCCU,Stagecoach Cumbria and Lancashire
+SCEK,Stagecoach South East
+SCEM,Stagecoach East Midlands
+SCGL,Stagecoach West
+SCMY,Stagecoach Merseyside and South Lancashire
+SCNE,Stagecoach North East
+SCNH,Stagecoach Midlands
+SCOX,Stagecoach Oxfordshire
+SCRT,Scraggs
+SCSO,Stagecoach South
+SDCO,Linkrider Coaches
+SDVN,Stagecoach South West
+SESX,Stephensons of Essex
+SFGC,Safeguard Buses
+SHCO,Shire Connect
+SHRN,Sharpes of Nottingham
+SKIL,Skills
+SLBS,Select Bus Services
+SLEA,Sleafordian Coaches
+SLNE,Starline
+SLVL,LandFlight
+SMMC,Travel Cornwall
+SMST,Somerset Council
+SMTS,SMT Bus and Coach Ltd
+SNDR,Sanders Coaches
+SOST,Stanton's of Stoke
+SPMW,Stringers
+SSCT,South Somerset Community Transport
+SSSN,Shoreline Suncruisers
+SSWL,Stagecoach South Wales
+STAR,Star Travel
+STCB,Star Cabs
+STEK,Steve Keats of Sheffield
+STIV,St Ives Minibus Services
+STNE,Stanley Travel
+STTR,Stevenson's Travel
+SULV,Sullivan Buses
+SUNB,Sunbeam Luxury Coaches
+SUSC,Sussex Coaches
+SVCT,Southern Vectis
+SWCO,South West Coaches
+SWEY,Sweyne Coaches
+SWOC,Oakleys Coaches
+SWWD,Salisbury Reds
+SYRK,Stagecoach Yorkshire
+TANV,Tanat Valley Coaches
+TAWT,Taw & Torridge
+TBTN,trentbarton
+TCNT,TransportConnect
+TCVW,National Express Coventry
+TDTR,Swindon's Bus Company
+TELF,Telford's Coaches
+TEXP,Let's Go
+TFCN,Go Cornwall Bus
+TFLO,Transport for London
+THIL,Thornes Independent Ltd
+THTR,Thames Travel
+TKTR,TK Travel
+TLCT,TLC Travel
+TLYH,Tally Ho!
+TMSB,Central Connect
+TMST,Travelmasters
+TMTL,TM Travel
+TNXB,National Express West Midlands
+TPEN,Team Pennine
+TTMI,Taunton Minibuses
+TWET,21 Transport
+TXCO,Aimee's
+TYSW,Applegates
+UNIB,Uno
+UNIL,Uni-Link
+VISB,Vision Bus
+WACT,Walsall Community Transport
+WBCT,West Berkshire Council Transport Services
+WBHV,Wilfreda Beehive
+WBSV,White Bus Services
+WBTR,Warrington's Own Buses
+WCTY,Heatons Coaches
+WDBC,morebus
+WGTB,Wright Brothers Coaches
+WHIP,Whippet Coaches
+WMSA,A C Williams
+WMSV,Weardale Motor Services
+WNCT,Go to Town
+WNGS,Diamond Bus South East
+WOCT,West Oxfordshire Community Transport
+WRAY,Arriva Yorkshire
+YCST,Coastliner
+YEOC,Yeomans Travel
+YMST,YMS Travel
+YSQU,Squarepeg
+YSTN,Station Coaches
+YTNB,Yarranton Brothers
+ZSIN,Z & S Transport

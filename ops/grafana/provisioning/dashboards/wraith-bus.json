@@ -312,8 +312,8 @@
     {
       "type": "bargauge",
       "title": "Busiest operators (15 min)",
-      "description": "Distinct vehicles per operator over the last fifteen minutes. Operator joined the model grain in September and multiplied cardinality enough to blow up line_stops -- this is the panel that shows how lopsided that distribution really is.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "description": "Distinct vehicles per operator over the last fifteen minutes, by real operator name rather than the raw four-letter NOC code -- joined against dbt/noc_operator_names.csv (a curated extract of the real National Operator Code database, loaded into QuestDB by dbt/publish_operator_names.py), falling back to the raw code for anything unmapped. Operator joined the model grain in September and multiplied cardinality enough to blow up line_stops -- this is the panel that shows how lopsided that distribution really is.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 15 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
       "targets": [
         {
@@ -321,7 +321,7 @@
           "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "select operator, count_distinct(bus_id) as buses from bus_positions where timestamp > dateadd('m', -15, now()) order by buses desc limit 10"
+          "rawSql": "select coalesce(n.operator_name, b.operator) as operator, count_distinct(b.bus_id) as buses from bus_positions b left join operator_names n on n.operator_code = b.operator where b.timestamp > dateadd('m', -15, now()) group by coalesce(n.operator_name, b.operator) order by buses desc limit 10"
         }
       ],
       "fieldConfig": {
@@ -351,7 +351,7 @@
       "type": "table",
       "title": "Busiest lines (15 min)",
       "description": "Position count per line over the last fifteen minutes. Line is the heavy dimension in the ETA models, so a line that dominates here is the one that dominates a rebuild.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
       "targets": [
         {
@@ -397,7 +397,7 @@
     {
       "type": "row",
       "title": "Data quality",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 31 },
       "collapsed": false,
       "panels": []
     },
@@ -405,7 +405,7 @@
       "type": "timeseries",
       "title": "dbt test outcomes per build",
       "description": "One point per dbt run, written by dbt/publish_run_results.py from target/run_results.json. Failures and warnings are both recorded even when the build exits non-zero -- build.sh captures the exit code so the metrics land before it re-raises.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
       "targets": [
         {
@@ -459,8 +459,8 @@
     {
       "type": "table",
       "title": "Slowest tests (latest build)",
-      "description": "The fifteen most expensive assertions on the last run. dbt test time is a real share of the nightly window, so this is where to look before assuming a slow build is the models' fault.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "description": "The fifteen most expensive assertions on the last run. Test names are trimmed to just the assertion itself -- the leading 'test.wraith_bus_ingestor.' project prefix and the trailing '.<hash>' dbt appends for uniqueness are both stripped, since neither adds anything to read here. dbt test time is a real share of the nightly window, so this is where to look before assuming a slow build is the models' fault.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
       "targets": [
         {
@@ -468,7 +468,7 @@
           "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
           "format": "table",
           "rawQuery": true,
-          "rawSql": "select test, status, exec_ms from dbt_test_results where timestamp = (select max(timestamp) from dbt_test_results) order by exec_ms desc limit 15"
+          "rawSql": "select regexp_replace(regexp_replace(test, '^[^.]+\\.[^.]+\\.', ''), '\\.[^.]+$', '') as test, status, exec_ms from dbt_test_results where timestamp = (select max(timestamp) from dbt_test_results) order by exec_ms desc limit 15"
         }
       ],
       "fieldConfig": {
@@ -507,7 +507,7 @@
       "type": "table",
       "title": "Tests not passing (latest build)",
       "description": "Every test on the most recent run whose status is not 'pass'. Empty is the healthy state -- an empty panel here means the last build was clean, not that the query is broken.",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
       "targets": [
         {
@@ -561,7 +561,7 @@
       "type": "stat",
       "title": "Build duration",
       "description": "Wall-clock seconds for the latest dbt run, and the change from the run before it. Was a timeseries graph, but the build only runs nightly -- one point a day reads better as a number than a chart. Worth watching after any change to the line_stops cluster: that model has a history of turning a slow build into a host-level OOM.",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 40 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
       "targets": [
         {
@@ -612,7 +612,7 @@
     {
       "type": "row",
       "title": "Punctuality & ETA models",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 40 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 48 },
       "collapsed": false,
       "panels": []
     },
@@ -620,7 +620,7 @@
       "type": "stat",
       "title": "System on-time %",
       "description": "Share of journeys classified on-time by line_punctuality's per-(line, direction, day_type, hour_band) median delay, weighted by journey volume and rolled up from dbt/publish_punctuality_summary.py. 'On-time' uses the DfT Traffic Commissioner standard for local bus services: 1 minute early to 5 minutes 59 seconds late. 95% is the statutory target operators are held to -- thresholds below match that, not a number picked for this dashboard.",
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 41 },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 49 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
       "targets": [
         {
@@ -664,7 +664,7 @@
       "type": "stat",
       "title": "System median delay",
       "description": "Volume-weighted average of each line's median delay, from the same rollup as on-time %. Negative means the typical bus is running early, not late -- delay and lateness aren't the same thing here, and a negative number isn't necessarily good if it means stops are being missed early.",
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 41 },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 49 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
       "targets": [
         {
@@ -698,7 +698,7 @@
       "type": "stat",
       "title": "Avg model fit (r2)",
       "description": "Mean r-squared across every eta_models row (one per operator/line/direction/day_type/hour_band regression). Below 0.5 is the same 'weak fit' cutoff the panel to the right counts against -- a chosen line, not a standard, named as such in dbt/publish_punctuality_summary.py.",
-      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 41 },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 49 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
       "targets": [
         {
@@ -742,7 +742,7 @@
       "type": "stat",
       "title": "Weak model fit",
       "description": "Share of eta_models rows with r2 below 0.5. Not a failure by itself -- the API's predict() already falls back to a schedule-adjusted timetable and then the bare timetable when a regression is weak (see docs/ROADMAP.md 1.0.0) -- but a rising trend here means more of the fleet's ETAs are running on the fallback chain rather than a fitted model.",
-      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 41 },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 49 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
       "targets": [
         {
@@ -786,7 +786,7 @@
       "type": "stat",
       "title": "Avg modeled speed",
       "description": "Mean of eta_models' mean_speed_kmh across every regression. A sanity gauge more than an alert -- a sudden system-wide jump or collapse is more likely a feed or grain problem than every bus actually changing speed.",
-      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 41 },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 49 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
       "targets": [
         {
@@ -820,7 +820,7 @@
       "type": "table",
       "title": "Worst lines by delay (latest build)",
       "description": "Every line with at least 50 journeys in the latest build, worst median delay first. The 50-journey floor exists because rarely-run lines (school routes, a handful of trips a day) produce noisy medians from a handful of journeys -- see dbt/publish_punctuality_summary.py's per-line rollup for exactly what's being averaged and how.",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 45 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 53 },
       "datasource": { "type": "grafana-postgresql-datasource", "uid": "questdb" },
       "targets": [
         {
