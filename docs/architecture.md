@@ -13,7 +13,7 @@
 | `archiver` | `./archiver` | Moves old `bus_positions` partitions off the hot disk, on a schedule, not on request |
 | `ingestor` | `./ingestor` | Polls the BODS SIRI-VM feed every 60s and writes it into QuestDB |
 | `tiles` | `ghcr.io/maplibre/martin` | Serves PMTiles basemap tiles to the bus map in `ghost-site` |
-| `grafana` | `grafana/grafana` | Dashboards over QuestDB, plus the alert rules that fire into `ntfy` |
+| `grafana` | `grafana/grafana:11.6.16` | Dashboards over QuestDB, plus the alert rules that fire into `ntfy` |
 | `ntfy` | `binwiederhier/ntfy` | Push delivery for those alerts, to the ntfy app on the phone |
 
 None of these publish a host port except `db` and `tiles` (configurable in
@@ -42,6 +42,20 @@ in-container uid, which the host user can't write to.
 `1.1.1.1`) rather than relying on the Docker embedded DNS, since it needs to
 resolve `data.bus-data.dft.gov.uk` reliably from inside the container.
 
+`grafana`'s image is pinned to `11.6.16`, not `:latest` like the rest of
+this file's images -- the one deliberate exception. `:latest` picked up
+Grafana 13's "Dynamic dashboards" (GA and on by default since
+2026-04-08): a provisioned classic-schema dashboard renders correctly but
+its frontend never issues the panel query at all, silently. `12.3.11`
+turned out to run the same apiserver-backed dashboard path under a
+`v1beta1` API instead of `v2`, and explicitly disabling it via
+`GF_FEATURE_TOGGLES_KUBERNETESDASHBOARDS=false` had no effect -- Grafana
+reported the toggle back as `true` regardless, meaning it is locked at
+General Availability, not merely defaulted on. `11.6.16` predates the
+whole subsystem: both `/apis/dashboard.grafana.app/v1beta1/` and `/v2/`
+genuinely 404 on it. Before ever bumping this image, confirm those
+endpoints still 404 on the target version.
+
 ## The seam with `ghost-site`: `ghost-net`
 
 This repo was split out of `ghost-site` (which now holds only `www/`,
@@ -61,7 +75,15 @@ this repo's compose declares it `external: true` and joins it. Practically:
   `/grafana/` turns up `GRAFANA_ROOT_URL`, the value the location has to
   agree with, never the location itself. (That agreement matters: Grafana
   appends to its root URL to build every asset path, and needs
-  `GF_SERVER_SERVE_FROM_SUB_PATH=true` to serve a subpath at all.)
+  `GF_SERVER_SERVE_FROM_SUB_PATH=true` to serve a subpath at all.) A
+  second thing has to agree too, learned from a real
+  `net::ERR_TOO_MANY_REDIRECTS` incident: `ghost-site`'s `proxy_pass` for
+  that location must have **no trailing slash and no path** --
+  `proxy_pass http://upstream;`, not `http://upstream/;`. The trailing
+  slash strips the matched `/grafana/` prefix before forwarding, and
+  `GF_SERVER_SERVE_FROM_SUB_PATH=true` means Grafana expects that prefix
+  preserved on every request; stripped, it 301s to re-add it, nginx
+  strips it again on the retry, and the two loop forever.
 - There is no `depends_on` across the boundary (compose can't express that
   across projects); `web` 502s until this stack's containers are up, same
   as after any reboot.
@@ -88,6 +110,17 @@ moment a dashboard would most want to read it is precisely when `build.sh`
 holds the exclusive lock on it. QuestDB is already the ingest sink, already
 on `ghost-net`, and already the datasource, so build health plots next to
 feed health with no new storage to invent.
+
+`dbt/publish_punctuality_summary.py` follows the same pattern for
+`line_punctuality` and `eta_models` -- also real dbt marts, also stuck in
+duckdb -- writing `line_punctuality_summary` (one row per line: journeys,
+on-time journeys, volume-weighted median/p90 delay) and
+`eta_model_summary` (one system-wide row: average r2, % of grains with a
+weak fit, average modeled speed) after every publish. Both are collapsed
+from a finer (line, direction, day_type, hour_band) grain down to
+something a dashboard panel can plot; "on-time" is the DfT Traffic
+Commissioner standard (1 minute early to 5 minutes 59 seconds late), not
+a number invented for this dashboard.
 
 Alert delivery runs the other way down the same network: Grafana's webhook
 contact point POSTs server-side to `http://ntfy:80/<topic>`, so the topic

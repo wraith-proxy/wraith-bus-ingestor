@@ -246,9 +246,35 @@ Datasource, dashboards, contact point and alert rules are all provisioned
 from `ops/grafana/provisioning/`, mounted read-only, with
 `allowUiUpdates: false`. The files in git are the source of truth, so an
 edit made in the UI does not survive — change the file and the provisioner
-picks it up within 30s. Note that the alerting YAML was written against
-Grafana's docs and has not yet survived a real start; expect to correct
-field names on first boot rather than reading a quiet startup as success.
+picks it up within 30s. All three alert rules provision, schedule and
+evaluate to `health=ok` against live QuestDB — confirmed live, not just
+written against the docs.
+
+### The Grafana image is pinned to `11.6.16` — do not casually bump it
+
+`:latest` first shipped Grafana 13's "Dynamic dashboards" (GA and on by
+default since 2026-04-08): a provisioned classic-schema dashboard like
+this one renders fine — layout, titles, panels all correct — but its
+frontend never issues the panel query request at all. Confirmed live by
+watching nginx's access log across four full page loads from a real
+device: zero `/api/ds/query` calls, ever, while the exact same query
+worked correctly through `curl`. Every panel showed "No data". Known
+upstream issue: [grafana/grafana#122663](https://github.com/grafana/grafana/issues/122663).
+
+`12.3.11` did **not** fix it — that version runs the same
+apiserver-backed dashboard path under a `v1beta1` API instead of `v2`,
+and setting `GF_FEATURE_TOGGLES_KUBERNETESDASHBOARDS=false` (plus the
+three `dashboardScene*` toggles) had no effect: `/api/frontend/settings`
+reported them back as `true` regardless of the setting. That toggle is
+locked at General Availability, not merely defaulted on — no config
+combination turns it off.
+
+`11.6.16` predates Dynamic Dashboards existing in any form (introduced in
+12.0, May 2025). Both `/apis/dashboard.grafana.app/v1beta1/...` and
+`/apis/dashboard.grafana.app/v2/...` genuinely 404 on it — the code isn't
+there, not just hidden. Before bumping this image, confirm those
+endpoints still 404 on whatever version you're moving to; if either
+responds, the dashboard will silently stop querying.
 
 `GRAFANA_DATA_PATH` has two traps of its own. It is written by Grafana's
 in-container uid 472, so it must be `chown`ed once before first boot or
@@ -256,6 +282,47 @@ Grafana exits on a permission error — the same class of problem as
 QuestDB's uid 10001 next door. And it must be absolute or `./`-prefixed: a
 bare name is read by Compose as a *named volume*, so Grafana would come up
 empty every time with nothing obviously wrong.
+
+`ghost-site`'s `proxy_pass` for `/grafana/` has a trap too, found the hard
+way as a `net::ERR_TOO_MANY_REDIRECTS` incident: it must have **no
+trailing slash and no path** (`proxy_pass http://upstream;`). A trailing
+slash strips the matched `/grafana/` prefix, which `GF_SERVER_SERVE_FROM_SUB_PATH=true`
+needs preserved — stripped, Grafana 301s to re-add it, nginx strips it
+again, forever. See [Architecture](architecture.md).
+
+### What's on the dashboard
+
+`ops/grafana/provisioning/dashboards/wraith-bus.json` — "Wraith Bus
+Platform", four rows:
+
+- **Is the pipeline alive?** Feed age, buses tracked (5 min), positions
+  ingested (1 h), hours since last dbt build, DQ issues on the last
+  build — the five things worth glancing at first.
+- **Ingest over time / Fleet right now.** Positions-per-hour and
+  distinct-buses trends, busiest operators and lines in the last 15
+  minutes.
+- **Data quality.** dbt test outcomes and build duration per run (a
+  callout with the delta from the previous build, not a graph — the
+  build only runs nightly, so one point a day reads better as a number),
+  slowest tests and any non-passing tests on the latest build.
+- **Punctuality & ETA models.** System on-time % (DfT standard, see
+  below), system median delay, average model fit (r2), % of ETA-model
+  grains with a weak fit, average modelled speed, and a full table of
+  every line with 50+ journeys ranked by delay. Backed by
+  `dbt/publish_punctuality_summary.py`, which collapses the
+  `line_punctuality` and `eta_models` dbt marts (otherwise stuck in
+  duckdb, same problem as the DQ results) into QuestDB after every
+  build. "On-time" is the DfT Traffic Commissioner standard for local
+  bus services — 1 minute early to 5 minutes 59 seconds late, 95% the
+  statutory target — not a number picked for this dashboard. The rollup
+  is a volume-weighted approximation from grain-level medians, not a
+  true per-journey percentage: no per-journey delay is stored anywhere
+  in this pipeline, only the medians dbt already computes.
+
+`slaycoach.quest/oma` 302-redirects straight to this dashboard — a
+redirect rather than a proxy, since Grafana's `GF_SERVER_ROOT_URL` is
+fixed to the `thomaspeoples.com` domain and serving the dashboard under a
+second domain would break its own generated asset URLs.
 
 ### Where the alerts actually go
 
@@ -276,10 +343,12 @@ Three rules are provisioned today:
   and "ran and failed" — the first being the failure that went unnoticed
   for weeks after the September repo split, because a build that never runs
   produces no output to read.
-- **dbt test failures** — the most recent run's `tests_failed` is above
-  zero. Warn-severity results do not trip this (they are not failures), but
-  they are recorded as `tests_warned` on the same row, so they are on the
-  dashboard even though they do not page.
+- **dbt test failures or warnings** — the most recent run's
+  `tests_failed` plus `tests_warned` is above zero. Warnings count
+  deliberately: a warn-severity result (a freshness check, say) exits the
+  build green and publishes anyway, so before this rule existed it
+  reached nothing but `build.log` — this is the alert that closes that
+  gap, not just the outright failures.
 
 ### The topic name is the credential
 
@@ -309,12 +378,12 @@ registry, so there is nothing server-side to pre-create or to delete — the
 new topic exists the first time Grafana posts to it. Grafana picks the name
 up from its environment each time it provisions the contact point, so
 recreating the container is the whole update; there is no copy anywhere to
-hand-edit. The one thing to confirm on the first rotation is that the
-`$NTFY_TOPIC` interpolation in `contactpoints.yaml` actually resolves —
-Grafana documents env-var interpolation for datasource provisioning, and
-the alerting provisioner is assumed, not verified, to behave the same. If
-it does not, the fallback is to template that file at container start,
-never to hardcode the topic into a tracked file.
+hand-edit. `$NTFY_TOPIC` interpolation in `contactpoints.yaml` is
+confirmed to resolve — Grafana documents env-var interpolation for
+datasource provisioning only, but reading the contact point back from
+the API after a recreate shows the real topic, not the literal
+`$NTFY_TOPIC` string, so the same mechanism covers the alerting
+provisioner too.
 
 The old topic keeps working for anyone who still knows it. That is the
 point: a leaked topic cannot be revoked, only abandoned.
