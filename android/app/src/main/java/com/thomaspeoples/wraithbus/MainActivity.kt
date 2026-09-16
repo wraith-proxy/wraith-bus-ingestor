@@ -22,7 +22,15 @@ class MainActivity : ComponentActivity() {
 
         requestNotificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
 
-        ContextCompat.startForegroundService(this, Intent(this, NtfyForegroundService::class.java))
+        // A build with no NTFY_TOPIC baked in (local.properties absent --
+        // exactly what happens when F-Droid's build server, or anyone else
+        // building from source, checks this repo out fresh) has nothing to
+        // subscribe to. Starting the service anyway would hold a
+        // persistent foreground notification open for a socket that can
+        // never connect to anything real.
+        if (BuildConfig.NTFY_TOPIC.isNotBlank()) {
+            ContextCompat.startForegroundService(this, Intent(this, NtfyForegroundService::class.java))
+        }
 
         setContent {
             WraithBusTheme {

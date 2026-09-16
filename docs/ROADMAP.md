@@ -390,3 +390,48 @@ fits the brand's palette. The shipped XML was verified by re-extracting
 its own `pathData` values into a throwaway SVG and re-rendering *that*,
 so what was inspected is provably what ships, not a hand-typed
 approximation of it.
+
+**About, FAQ, and an in-app update notice.** Reached from a new
+overflow menu in a `TopAppBar` (`AppNav.kt`), keeping the primary bottom
+nav to Tracking/Dashboard rather than crowding four tabs onto a phone
+screen for two low-frequency destinations. About covers what the app is,
+BODS/OpenStreetMap attribution (the OSM credit line is a real license
+requirement of using that data, not decoration), the MIT license and
+source link, and a plain privacy statement. FAQ covers 12 real questions
+grounded in the app's actual behaviour -- why most buses show `unknown`
+(roughly three-quarters, confirmed against the live feed, not a guess),
+why there's no way to repoint the app at a different server, what the
+push notifications actually are. `update/UpdateChecker.kt` checks this
+repo's Releases for a newer `android-X.Y.Z-debug` tag once per cold
+start and shows a dialog if one exists -- a courtesy for someone who
+sideloaded directly, since Obtainium and F-Droid already watch the same
+Releases page on their own without the app's help.
+
+**F-Droid and Obtainium readiness.** Full writeup:
+[docs/android-distribution.md](android-distribution.md). The short
+version: Obtainium already works today against this repo's existing
+Releases (no code changes needed -- it was already shipping real
+releases in exactly the shape Obtainium expects). F-Droid is split into
+two different things, and only one was in scope here: the *public*
+F-Droid catalog needs a merge request against a third-party project
+(`fdroiddata`) that only the repo owner should decide to open, so that
+was **not done**; what *was* done is everything the app itself needs to
+be F-Droid-buildable --
+`android/fastlane/metadata/android/en-US/` (title, descriptions,
+per-`versionCode` changelogs, a 512×512 store icon rendered from the
+same vector artwork as the launcher icon), a real reproducible-build
+story (`local.properties` absent -- exactly F-Droid's build-server
+state -- degrades to safe defaults, not a broken build), no proprietary
+dependencies, and `versionCode`/`versionName` promoted to the actual
+source of truth for the app's version rather than the release-tag names.
+That last change surfaced a real inconsistency: `versionCode` had never
+actually been bumped for the `1.0.0` -> `1.0.1` re-ship, both silently
+carrying `versionCode 1` -- fixed by setting this release to the true
+next value, `2`, rather than inventing a `3` to match the tag-name count.
+
+**Also removed:** `ACCESS_COARSE_LOCATION`/`ACCESS_FINE_LOCATION`,
+merged in transitively by MapLibre's own manifest for a "show my
+position" feature this app never enables. Stripped via
+`tools:node="remove"` rather than carried silently -- an app requesting
+location it doesn't use is exactly what an F-Droid reviewer would flag,
+so it's fixed rather than left for one to catch.

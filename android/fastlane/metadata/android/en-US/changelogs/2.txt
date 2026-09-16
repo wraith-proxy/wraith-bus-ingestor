@@ -1,0 +1,6 @@
+Fixed buses not rendering on the map (a colour bug, not missing data).
+Fixed the dashboard showing no data (a deployment gap on the server).
+New app icon.
+Added About and FAQ pages.
+Added an update-available check on launch.
+Removed unused location permissions.

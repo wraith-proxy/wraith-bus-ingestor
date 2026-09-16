@@ -95,6 +95,11 @@ class NtfyForegroundService : Service() {
             .build()
 
     private fun connect() {
+        // Defense in depth: MainActivity already skips starting this
+        // service when no topic is baked in, but a blank topic here would
+        // otherwise mean an endless reconnect loop against a malformed
+        // URL for zero benefit.
+        if (BuildConfig.NTFY_TOPIC.isBlank()) return
         if (webSocket != null) return
         reconnectJob?.cancel()
         val request = Request.Builder().url(BuildConfig.NTFY_WS_URL).build()
