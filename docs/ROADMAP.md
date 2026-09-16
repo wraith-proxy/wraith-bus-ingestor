@@ -154,7 +154,7 @@ be broken rather than merely untested -- see 1.4.0 below and
 [ADR-0003](adr/0003-replay-verified-by-construction.md), which also
 records why the full end-to-end rehearsal was deliberately not run.
 
-## Now: 1.4.0 -- Grafana: observability, DQ, alerting
+## 1.4.0 -- Grafana: observability, DQ, alerting
 
 Landed 2026-09-15. QuestDB already speaks the Postgres wire protocol on
 8812, so Grafana's built-in Postgres datasource points straight at it and
@@ -273,23 +273,78 @@ hand-rolled semantic layer.
 plan called for them, nothing consumes them today, and the volume is
 there whenever a real incident wants marking.
 
-## 1.5.0 -- Android APK, LineageOS Tegu (Pixel Tablet), Android 16+
+## Now: 1.5.0 -- Android APK, LineageOS Tegu (Pixel Tablet), Android 16+
 
-Planned 2026-09-15. Full native, not a WebView wrapper -- Jetpack Compose
-+ OkHttp, single-device scope (Tegu only, Android 16+ minSdk), two
-screens:
+Landed 2026-09-16. Full native, not a WebView wrapper -- Jetpack Compose
++ OkHttp, single-device scope (Tegu only, minSdk 36), two screens plus
+push. `android/` is a real, standalone Gradle project alongside
+`backend/`, `dbt/`, `ingestor/`, `archiver/` -- same "sibling app dirs,
+not one src/ tree" shape `pyproject.toml` already documents for the rest
+of this repo.
 
-- **Tracking.** Hits the existing `/api/buses`, `/api/bus/<id>`,
-  `/api/route`, `/api/search` directly -- zero new backend work, same
+- **Tracking.** `ui/tracking/TrackingScreen.kt` -- a MapLibre map using
+  the exact same tile source and style as `ghost-site`'s web bus map
+  (`assets/style.json`, translated from that page's own style object, not
+  a second cartography invented for the phone), live bus positions from
+  `/buses` refreshed every 60s (matching the web map's own cadence),
+  tap-to-query `/bus/<id>` in a bottom sheet, and a "Show route" action
+  that draws `/route`'s line+stops overlay. A debounced search bar hits
+  `/search` and recenters the camera. Zero new backend work, same
   endpoints the web map already uses.
-- **Dashboard.** Does NOT query QuestDB or Grafana directly from the
-  phone -- adds a couple of read-only `/api/metrics`-style endpoints to
-  the existing Flask backend instead, reusing the same underlying
-  queries 1.4.0's Grafana panels use. Keeps one API surface for every
-  client (web, Grafana, phone), and keeps QuestDB itself off the public
-  internet regardless of how Grafana ends up exposed.
-- **Push notifications.** Subscribes to 1.4.0's `ntfy` topic natively
-  (Android's own notification channel, no separate push-gateway service
-  needed) -- alerts Grafana fires land on the device directly. Same
-  topic-name-as-secret handling as 1.4.0: shipped to the APK as build
-  config, not hardcoded in a committed source file.
+- **Dashboard.** `ui/dashboard/DashboardScreen.kt` does NOT query QuestDB
+  or Grafana directly from the phone -- it hits two new read-only Flask
+  endpoints instead:
+  - `/api/metrics/summary` -- feed age, buses tracked, positions/hour,
+    hours since build, DQ issues. Each field is its own independent
+    `qdb_exec` call and fails on its own, the same "one bad query
+    shouldn't blank the others" reasoning `bus_detail()` already applies.
+  - `/api/metrics/punctuality` -- system on-time % and median delay, ETA
+    model fit, and the worst-lines table, straight off
+    `line_punctuality_summary` and `eta_model_summary`, the exact tables
+    and queries the Grafana dashboard's own "Punctuality & ETA models"
+    row already uses.
+
+  One API surface for every client (web, Grafana, phone); QuestDB stays
+  off the public internet regardless of how Grafana ends up exposed.
+  Both endpoints verified against live QuestDB with real data before any
+  Kotlin was written (25,910 buses, 37.3% system on-time, line 320 the
+  worst offender), and covered by two tests each: the degrade-quietly
+  path (matches CI, where `QUESTDB_URL` is unset) and the real success
+  path against a faked QuestDB response.
+- **Push notifications.** `ntfy/NtfyForegroundService.kt` -- a foreground
+  service holding a live OkHttp WebSocket to the same `ntfy` topic
+  Grafana's alerts already publish to, posting a real Android
+  notification per message. Doubling backoff on disconnect (2s -> 60s),
+  the same shape `ingestor/ingest.py`'s own dead-feed backoff uses, just
+  tuned faster since this is a live push channel, not a slow poll. The
+  topic is a `BuildConfig` field sourced from `local.properties`
+  (gitignored, `local.properties.example` committed as the template,
+  same convention as this repo's own `.env`/`.env.example`) -- never
+  hardcoded into a committed `.kt` file.
+- **Built via ultracode, verified by a real compile, not just review.**
+  A full Android SDK (platform 36, build-tools) and Gradle toolchain were
+  set up specifically to compile this for real. Two real bugs only a
+  compiler catches were found and fixed this way: the agent-written
+  `TrackingScreen.kt` imported GeoJSON types from `com.mapbox.geojson`
+  (MapLibre's historical upstream) when 11.x actually repackaged them
+  under `org.maplibre.geojson` -- confirmed by pulling the real
+  `android-sdk-geojson` jar and listing its classes, not guessed twice.
+  Every hand-written XML comment that used `--` (this repo's own house
+  style) had to be found and fixed, since XML forbids it in comments.
+  `./gradlew clean assembleDebug` succeeds from a clean checkout: real
+  APK, `com.thomaspeoples.wraithbus`, launchable `MainActivity`,
+  `minSdk = targetSdk = compileSdk = 36`.
+- **Dependency versions are pinned one wave back from bleeding-edge
+  androidx, deliberately.** The latest `core-ktx`/Compose/`lifecycle`/
+  `navigation-compose` releases as of this build all require compiling
+  against API 37 -- which is still an active preview cycle on Google's
+  SDK repository (`android-37.0`/`.1`/`.2`, no plain stable `37` yet),
+  not the real, stable, shipping Android version this app's "Android
+  16+ minSdk" actually means. Every dependency was rolled back one
+  release to the last wave that targets stable API 36 instead of
+  chasing a preview platform for a single-device app that ships once.
+
+**Not built:** a signed release variant. This is a sideloaded,
+single-device app with no store distribution -- the debug build is
+already a real, installable APK, and there is nothing a release
+signing config would buy here beyond ceremony.

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Wraith Bus</string>
+    <string name="nav_tracking">Tracking</string>
+    <string name="nav_dashboard">Dashboard</string>
+    <string name="notification_channel_alerts">Wraith Bus alerts</string>
+    <string name="notification_channel_alerts_desc">Grafana alerts relayed from the self-hosted ntfy topic</string>
+    <string name="ntfy_service_notification_title">Wraith Bus</string>
+    <string name="ntfy_service_notification_text">Listening for alerts</string>
+</resources>
