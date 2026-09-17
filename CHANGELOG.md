@@ -1,3 +1,9 @@
+## v1.5.0 (2026-09-17)
+
+### Bug Fixes
+
+- split the Android app into its own repo
+
 ## v1.4.1 (2026-09-17)
 
 ### Bug Fixes
