@@ -1,3 +1,9 @@
+## v1.4.1 (2026-09-17)
+
+### Bug Fixes
+
+- visible route lines, reordered bus-tap flow, line/bus search, nav dead-end
+
 ## v1.4.0 (2026-09-16)
 
 ## v1.3.0 (2026-09-16)
