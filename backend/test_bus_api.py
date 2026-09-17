@@ -1149,6 +1149,28 @@ def test_metrics_punctuality_parses_real_response_shape():
         app.urllib.request.urlopen = real_urlopen
 
 
+def test_search_matches_line_number_directly():
+    """A rider searching "x93" has no locality in mind -- the locality loop
+    in search() never fires for that query, so this proves the direct
+    line-code match reaches it independently."""
+    real_live_buses = app.live_buses
+    try:
+        app.live_buses = lambda bus_id=None: [
+            {'bus_id': 'B1', 'line': 'X93'},
+            {'bus_id': 'B2', 'line': 'X93'},
+            {'bus_id': 'B3', 'line': '12'},
+        ]
+        client = app.app.test_client()
+        r = client.get('/search', query_string={'q': 'x93'})
+        assert r.status_code == 200
+        body = r.get_json()
+        assert body['matches'] == []
+        assert body['lines'] == ['X93']
+        assert body['bus_ids'] == ['B1', 'B2']
+    finally:
+        app.live_buses = real_live_buses
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_') and callable(v)]
     for fn in tests:

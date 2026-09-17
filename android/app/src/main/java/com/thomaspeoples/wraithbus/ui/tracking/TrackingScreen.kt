@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -50,6 +49,7 @@ import kotlinx.coroutines.launch
 import org.maplibre.android.camera.CameraPosition
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
+import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
@@ -58,6 +58,9 @@ import org.maplibre.android.style.layers.CircleLayer
 import org.maplibre.android.style.layers.LineLayer
 import org.maplibre.android.style.layers.PropertyFactory
 import org.maplibre.android.style.sources.GeoJsonSource
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 /** Exact status palette the web map uses (ghost-site's own MAP_PALETTE.dark),
  * reused here so a bus reads the same colour on phone and browser. */
@@ -65,7 +68,11 @@ private val StatusOnTimeColor = Color(0xFF8FA882).toArgb()
 private val StatusLateColor = Color(0xFFC96F5E).toArgb()
 private val StatusEarlyColor = Color(0xFFD18A3D).toArgb()
 private val StatusUnknownColor = Color(0xFF6D7787).toArgb()
-private val RouteLineColor = Color(0xFF9AA4B2).toArgb()
+// Was 0xFF9AA4B2 -- identical to the web map's old sibStroke value, and
+// close enough to style.json's roads-major to disappear. ghost-site's
+// MAP_PALETTE.dark.route moved to this same cyan for the same reason;
+// keep the two in step.
+private val RouteLineColor = Color(0xFF4FD7E8).toArgb()
 private val RouteStopColor = Color(0xFF171B21).toArgb()
 
 private const val BUSES_SOURCE_ID = "buses"
@@ -139,7 +146,7 @@ fun TrackingScreen() {
                 val busId = hit?.takeIf { it.hasProperty("bus_id") }?.getStringProperty("bus_id")
                 if (!busId.isNullOrEmpty()) {
                     coroutineScope.launch {
-                        selectedBusDetail = BusApi.fetchBusDetail(busId)
+                        selectBus(busId, maplibreMap, mapStyle) { selectedBusDetail = it }
                     }
                 }
                 true
@@ -225,11 +232,48 @@ fun TrackingScreen() {
                 placeholder = { Text("Search locality, line or bus") },
                 singleLine = true,
             )
-            val matches = searchResult?.matches.orEmpty()
-            if (matches.isNotEmpty()) {
+            val result = searchResult
+            val hasResults = result != null &&
+                (result.matches.isNotEmpty() || result.lines.isNotEmpty() || result.busIds.isNotEmpty())
+            if (result != null && hasResults) {
                 Card(modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) {
                     Column {
-                        matches.forEach { match ->
+                        result.lines.forEach { line ->
+                            Text(
+                                text = "Line $line",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        coroutineScope.launch {
+                                            val route = BusApi.fetchRoute(line = line)
+                                            if (route.features.isNotEmpty()) {
+                                                fitCameraToRoute(maplibreMap, applyRouteOverlay(mapStyle, route))
+                                            }
+                                        }
+                                        query = ""
+                                        searchResult = null
+                                    }
+                                    .padding(12.dp),
+                            )
+                        }
+                        result.busIds.forEach { busId ->
+                            Text(
+                                text = "Bus $busId",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        coroutineScope.launch {
+                                            selectBus(busId, maplibreMap, mapStyle) { selectedBusDetail = it }
+                                        }
+                                        query = ""
+                                        searchResult = null
+                                    }
+                                    .padding(12.dp),
+                            )
+                        }
+                        result.matches.forEach { match ->
                             Text(
                                 text = match.locality ?: "-",
                                 modifier = Modifier
@@ -257,26 +301,51 @@ fun TrackingScreen() {
     val detail = selectedBusDetail
     if (detail != null) {
         ModalBottomSheet(onDismissRequest = { selectedBusDetail = null }) {
-            BusDetailSheetContent(
-                detail = detail,
-                onShowRoute = {
-                    val line = detail.bus.line
-                    if (line != null) {
-                        coroutineScope.launch {
-                            val route = BusApi.fetchRoute(line = line, direction = detail.bus.direction)
-                            if (route.features.isNotEmpty()) {
-                                applyRouteOverlay(mapStyle, route)
-                            }
-                        }
-                    }
-                },
-            )
+            BusDetailSheetContent(detail = detail)
         }
     }
 }
 
+/** Shared by a map tap on a bus dot and a bus-number search hit: draw the
+ * route first (so it's already on the map by the time the sheet covers the
+ * bottom half of the screen), fit the camera to it, then open the sheet. */
+private suspend fun selectBus(
+    busId: String,
+    map: MapLibreMap?,
+    style: Style?,
+    onDetail: (BusDetail?) -> Unit,
+) {
+    val detail = BusApi.fetchBusDetail(busId) ?: run { onDetail(null); return }
+    val line = detail.bus.line
+    if (line != null) {
+        val route = BusApi.fetchRoute(line = line, direction = detail.bus.direction)
+        if (route.features.isNotEmpty()) {
+            fitCameraToRoute(map, applyRouteOverlay(style, route))
+        }
+    }
+    onDetail(detail)
+}
+
+private fun fitCameraToRoute(map: MapLibreMap?, bounds: LatLngBounds?) {
+    if (map == null || bounds == null) return
+    map.animateCamera(CameraUpdateFactory.newLatLngBounds(bounds, 64))
+}
+
+private val timeFormatter = DateTimeFormatter.ofPattern("HH:mm")
+
+/** Server times are all ISO-8601 UTC ("2026-09-16T18:57:39Z") -- riders
+ * want a clock time in their own zone, not a data engineer's timestamp. */
+private fun isoToLocalTime(iso: String?): String {
+    if (iso.isNullOrBlank()) return "-"
+    return try {
+        Instant.parse(iso).atZone(ZoneId.systemDefault()).format(timeFormatter)
+    } catch (_: Exception) {
+        iso
+    }
+}
+
 @Composable
-private fun BusDetailSheetContent(detail: BusDetail, onShowRoute: () -> Unit) {
+private fun BusDetailSheetContent(detail: BusDetail) {
     val bus = detail.bus
     Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
         Text(text = bus.line ?: "Unknown line", style = MaterialTheme.typography.titleLarge)
@@ -289,16 +358,12 @@ private fun BusDetailSheetContent(detail: BusDetail, onShowRoute: () -> Unit) {
         if (delayText.isNotBlank()) {
             Text(text = delayText)
         }
-        bus.etaIso?.let { Text(text = "ETA: $it") }
-        detail.predictedArrivalIso?.let { Text(text = "Predicted arrival: $it") }
+        bus.etaIso?.let { Text(text = "ETA: ${isoToLocalTime(it)}") }
+        detail.predictedArrivalIso?.let { Text(text = "Predicted arrival: ${isoToLocalTime(it)}") }
         detail.nextStop?.let { next ->
             Spacer(modifier = Modifier.height(8.dp))
             Text(text = "Next stop: ${next.name ?: "-"}")
-            next.etaIso?.let { Text(text = "Next stop ETA: $it") }
-        }
-        Spacer(modifier = Modifier.height(16.dp))
-        Button(onClick = onShowRoute, modifier = Modifier.fillMaxWidth()) {
-            Text("Show route")
+            next.etaIso?.let { Text(text = "Next stop ETA: ${isoToLocalTime(it)}") }
         }
         Spacer(modifier = Modifier.height(16.dp))
     }
@@ -322,10 +387,14 @@ private fun formatMinutesSeconds(seconds: Double): String {
 /** Draws the selected bus's route on top of the live "buses" layer -- one
  * shared GeoJSON source carrying both the line and its stops, since a
  * LineLayer and a CircleLayer over the same source each only render the
- * geometry type they understand. */
-private fun applyRouteOverlay(style: Style?, route: RouteResult) {
-    if (style == null) return
+ * geometry type they understand. Returns the route's bounds so the caller
+ * can fit the camera to it -- a route is useless to look at if it's off
+ * screen when the sheet slides up over it. */
+private fun applyRouteOverlay(style: Style?, route: RouteResult): LatLngBounds? {
+    if (style == null) return null
 
+    val allCoords = route.features.filterIsInstance<RouteFeature.RouteLine>()
+        .flatMap { it.coordinates }
     val lineFeatures = route.features.filterIsInstance<RouteFeature.RouteLine>().map { line ->
         Feature.fromGeometry(
             LineString.fromLngLats(line.coordinates.map { (lon, lat) -> Point.fromLngLat(lon, lat) }),
@@ -335,17 +404,23 @@ private fun applyRouteOverlay(style: Style?, route: RouteResult) {
         Feature.fromGeometry(Point.fromLngLat(stop.lon, stop.lat))
     }
     val collection = FeatureCollection.fromFeatures(lineFeatures + stopFeatures)
+    val bounds = if (allCoords.isEmpty()) null else LatLngBounds.Builder()
+        .apply { allCoords.forEach { (lon, lat) -> include(LatLng(lat, lon)) } }
+        .build()
 
     val existingSource = style.getSource(ROUTE_SOURCE_ID) as? GeoJsonSource
     if (existingSource != null) {
         existingSource.setGeoJson(collection)
-        return
+        return bounds
     }
 
     style.addSource(GeoJsonSource(ROUTE_SOURCE_ID, collection))
     val lineLayer = LineLayer(ROUTE_LINE_LAYER_ID, ROUTE_SOURCE_ID).withProperties(
         PropertyFactory.lineColor(RouteLineColor),
-        PropertyFactory.lineWidth(3f),
+        PropertyFactory.lineWidth(4f),
+        PropertyFactory.lineOpacity(1f),
+        PropertyFactory.lineCap(org.maplibre.android.style.layers.Property.LINE_CAP_ROUND),
+        PropertyFactory.lineJoin(org.maplibre.android.style.layers.Property.LINE_JOIN_ROUND),
     )
     val stopLayer = CircleLayer(ROUTE_STOP_LAYER_ID, ROUTE_SOURCE_ID).withProperties(
         PropertyFactory.circleRadius(3f),
@@ -359,4 +434,5 @@ private fun applyRouteOverlay(style: Style?, route: RouteResult) {
         style.addLayer(lineLayer)
         style.addLayer(stopLayer)
     }
+    return bounds
 }
