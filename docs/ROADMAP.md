@@ -298,3 +298,15 @@ at the cost of a second, much larger ingest (TransXChange is verbose
 XML, one file per operator per service, GB-wide) and a second source of
 truth for routes that can disagree with what buses actually do. No
 decision made; not scheduled against a version number yet.
+
+## Known issues -- raised, not yet actioned
+
+Observed after a container restart cleared a memory-pressure symptom on
+the host. Two things unchanged and worth remembering: system memory
+barely moved (4,793M -> 4,751M available) because the freed 1.3GB went
+back to page cache rather than showing as free, and swap is still at
+4,222M -- that's accumulated pressure that won't clear without the
+swapped-out pages being touched again. Neither blocks anything.
+
+The underlying DuckDB buffer creep is still unaddressed -- the restart
+reset the symptom, not the cause. It'll climb again over days.
