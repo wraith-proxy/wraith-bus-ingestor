@@ -435,3 +435,241 @@ position" feature this app never enables. Stripped via
 `tools:node="remove"` rather than carried silently -- an app requesting
 location it doesn't use is exactly what an F-Droid reviewer would flag,
 so it's fixed rather than left for one to catch.
+
+**Shipped, then found broken on the real device again, once -- fixed
+same-day:**
+
+- **Route line was nearly invisible, on both the phone and the web map.**
+  `TrackingScreen.kt`'s `RouteLineColor` (`#9AA4B2`) was copied correctly
+  from `ghost-site`'s own `MAP_PALETTE.dark.route` -- but that value was
+  itself wrong: identical to the palette's `sibStroke` and close enough
+  in lightness to `style.json`'s `roads-major` (`#6b7889`) to disappear
+  into ordinary roads at any zoom. Not a translation bug this time, an
+  upstream one. Fixed in both places: `MAP_PALETTE` (`bus-map/index.html`
+  in `ghost-site`, a separate repo) moved to a saturated teal/cyan no
+  other layer uses (`#0f7a91` light, `#4fd7e8` dark), the route line's
+  width and opacity both went up, and the Kotlin copy was updated to
+  match the dark value so phone and browser read the same route color
+  again.
+- **Tapping a bus required an extra tap to see its route, and showed raw
+  ISO timestamps.** `BusDetailSheetContent` had a "Show route" button
+  that fetched and drew `/route` only after the sheet was already open --
+  backwards from what's actually useful, since the sheet then covers the
+  bottom half of the map the route just appeared on. Reworked into one
+  `selectBus()` path (shared by a map tap and a bus-number search hit,
+  see below): fetch the bus, fetch and draw its route, fit the camera to
+  the route's bounds, *then* open the sheet. The button is gone -- there's
+  nothing left for it to do. ETA/predicted-arrival/next-stop-ETA fields
+  now format through `isoToLocalTime()` (`java.time`, no desugaring
+  needed at `minSdk 36`) instead of printing the raw
+  `2026-09-16T18:57:39Z` the API returns.
+- **Search only ever matched localities.** `/search`'s `lines`/`bus_ids`
+  fields were already computed server-side and already parsed into
+  `SearchResult` client-side -- just never rendered. A query like "X93"
+  matches no locality at all, so the existing locality-driven line lookup
+  (`marts['line_loc']`) never fired for it either; searching a route
+  number returned nothing. Backend now also matches live line codes
+  directly against the query (`/search`, independent of any locality
+  match), and the search results card renders `lines`/`bus_ids` above the
+  locality matches -- tapping a line fetches and fits its route, tapping
+  a bus number runs the same `selectBus()` path a map tap does. Covered
+  by `test_search_matches_line_number_directly`.
+- **From About or FAQ, the bottom nav's Dashboard/Tracking icons did
+  nothing.** `navigateToTab()`'s `popUpTo(startDestination){ saveState =
+  true }` / `restoreState = true` pairing is the right pattern for
+  several persistent, parallel tab stacks -- this app has one, with
+  About/FAQ sitting two hops above it rather than beside it, so a stale
+  saved back-stack entry could swallow the tap. Bottom-bar taps now hard
+  reset to a single entry (`popUpTo(startDestination){ inclusive = true
+  }`, no saved state) regardless of where they're tapped from -- can't
+  get stuck the same way. Overflow-menu taps to About/FAQ stayed a plain
+  push (`navigateToSecondary()`, `launchSingleTop` only, no `popUpTo`):
+  resetting those too would have "fixed" the bug by breaking the system
+  Back button instead, since with nothing left below About on the stack,
+  Back would exit the app rather than return to Tracking or Dashboard.
+
+**Where the bus data comes from, for the record (asked while chasing
+the above):** live vehicle positions are BODS's SIRI-VM feed, polled
+every 60s -- there is no static timetable/GTFS/TransXChange ingest at
+all. Stop sequences and route geometry are inferred from where live
+buses have actually been seen, matched to the nearest real stop in the
+NaPTAN register (`dbt/models/staging/naptan/`, the same 435k-row GB-wide
+register every UK transport app draws stop identity from) and snapped to
+roads via a self-hosted OSRM. That's a different approach from
+timetable-first apps like
+[billthefarmer/buses](https://github.com/billthefarmer/buses) (which
+reads BODS's separate TransXChange timetable dataset directly) -- this
+app's routes are "what buses actually did," not "what the timetable
+says they should do," which is also why a route can come back truncated
+or `note`d as merged-suspect for a thin-data line.
+
+## 1.6.0 -- F-Droid public submission
+
+Not started. `docs/android-distribution.md` (landed in 1.5.0) already
+covers everything the *app itself* needs to be F-Droid-buildable --
+fastlane metadata, a reproducible build with `local.properties` absent,
+no proprietary dependencies, `versionCode`/`versionName` as the real
+source of truth. This milestone is the other half: actually submitting
+to the public catalog, per F-Droid's own
+[Submitting to F-Droid quick start](https://f-droid.org/docs/Submitting_to_F-Droid_Quick_Start_Guide/).
+
+**What is and isn't the blocker, stated plainly.** Self-hosting the
+backend is not the problem -- that's the whole premise of this project,
+and it's exactly what Obtainium + the self-hosted F-Droid repo (both
+already shipped in 1.5.0) already deliver: a free, real app, sideloaded
+or installed via F-Droid-the-client, hitting one person's own server.
+Nothing about that requires a listing in F-Droid's *public, centrally
+searchable* catalog (`fdroiddata`/`f-droid.org`) -- that catalog is
+specifically for apps a stranger finds by searching and expects to be
+general-purpose. The API base URL is baked in at build time
+(`BuildConfig.API_BASE_URL`, defaulting to
+`https://www.thomaspeoples.com/api/`) and not repointable
+(`ui/faq/FaqScreen.kt`: "Can I point this app at a different server?
+No."), so a stranger who found this in the public catalog would get a
+permanent client for someone else's bus feed -- likely a review
+rejection, and not very useful even if accepted. Three ways through,
+before opening a merge request:
+
+- **Ship it anyway, clearly labelled.** Description and metadata state
+  outright that this is a demo/personal-infrastructure client, not a
+  general-purpose bus tracker -- honest, but likely still a rejection on
+  review, and even if accepted, of near-zero use to anyone who installs
+  it from search.
+- **Make the backend URL genuinely runtime-configurable** (a first-run
+  settings screen, not a rebuild) so the F-Droid build is a real general
+  client anyone can point at their own deployment. The correct fix if
+  this milestone is worth doing at all, but it's new app functionality,
+  not a submission checklist item -- scope it as its own piece of work
+  first.
+- **Don't submit to the public catalog; stay on the self-hosted F-Droid
+  repo path `android-distribution.md` already chose.** Zero new app
+  work, zero review risk, and the app never claims to be something it
+  isn't. The default until one of the above is deliberately chosen.
+
+**If runtime-configurable backend is built and the decision is to
+proceed, the mechanical submission steps are:**
+
+1. Fork [`fdroiddata`](https://gitlab.com/fdroid/fdroiddata) and add
+   `metadata/com.thomaspeoples.wraithbus.yml` describing how to build
+   from this repo's public Gitea URL: `Categories`, `License: MIT`,
+   `SourceCode`, `IssueTracker`, and a `Builds:` entry per `versionCode`
+   pinning the exact commit, `gradle: yes`, `output:` the built APK path.
+2. Verify locally with `fdroid build --local
+   com.thomaspeoples.wraithbus:<versionCode>` (requires `fdroidserver`,
+   not installed anywhere in this stack today) -- must succeed from a
+   clean clone with no `local.properties`, proving the same "F-Droid's
+   build-server state" story `android-distribution.md` already
+   documents for the self-hosted repo path.
+3. Run `fdroid checkupdates --auto` to confirm the metadata's
+   update-detection matches this repo's real tagging scheme
+   (`android-X.Y.Z-debug` release tags).
+4. Open a merge request against `fdroiddata` with the new metadata file.
+   F-Droid's own reviewers take it from there -- expect requests for
+   changes; this is a third-party project's process, not one this repo
+   controls.
+5. Once accepted and the first build lands, add an F-Droid badge/link to
+   `README.md` and `docs/android-distribution.md`, and drop this repo's
+   Gitea Releases page as the primary distribution channel down to
+   secondary (F-Droid's own update mechanism supersedes
+   `UpdateChecker.kt`'s courtesy check for anyone who installs it that
+   way).
+
+**Not in scope for this milestone regardless of the decision above:**
+standing up `fdroidserver` for a *second*, official F-Droid repo (the
+self-hosted repo already covers "install via F-Droid app" for this
+project's own use); Play Store distribution (never planned, contradicts
+this project's whole self-hosted premise).
+
+## 1.7.0 -- home screen widget
+
+Not started. Ordered after 1.6.0 on purpose -- do not build before then.
+
+**Warning, read before picking this up:** a live widget needs either
+`ACCESS_COARSE_LOCATION` (idea 1 below) or a background-refresh path
+tighter than Android's 15-minute `WorkManager` floor (idea 2) -- both
+are real scope, not a quick add-on, and both are currently things this
+app deliberately does *not* hold (see 1.5.0: location permissions were
+stripped from the manifest specifically because the app carried them
+unused). Don't start this without picking one of the three ideas below
+first and accepting its specific cost; "just add a widget" is not a
+bounded task.
+
+Ideas, for whenever this gets picked up:
+
+1. **Nearest stop, next departure.** Glance widget reading the device's
+   last-known location and showing the next 1-2 predicted arrivals at
+   the nearest stop. Needs `ACCESS_COARSE_LOCATION` -- a real tradeoff,
+   not a free add, for an app whose FAQ currently says outright "no,
+   this app does not request or use your location."
+2. **Pinned line.** Pick one line/direction once in-app; the widget shows
+   its live buses' ETAs to a chosen stop. A live-feeling refresh needs
+   `AlarmManager` or a foreground-adjacent update path -- vanilla
+   `WorkManager`'s 15-minute floor makes ETAs stale before they're read.
+3. **Fleet health strip.** No location or line picker at all -- just
+   `/metrics/summary` (feed age, buses tracked) as a small always-current
+   strip. Cheapest to build (reuses `DashboardScreen`'s existing endpoint
+   verbatim), least useful day to day.
+
+(1) is the one worth having; (2) is what a habitual rider actually wants
+but costs the most to keep live; (3) is the fallback if neither the
+location permission nor the background-refresh plumbing is worth it.
+Pick one before this becomes real work, not just a scope.
+
+## 1.8.0 -- split the Android app into its own repo
+
+Not started. `android/` has been described as "a real, standalone Gradle
+project alongside `backend/`, `dbt/`, `ingestor/`, `archiver/`" since it
+landed in 1.5.0 -- this milestone is making that literally true: its own
+Gitea repo, not a sibling directory inside `wraith-bus-ingestor`. This
+splits the *app* out from the *platform* (backend/API + ingest/dbt);
+`ghost-site` (the PWA website) is already its own repo today and is
+unaffected either way.
+
+Real things this touches, not just a `git mv`:
+
+- **History.** A plain `git mv` loses `android/`'s commit history from
+  the new repo's perspective (it'd show up as one giant initial commit).
+  `git subtree split` or `git filter-repo --path android/` preserves it
+  properly -- decide which before doing this, not after.
+- **Release tags and Obtainium.** `android-X.Y.Z-debug` tags currently
+  live in *this* repo's Gitea Releases, and both
+  `UpdateChecker.kt` (`git.thomaspeoples.com/api/v1/repos/thomaspeoples/
+  wraith-bus-ingestor/releases`) and Obtainium's own config point at
+  this repo's URL. All three move to the new repo's URL together, in one
+  change -- an app pointed at the old repo's releases would silently
+  stop seeing updates otherwise.
+- **`docs/android-distribution.md` and the fastlane metadata.** Decide
+  whether Android distribution docs move with the app repo or stay
+  documented from the platform side with a link across -- this repo's
+  own `mkdocs.yml` nav currently lists it as platform documentation.
+- **The `style.json` palette coupling.** `TrackingScreen.kt`'s map style
+  and colours are already a hand-kept translation of `ghost-site`'s own
+  `MAP_PALETTE` (see the route-colour fix earlier this session) --
+  today that's a two-repo sync problem; after this split it's a
+  three-repo one. No new mechanism proposed here, just naming the cost
+  going up before it happens.
+- **Versioning.** The app repo needs its own `versionCode`/`versionName`
+  authority and its own release automation, independent of this repo's
+  `pyproject.toml` version and `.cz.yaml` `bump_map` -- it already
+  conceptually has this (`versionCode`/`versionName` in
+  `build.gradle.kts`, not derived from the platform's version), just not
+  its own CI yet.
+- **`API_BASE_URL`.** Unaffected by the split either way -- it's a
+  build-time constant pointing at this platform's public API regardless
+  of which repo the Kotlin lives in.
+
+## Considered, not started -- static timetable ingest (TransXChange)
+
+Raised while comparing this app's routing to
+[billthefarmer/buses](https://github.com/billthefarmer/buses), which
+reads BODS's separate TransXChange (timetable) dataset directly rather
+than inferring routes from live positions the way this project does.
+Real tradeoff, not a strict upgrade -- see the ROADMAP entry under
+1.5.0 ("Where the bus data comes from") for what's live-inferred today,
+and the chat discussion this was raised in for the fuller pro/con case:
+TransXChange would give scheduled (not just live-observed) stops and
+times, and routes for lines with too little live data to infer today --
+at the cost of a second, much larger ingest (TransXChange is verbose
+XML, one file per operator per service, GB-wide) and a second source of
+truth for routes that can disagree with what buses actually do. No
+decision made; not scheduled against a version number yet.

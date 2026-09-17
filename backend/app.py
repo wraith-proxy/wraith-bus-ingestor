@@ -1357,15 +1357,28 @@ def search():
     lines = set()
     for m in matches:
         lines |= marts['line_loc'].get(m['locality_norm'], set())
+
+    live = []
+    try:
+        live = live_buses()
+    except Exception as exc:
+        log_once('qdb-search', f'questdb unavailable for search: {exc}')
+
+    # A rider searching a service number (e.g. "X93") has no locality in
+    # mind at all -- the locality loop above never fires for that query, so
+    # match live line codes directly too, independent of it.
+    query_upper = raw.strip().upper()
+    if query_upper:
+        live_lines = {r['line'] for r in live if r.get('line')}
+        lines |= {ln for ln in live_lines
+                  if ln.upper() == query_upper or ln.upper().startswith(query_upper)}
+
     lines = sorted(x for x in lines if x)
 
     bus_ids = []
     if lines:
-        try:
-            wanted = set(lines)
-            bus_ids = sorted({r['bus_id'] for r in live_buses() if r.get('line') in wanted})
-        except Exception as exc:
-            log_once('qdb-search', f'questdb unavailable for search: {exc}')
+        wanted = set(lines)
+        bus_ids = sorted({r['bus_id'] for r in live if r.get('line') in wanted})
 
     return jsonify({"query": raw, "matches": matches, "lines": lines, "bus_ids": bus_ids})
 

@@ -74,14 +74,14 @@ fun AppNav() {
                             text = { Text(stringResource(R.string.menu_about)) },
                             onClick = {
                                 menuExpanded = false
-                                navController.navigate(ROUTE_ABOUT)
+                                navigateToSecondary(navController, ROUTE_ABOUT)
                             },
                         )
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.menu_faq)) },
                             onClick = {
                                 menuExpanded = false
-                                navController.navigate(ROUTE_FAQ)
+                                navigateToSecondary(navController, ROUTE_FAQ)
                             },
                         )
                     }
@@ -124,12 +124,27 @@ private fun AppBottomBar(navController: NavHostController) {
     }
 }
 
+/** Bottom-bar taps always land here, from anywhere -- including from
+ * About/FAQ, two hops above the start destination. The save/restore-state
+ * dance this replaced (`popUpTo(startDestination){ saveState = true };
+ * restoreState = true`) is the right pattern for several persistent,
+ * parallel tab stacks; this app has exactly one, so it just meant a stale
+ * saved entry could swallow a tap and leave a bottom-bar icon looking
+ * dead from a secondary screen. A full reset to a single entry can't get
+ * stuck the same way. */
 private fun navigateToTab(navController: NavHostController, route: String) {
+    if (navController.currentDestination?.route == route) return
     navController.navigate(route) {
-        popUpTo(navController.graph.findStartDestination().id) {
-            saveState = true
-        }
+        popUpTo(navController.graph.findStartDestination().id) { inclusive = true }
         launchSingleTop = true
-        restoreState = true
     }
+}
+
+/** About/FAQ are plain pushes, not resets -- unlike the bottom-bar tabs,
+ * losing the back stack here would mean the system Back button exits the
+ * app instead of returning to whichever tab was open before the overflow
+ * menu was used. */
+private fun navigateToSecondary(navController: NavHostController, route: String) {
+    if (navController.currentDestination?.route == route) return
+    navController.navigate(route) { launchSingleTop = true }
 }
