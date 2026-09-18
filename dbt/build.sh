@@ -44,8 +44,8 @@ cd "$(dirname "$0")"          # every path below -- and every source in
                               # _sources.yml -- is relative to dbt/
 
 # dbt used to keep its own separate .venv (a leftover from before this
-# project moved under uv). One venv, not two: dbt (v2 since 2026-09-17) is a
-# real dependency in the repo root's pyproject.toml now, so this just
+# project moved under uv). One venv, not two: dbt-core + dbt-duckdb are
+# real dependencies in the repo root's pyproject.toml now, so this just
 # points at ../.venv, the same environment `uv sync` at the repo root
 # already manages.
 PY="../.venv/bin/python"

@@ -85,14 +85,19 @@ StandardError=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ing
 # clean peak need for this pipeline genuinely sits at or above 8.7GB, not
 # "9000M protecting the host from someone else's mess."
 #
-# Raised to 12000M as a MEASUREMENT pass, not a settled number -- every
-# attempt so far has been killed exactly at its own cap, so the true
-# peak has never actually been observed. Once a clean run completes (or
-# fails) under this higher ceiling, systemd's own peak tracking
-# (`systemctl status`, or `Consumed ... memory peak` in
-# `journalctl -u wraith-bus-build.service`) gives the real number:
-# re-tighten MemoryMax to that peak plus a real margin, the same
-# measure-first discipline as every other number in this file. Don't
-# leave 12000M as the permanent value without doing that.
-MemoryMax=12000M
+# Raised to 12000M as a MEASUREMENT pass 2026-09-18 -- that pass got its
+# answer: a 4th OOM-kill, kernel oom-killer log confirmed anon-rss at
+# 11.68GB (not page cache), 25/86 into the line_stops cluster, still
+# short of completing. dbt v2 + DuckDB 2.0 alpha's real peak for this
+# pipeline is genuinely above 12GB, on a 15GB host -- not closeable by
+# raising the cap further without starving everything else. Same day:
+# rolled the whole dbt v2 / DuckDB 2.0 alpha migration back to
+# dbt-core==1.12.4 + dbt-duckdb==1.11.0 (see docs/adr/0005, pyproject.toml).
+#
+# MemoryMax back to 9000M to match: this is the value the old stack ran
+# clean under repeatedly (see the measurement history above), with
+# osrm/backend/tiles/grafana already stopped for the window. Re-tighten
+# further only against a real measured peak on THIS (reverted) stack, not
+# by assumption.
+MemoryMax=9000M
 MemorySwapMax=0

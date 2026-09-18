@@ -24,46 +24,37 @@ dependencies = [
 
 [project.optional-dependencies]
 # Real manylinux wheel now that ghost-runner is Debian/glibc, not Alpine/musl
-# (see ci-images). backend/app.py already treats a missing duckdb driver as a
-# degraded-but-running state (marts_state stays "unknown"), and the test
-# suite skips its duckdb-dependent assertions the same way, so CI's test job
-# (uv sync --extra dev) is fine without this either way.
+# (see ci-images) -- that part of the 2026-09-17 migration stands. Unpinned,
+# tracks latest stable.
 #
-# Pinned to the 2.0 alpha (2026-09-17, alongside the dbt v2 migration below).
-# DuckDB's own team calls alpha clients "explicitly not production-ready" --
-# deliberate, not an oversight. Move to a GA release once DuckDB 2.0
-# ("Cyanoptera") cuts one; don't let --pre ride indefinitely. NOTE: dbt
-# itself does NOT use this package -- dbt v2's DuckDB adapter bundles its own
-# engine entirely (confirmed: `dbt run` works in a venv with no `duckdb` pip
-# package installed at all). This pin only affects backend/app.py,
-# ops/incident.py, and build.sh's own inline publish step.
+# Was pinned to the 2.0 alpha alongside a dbt v2 migration, 2026-09-17 to
+# 2026-09-18 -- rolled back same day. Real cause: production peak RSS hit
+# 11.7GB+ on a workload that ran clean under 9GB on dbt-core 1.12.4 +
+# dbt-duckdb 1.11.0, confirmed via the kernel oom-killer log itself
+# (anon-rss=11.68GB at kill, not page cache -- a real process memory
+# blowup). DuckDB's own team calls alpha clients "explicitly not
+# production-ready"; this is the concrete cost of that. See docs/adr/0005.
+#
+# `<2.0`, not left unpinned: dbt-duckdb 1.11.0 has no upper bound on its own
+# `duckdb` dependency, so an unpinned constraint here resolves right back to
+# the 2.0 alpha (confirmed -- it's the highest version on PyPI regardless).
 duckdb = [
-    "duckdb==2.0.0.dev2609121639",
+    "duckdb<2.0",
 ]
-# dbt v2 GA'd 2026-09-14. Real manylinux_2_28 wheel -- the actual fix for the
-# musl gap that kept dbt off ghost-runner entirely (dbt-core-experimental-
-# parser, a v1.x hard dep, shipped no musllinux wheel and its stub build
-# backend refused to compile from source on any platform). v2's `dbt`
-# package turned out to use the exact same stub-wheel-fetch pattern, but its
-# manifest DOES list manylinux_2_28 -- checked directly by unpacking the
-# sdist, not assumed.
-#
-# DuckDB support is bundled into `dbt` natively now -- do NOT also install
-# dbt-duckdb (PyPI has no 2.x release of it regardless; 1.11.0 is the
-# ceiling, built for dbt-core v1.x's adapter interface, not Fusion's).
-#
-# Migrated 2026-09-17. `dbt-autofix` moved three source-level keys (`meta`,
-# `loaded_at_field`, `freshness`) under `config:` in both _sources.yml
-# files -- v2's parser rejects them at the old top level (see git log for
-# the diff). Full `dbt run` + `dbt test` (884/884) verified clean against
-# real data before this pin changed. One real regression found and fixed:
-# profiles.yml's memory_limit went from 4GB to 6GB -- v2's bundled DuckDB
-# engine has different memory overhead than the old dbt-duckdb adapter (two
-# models that were stable at 4GB under v1.12.4 OOM'd at the same limit under
-# v2; confirmed NOT data growth by rerunning the identical models under
-# v1.12.4 on the same data, which still passed at 4GB). See profiles.yml.
+# Reverted to the last known-stable pair 2026-09-18 (see docs/adr/0005).
+# dbt v2 + DuckDB 2.0 alpha ran clean in isolated verification (884/884
+# tests) but hit a real, unresolved memory blowup under actual production
+# load in the line_stops phase -- peaked past 12GB (MemoryMax raised as a
+# measurement pass) with anon-rss confirmed via kernel oom-killer log, not
+# page cache. Root cause not isolated: either DuckDB 2.0 alpha not honoring
+# its own memory_limit, or large overhead outside its buffer manager under
+# the new Fusion engine. Revisit once DuckDB 2.0 GAs and has production
+# mileage elsewhere. The Debian base switch on ghost-runner (see ci-images)
+# stands regardless -- it fixed a real dead-entrypoint bug and the musl
+# wheel gap applies to dbt-core v1.x too, not just v2.
 dbt = [
-    "dbt==2.0.4",
+    "dbt-core==1.12.4",
+    "dbt-duckdb==1.11.0",
 ]
 dev = [
     "ruff",

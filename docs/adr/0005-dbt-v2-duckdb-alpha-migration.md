@@ -1,6 +1,6 @@
 # ADR 0005: Migrate to dbt v2 and DuckDB 2.0 alpha, move `ghost-runner` off Alpine
 
-**Status:** Accepted
+**Status:** Reverted 2026-09-18 -- see [Rollback](#rollback-2026-09-18) below. The Debian base switch on `ghost-runner` stands; dbt v2 and DuckDB 2.0 alpha do not.
 **Date:** 2026-09-17
 **Related:** [docs/ROADMAP.md § 1.9.0](../ROADMAP.md), [ci-images](https://git.thomaspeoples.com/thomaspeoples/ci-images), `pyproject.toml`, `dbt/profiles.yml`
 
@@ -126,3 +126,63 @@ real release; dbt ships a version that changes the bundled engine again
 to this specific engine, not a project-wide constant); or the
 `describe select *` linter warning is promoted to an error in a future
 Fusion release.
+
+## Rollback (2026-09-18)
+
+**GOTCHA: isolated verification (884/884 tests, 6GB `memory_limit`) did
+not catch a real production memory blowup.** Every check above (`dbt
+run` + `dbt test`, a real `SKIP_EXTRACT=0` `build.sh` run) passed clean.
+It was only under `wraith_bus_build.service`'s actual nightly conditions
+-- full 8-day extract, `--threads 1`, the 86-model `line_stops` batch
+cluster back-to-back with the main run -- that the real ceiling showed
+up, and it took three separate `MemoryMax` values (9000M, then 12000M as
+an explicit measurement pass) and four real OOM-kills to pin down.
+
+Timeline, same day:
+1. **1st-3rd kills, `MemoryMax=9000M`:** each pinned at exactly 8.7G, the
+   cap itself. First diagnosed as cgroup v2 counting page cache from
+   `$BUILD` (the multi-GB `.duckdb` file) against the same ceiling as
+   process memory -- fixed with a `posix_fadvise(DONTNEED)` cache drop in
+   `build.sh` between the two `dbt run` phases. 2nd kill found a second
+   cache source (`extract.py`'s freshly-written `data/*.parquet`, ~1.9GB)
+   -- same fix extended to cover it. 3rd kill happened under genuinely
+   clean conditions (swap at 0B, no other tenants, both cache fixes in
+   place) -- ruled out contamination as the explanation.
+2. **`MemoryMax` raised to 12000M** as a deliberate measurement pass, not
+   a final number -- every prior attempt had been killed exactly at its
+   own cap, so the true peak had never actually been observed.
+3. **4th kill, `MemoryMax=12000M`:** got further (25/86 `line_stops`
+   models, past every prior failure point) but still died. Root cause
+   this time confirmed via the **kernel oom-killer log directly**
+   (`journalctl -k`, `oom_memcg=/system.slice/wraith-bus-build.service`):
+   `anon-rss:12244652kB` (~11.68GB) at kill, `file-rss:6784kB` -- real
+   process memory, not page cache. `profiles.yml`'s configured
+   `memory_limit: 6GB` was nowhere near honored by actual RSS.
+
+**Conclusion:** dbt v2's bundled DuckDB 2.0 alpha engine either doesn't
+correctly enforce `memory_limit` under this workload, or carries large
+overhead outside its buffer manager (Fusion runtime, query compilation,
+Arrow batch materialization across an 86-way model split) that
+`memory_limit` was never meant to cap. Root cause not isolated further --
+would need DuckDB's own memory profiling instrumentation mid-run to say
+exactly where the gap goes, not attempted. The old stack
+(`dbt-core==1.12.4` + `dbt-duckdb==1.11.0`) ran the identical workload
+clean, repeatedly, under 9000M.
+
+**Decision:** revert to `dbt-core==1.12.4` + `dbt-duckdb==1.11.0` and an
+unpinned `duckdb` (see `pyproject.toml`), `profiles.yml`'s `memory_limit`
+back to 4GB, `MemoryMax` back to 9000M. Keep the Debian base on
+`ghost-runner` -- it fixed a real dead-entrypoint bug and the musl wheel
+gap was never dbt-version-specific (v1's `dbt-core-experimental-parser`
+has the identical stub-sdist pattern as v2's `dbt` package). Keep the
+`posix_fadvise` cache-drop fix in `build.sh` -- harmless on the old
+stack, cheap insurance if page-cache pressure ever recurs for an
+unrelated reason.
+
+**Revisit dbt v2 / DuckDB 2.0 only after:** DuckDB 2.0 reaches a real
+GA with some production mileage elsewhere, and only with a rehearsal
+plan that includes a real, full-scale, unattended `systemctl`-triggered
+run under the actual nightly `MemoryMax` cap -- not just an isolated
+`dbt run`/`dbt test` pass. That gap between "verified clean in
+isolation" and "clean under real production load" is the actual lesson
+here, independent of dbt/DuckDB version.

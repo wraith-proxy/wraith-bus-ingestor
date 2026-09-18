@@ -301,31 +301,56 @@ XML, one file per operator per service, GB-wide) and a second source of
 truth for routes that can disagree with what buses actually do. No
 decision made; not scheduled against a version number yet.
 
-## 1.9.0 -- ghost-runner off Alpine, dbt v2 + DuckDB 2.0 alpha migration
+## 1.9.0 -- ghost-runner off Alpine, dbt v2 + DuckDB 2.0 alpha migration (reverted)
 
 (1.5.0-1.8.0 are taken -- see "The Android app moved to its own repo" below.)
 
-Landed 2026-09-17. Supersedes both the "dbt 2.0 migration" and "DuckDB 2.0
-migration" entries this section used to carry -- neither panned out the way
-they were written. Full investigation, decision, and consequences written
-up in [ADR-0005](adr/0005-dbt-v2-duckdb-alpha-migration.md) rather than
-repeated here -- this section tracks only what's still open.
+Landed 2026-09-17, **reverted 2026-09-18**. Supersedes both the "dbt 2.0
+migration" and "DuckDB 2.0 migration" entries this section used to carry --
+neither panned out the way they were written, and the replacement didn't
+pan out either. Full investigation, decision, rollback, and consequences
+written up in [ADR-0005](adr/0005-dbt-v2-duckdb-alpha-migration.md) rather
+than repeated here.
 
 Short version: the `ghost-runner` musl blocker was real and confirmed
 twice (dbt v1's and v2's own hard deps both ship stub-only sdists with no
-musl wheel target), so `ci-images` moved to Debian; `dbt==2.0.4` and
-`duckdb==2.0.0.dev2609121639` (`--pre`, deliberately ahead of GA) are now
-real dependencies here; and one genuine regression (dbt v2's bundled
-DuckDB engine needing 6GB where v1's adapter needed 4GB for the same two
-models) was root-caused, not papered over, before being fixed.
+musl wheel target), so `ci-images` moved to Debian -- **that part stands**.
+`dbt==2.0.4` + `duckdb==2.0.0.dev2609121639` were pinned as real
+dependencies, verified clean in isolation (884/884 tests, a real
+`build.sh` run), then rolled back the next day after `wraith-bus-
+build.service`'s actual nightly conditions (full 8-day extract,
+`--threads 1`, the 86-model `line_stops` cluster back-to-back with the
+main run) produced a real memory blowup isolated testing never caught --
+see the GOTCHA below. Back on `dbt-core==1.12.4` + `dbt-duckdb==1.11.0`.
+
+### GOTCHA: isolated dbt verification does not catch production-load memory blowups
+
+`dbt run` + `dbt test` passing clean, even against real data, is not the
+same test as the actual nightly build path. Four real OOM-kills on
+2026-09-18 (`MemoryMax` raised 9000M -> 12000M as an explicit
+measurement pass along the way) confirmed, via the kernel oom-killer log
+itself (`anon-rss` at kill, not page cache), that dbt v2's bundled
+DuckDB 2.0 alpha engine's real peak memory need for this pipeline's
+`line_stops` phase sits well above 12GB on a 15GB host -- `profiles.yml`'s
+`memory_limit: 6GB` was nowhere near honored by actual RSS. Full
+timeline in [ADR-0005's Rollback section](adr/0005-dbt-v2-duckdb-alpha-migration.md#rollback-2026-09-18).
+
+**Takeaway that outlives this specific migration:** before trusting any
+future engine/adapter version bump on this pipeline, rehearse it under
+the real `systemctl`-triggered nightly conditions and `MemoryMax` cap,
+not just an isolated `dbt run`/`dbt test` pass -- the gap between the two
+is where this one hid.
 
 **Remaining:**
-- ROADMAP 1.1.0 (gate dbt in CI) is unblocked, not closed -- a `dbt
-  build`/`dbt test` job can run on `ghost-runner` itself now, but nothing
-  adds that job yet.
+- ROADMAP 1.1.0 (gate dbt in CI) is unblocked by the Debian base
+  regardless of dbt version, not closed -- a `dbt build`/`dbt test` job
+  can run on `ghost-runner` itself now, but nothing adds that job yet.
 - `pages.yml`'s `dbt docs generate` could move off `ubuntu-latest` onto
   `ghost-runner` now that the platforms match; not done as part of this
   migration.
+- dbt v2 / DuckDB 2.0 alpha themselves: not retried until DuckDB 2.0
+  reaches a real GA with production mileage elsewhere, and only with the
+  full-scale rehearsal above included from the start.
 
 ## Known issues -- raised, not yet actioned
 
