@@ -1,6 +1,6 @@
 # ADR 0006: Optimise `bus_positions`' on-disk schema
 
-**Status:** Proposed -- not yet implemented
+**Status:** Accepted -- executing
 **Date:** 2026-09-18
 **Related:** [docs/ROADMAP.md § 1.0.0](../ROADMAP.md), `ops/incident.py`, `dbt/models/staging/bods/_bods__sources.yml`
 
@@ -34,6 +34,28 @@ timed out at 60s):
 dictionary-encodes to a small int, referencing a table-level string pool
 -- built for exactly this shape. At 1,000-7,000x repetition this is the
 single biggest lever available.
+
+**Real full-table cardinality, checked before finalizing `SYMBOL
+CAPACITY`** (the one-day sample above undersold two columns --
+`count_distinct` over all 260.6M rows timed out at the server's own
+hard 60s statement limit as one query; split one column at a time
+instead, all completed):
+
+| Column | One-day sample | Real full-table | Verdict |
+|---|---|---|---|
+| `journey_ref` | 22,076 | **57,603** | sample undersold by 2.6x |
+| `published_line` | 2,980 | 3,129 | close |
+| `block_ref` | 12,193 | 22,638 | undersold by 1.9x |
+| `origin_ref` | 15,751 | 17,601 | close |
+| `dest_ref` | 15,322 | 17,479 | close |
+| `origin_name` | 13,003 | 14,908 | close |
+| `dest_name` | 12,587 | 14,636 | close |
+
+`journey_ref` would have sat at 88% of its originally-proposed 65536
+capacity against the real number -- bumped to 131072 in the proposed
+schema below. `published_line` bumped 4096 -> 8192 for the same
+reason on a thinner margin. Both changes reflected in the DDL below,
+not left as a gap between what was measured and what got built.
 
 **`lat`/`lon`/`bearing` are `DOUBLE` (8 bytes).** GPS position data has
 nowhere near that precision floor (a few metres of real-world accuracy).
@@ -93,24 +115,27 @@ restored (the common case), and pays the one-time rewrite cost only for
 a day someone genuinely needs back -- proportional to real usage instead
 of a flat upfront cost sized to the worst case.
 
-**Data contract must make the two generations explicit, not silent.**
-`contracts/bus-positions.odcs.yaml` is versioned (`version: 2.0.0`
-currently) specifically so a physical schema change is a visible,
-tracked event, not something a consumer discovers by accident. When this
-migration executes:
-- Bump to `3.0.0` (breaking `physicalType` changes on 8 properties:
-  `lat`/`lon`/`bearing` `DOUBLE` -> `FLOAT`; `journey_ref`,
-  `published_line`, `origin_ref`, `origin_name`, `dest_ref`, `dest_name`,
-  `block_ref` `VARCHAR` -> `SYMBOL`).
-- Add a `customProperties` entry recording the cutover date, so
-  `restore()`'s schema-generation check has a single source of truth to
-  read (`day < cutover date` = old generation, needs the lazy rewrite;
-  `day >= cutover date` = new generation, straight attach) rather than
-  inspecting each partition file's own column types at runtime.
-- Note in `limitations` that `vehicle_id` never existed in the contract
-  to begin with (confirmed -- it isn't a documented property today
-  either), so dropping it from the physical table is not a contract
-  break, just removing dead weight the contract never promised.
+**Data contract makes the two generations explicit, not silent -- done.**
+`contracts/bus-positions.odcs.yaml` bumped `2.0.0` -> `3.0.0` (breaking
+`physicalType` changes on 8 properties: `lat`/`lon`/`bearing` `DOUBLE` ->
+`FLOAT`; `journey_ref`, `published_line`, `origin_ref`, `origin_name`,
+`dest_ref`, `dest_name`, `block_ref` `VARCHAR` -> `SYMBOL`), a
+`schemaCutoverDate` customProperty added (`2026-09-18`) as the single
+source of truth `ops/incident.py restore()` reads to tell old-generation
+days from new ones, and a `vehicle_id` note added confirming it was
+never a documented property here to begin with -- its removal from the
+physical table is not a contract break.
+
+**`ops/incident.py` recoded to match -- done.** `restore()` now checks
+`schema_cutover_date()` first. A day older than cutover attaches into a
+small persistent `bus_positions_legacy_schema` shadow table (the exact
+pre-2026-09-18 column layout, `SYMBOL CAPACITY` values copied from a
+real pre-migration `SHOW COLUMNS`, not guessed) instead of the live
+table, then gets `INSERT`ed into live `bus_positions` through the same
+`CAST()` expressions the bulk backfill uses. A day on or after cutover
+attaches straight into the live table, unchanged behaviour. The shadow
+table is created lazily (`CREATE TABLE IF NOT EXISTS`) on first use, not
+upfront -- true to "pay only for what's actually restored."
 
 ## Proposed schema
 
@@ -124,9 +149,9 @@ CREATE TABLE bus_positions_v2 (
     line         SYMBOL CAPACITY 4096 CACHE,
     operator     SYMBOL CAPACITY 512 CACHE,
     direction    SYMBOL CAPACITY 256 CACHE,
-    journey_ref  SYMBOL CAPACITY 65536 CACHE,
+    journey_ref  SYMBOL CAPACITY 131072 CACHE,
     origin_aimed_dep LONG,
-    published_line   SYMBOL CAPACITY 4096 CACHE,
+    published_line   SYMBOL CAPACITY 8192 CACHE,
     origin_ref       SYMBOL CAPACITY 32768 CACHE,
     origin_name      SYMBOL CAPACITY 32768 CACHE,
     dest_ref         SYMBOL CAPACITY 32768 CACHE,
@@ -144,28 +169,53 @@ today's numbers -- a too-small capacity forces a dictionary resize, not
 free). Same `DEDUP UPSERT KEYS`, same `PARTITION BY DAY` as today (see
 ROADMAP 1.3.0 for why the dedup keys are what they are).
 
-## Migration plan (not yet executed)
+## Migration plan
 
 Platform is fully stopped for this work (`docker compose stop`, done
 2026-09-18) -- no live ingest, no live reads, no contention to design
 around, same posture as the September QuestDB data-ownership migration
 in ROADMAP 1.0.0.
 
-1. Bump `contracts/bus-positions.odcs.yaml` to `3.0.0` with the cutover
-   date recorded (see the lazy-rewrite decision above) -- this is what
-   `restore()` will read to tell old-generation days from new ones, so
-   it needs to exist before step 6 relies on it.
-2. `CREATE TABLE bus_positions_v2` as above.
-3. Backfill: `INSERT INTO bus_positions_v2 SELECT bus_id, cast(lat AS
+**Disk headroom, decided:** the one-shot backfill needs the original
+44GB table AND the new table to exist at once (~2x headroom), which the
+SSD doesn't have free. Rather than batching the backfill to avoid the
+peak, the whole `questdb_data` directory moves to `/mnt/archive` (SATA,
+817GB free) for the risky part of this work -- same atomic-move pattern
+already trusted in this repo (ROADMAP 1.0.0's September migration), just
+with the destination swapped to slow-but-spacious disk instead of a
+same-filesystem `rename()`. Confirmed via QuestDB's own docs before
+committing to this over a fancier cross-instance copy: `ATTACH PARTITION`
+across two separate instances is explicitly unsupported, and QuestDB's
+backup/restore guidance is explicit that the only supported unit of
+movement is the *whole data root*, not one table selectively -- so
+moving everything, not just `bus_positions`, is the only supported path
+regardless, and there was never a cheaper alternative to reach for.
+
+The move itself needs `sudo`: it's a cross-filesystem copy (not the
+same-filesystem `rename()` the September migration used), and
+`questdb_data`'s contents are owned by uid 10001 (the container's
+internal user) -- a plain non-root `cp`/`mv` would silently re-own
+everything to whoever runs it, breaking the container's own access.
+Only root can preserve ownership across that copy.
+
+1. Move `questdb_data` to `/mnt/archive` (root, ownership-preserving copy,
+   verified, then the SSD original removed only after verification).
+2. Repoint `QUESTDB_DATA_PATH` (`.env`) at the SATA path, start QuestDB
+   there alone (`docker compose up -d db`).
+3. Bump `contracts/bus-positions.odcs.yaml` to `3.0.0` with the cutover
+   date recorded -- **done**, cutover date `2026-09-18`.
+4. `CREATE TABLE bus_positions_v2` as above -- capacities corrected
+   against the real full-table cardinality check above, not the
+   original one-day sample.
+5. Backfill: `INSERT INTO bus_positions_v2 SELECT bus_id, cast(lat AS
    FLOAT), cast(lon AS FLOAT), cast(bearing AS FLOAT), timestamp, line,
    operator, direction, journey_ref, origin_aimed_dep, published_line,
    origin_ref, origin_name, dest_ref, dest_name, block_ref,
    dest_aimed_arr, recorded_at FROM bus_positions`. One-shot, not
-   batched -- platform is stopped, no memory pressure from concurrent
-   readers/writers to design around (revisit if QuestDB's own memory
-   during a 260M-row single INSERT turns out to need it, measure before
-   assuming).
-4. **Verify before cutover, same discipline as every prior migration in
+   batched -- SATA's spare capacity removes the reason to batch, and
+   the platform being fully stopped removes the reason to worry about
+   contention during it.
+6. **Verify before cutover, same discipline as every prior migration in
    this repo:**
    - Exact row count match, not "close enough" (`count()` both tables).
    - Spot-check aggregates: `avg(lat)`, `avg(lon)`, `min`/`max` per
@@ -177,24 +227,32 @@ in ROADMAP 1.0.0.
    - `dbt/build.sh` `SKIP_EXTRACT=1` full run + `dbt test` (884/884)
      against data extracted from `bus_positions_v2`, same bar as
      ADR-0005's verification.
-5. Cutover: `RENAME TABLE bus_positions TO bus_positions_old; RENAME
+   - **On any verification failure: abort and keep the old table.**
+     Decided explicitly, not left to whoever's running it -- this is a
+     one-way change to the only copy of live data, so failing closed
+     (drop `bus_positions_v2`, leave `bus_positions` untouched, move
+     `questdb_data` back to SSD unchanged) is the only acceptable
+     default. Investigating the failure happens after backing out, not
+     instead of it.
+7. Cutover: `RENAME TABLE bus_positions TO bus_positions_old; RENAME
    TABLE bus_positions_v2 TO bus_positions`. Keep `bus_positions_old`
    around for a real burn-in window (a week of production ingest,
    minimum) before dropping it -- this is a one-way schema change for
    the hot table, no cheap rollback after that point (the archive stays
    safely in the old generation regardless, per the lazy-rewrite
    decision above -- nothing there is destroyed by this step).
-6. Point `ghost-ingestor` at the (renamed) `bus_positions` -- no code
-   change needed, it already writes to that fixed table name.
-7. Confirm `extract.py`'s QuestDB HTTP queries still return these
+8. Stop QuestDB, move `questdb_data` back to the SSD (root,
+   ownership-preserving, verified), repoint `.env` back, start the full
+   platform.
+9. Confirm `extract.py`'s QuestDB HTTP queries still return these
    columns as plain strings (`SYMBOL` and `VARCHAR` both serialise as
    strings over the HTTP API -- expected to be transparent to
    downstream dbt models, but confirm on a real extract before trusting
    it, not assumed from documentation).
-8. Implement `restore()`'s lazy per-day rewrite path (checks the
-   contract's cutover date, rewrites-then-attaches an old-generation
-   day) as its own change to `ops/incident.py`, verified against a real
-   archived pre-cutover day before trusting it on an actual incident.
+
+`ops/incident.py`'s lazy per-day rewrite path (step 8 in the original
+version of this plan) is **done** -- see above, not deferred to a
+follow-up ticket.
 
 ## Consequences
 
