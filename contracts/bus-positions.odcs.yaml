@@ -12,7 +12,7 @@ apiVersion: v3.2.0
 kind: DataContract
 id: 2b7d1e64-9a03-4f18-8c52-1d7e6b4a9f30
 name: wraith_bus_ingestor_positions
-version: 2.0.0
+version: 3.0.0
 status: active
 domain: transit
 tenant: ghost-stack
@@ -81,6 +81,16 @@ schema:
           2026-09-12. Rows before that timestamp have them NULL, permanently.
           Consumers must treat them as optional, not merely as occasionally
           missing.
+      - id: positions_no_vehicle_id_column
+        type: text
+        dimension: validity
+        severity: info
+        description: >-
+          There was briefly a `vehicle_id` SYMBOL column, dropped 2026-09-18
+          (docs/adr/0006) -- sampled at 100% NULL across all 260.6M rows it
+          ever held and never referenced by any consumer. It was never a
+          documented property of this contract, so its removal from the
+          physical table is not a contract break.
     properties:
       - id: pos_bus_id
         name: bus_id
@@ -129,18 +139,22 @@ schema:
       - id: pos_lat
         name: lat
         logicalType: number
-        physicalType: DOUBLE
+        physicalType: FLOAT
         required: true
-        description: WGS84 latitude. Consumers filter to the GB bounding box; the feed occasionally emits nulls and zeroes.
+        description: >-
+          WGS84 latitude. Consumers filter to the GB bounding box; the feed
+          occasionally emits nulls and zeroes. FLOAT since 2026-09-18 (was
+          DOUBLE) -- GPS accuracy is metres, FLOAT's ~7 significant digits
+          is far past that floor. See docs/adr/0006.
       - id: pos_lon
         name: lon
         logicalType: number
-        physicalType: DOUBLE
+        physicalType: FLOAT
         required: true
       - id: pos_bearing
         name: bearing
         logicalType: number
-        physicalType: DOUBLE
+        physicalType: FLOAT
         description: Compass degrees. Absent for roughly 40% of vehicles and written as 0.0 when missing, so 0.0 is ambiguous between due north and unknown.
       - id: pos_operator
         name: operator
@@ -160,20 +174,22 @@ schema:
         name: journey_ref
         businessName: Dated journey reference
         logicalType: string
-        physicalType: VARCHAR
+        physicalType: SYMBOL
         description: >-
           DatedVehicleJourneyRef. Identifies the working, and a change in it is
           the cleanest signal that a vehicle has rolled onto its next trip.
-          Stored as a field rather than a SYMBOL because it is high cardinality.
+          SYMBOL since 2026-09-18 (was VARCHAR) -- despite being the highest-
+          cardinality of the seven converted columns, still repeats ~958x/day
+          on a real sample. See docs/adr/0006.
       - id: pos_published_line
         name: published_line
         logicalType: string
-        physicalType: VARCHAR
+        physicalType: SYMBOL
       - id: pos_origin_ref
         name: origin_ref
         businessName: Origin stop ATCO
         logicalType: string
-        physicalType: VARCHAR
+        physicalType: SYMBOL
         description: >-
           NaPTAN ATCO code of the journey's first stop. Joins to
           line_stops.atco_code. NOT GUARANTEED TO BE AN ATCO CODE: at
@@ -188,18 +204,18 @@ schema:
       - id: pos_origin_name
         name: origin_name
         logicalType: string
-        physicalType: VARCHAR
+        physicalType: SYMBOL
         description: Origin stop name with spaces replaced by underscores by the upstream feed. Consumers must de-underscore for display.
         examples: ['Stockport_Interchange']
       - id: pos_dest_ref
         name: dest_ref
         businessName: Destination stop ATCO
         logicalType: string
-        physicalType: VARCHAR
+        physicalType: SYMBOL
       - id: pos_dest_name
         name: dest_name
         logicalType: string
-        physicalType: VARCHAR
+        physicalType: SYMBOL
       - id: pos_origin_aimed_dep
         name: origin_aimed_dep
         businessName: Aimed departure
@@ -223,7 +239,7 @@ schema:
       - id: pos_block_ref
         name: block_ref
         logicalType: string
-        physicalType: VARCHAR
+        physicalType: SYMBOL
         description: BlockRef, the vehicle's duty. Captured but not yet consumed.
 
 slaProperties:
@@ -275,6 +291,15 @@ team:
     dateIn: '2026-09-12'
 
 customProperties:
+  - property: schemaCutoverDate
+    value: '2026-09-18'
+    description: >-
+      The physical schema changed on this date (docs/adr/0006): vehicle_id
+      dropped, lat/lon/bearing DOUBLE -> FLOAT, seven VARCHAR columns ->
+      SYMBOL. ops/incident.py's restore() reads this value as the single
+      source of truth for telling old-generation archived days from new
+      ones -- a day older than this needs the legacy-schema rewrite path,
+      a day on or after it attaches straight into live bus_positions.
   - property: producer
     value: ingestor/ingest.py
   - property: upstreamSource

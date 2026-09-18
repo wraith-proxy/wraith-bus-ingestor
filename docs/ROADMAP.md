@@ -352,6 +352,29 @@ is where this one hid.
   reaches a real GA with production mileage elsewhere, and only with the
   full-scale rehearsal above included from the start.
 
+## 1.10.0 -- bus_positions schema optimisation
+
+Landed 2026-09-18. Full investigation, decision, and measured outcome in
+[ADR-0006](adr/0006-bus-positions-schema-optimisation.md). Short version:
+`bus_positions` went from 44GB to 21.6GB on disk (~51%, QuestDB's own
+`diskSize` accounting) -- `vehicle_id` (100% NULL, dead) dropped,
+`lat`/`lon`/`bearing` `DOUBLE` -> `FLOAT`, seven wildly low-cardinality
+`VARCHAR` columns -> `SYMBOL`. All verification gates passed before
+cutover: exact row count match, sub-metre `FLOAT` precision loss,
+exact `SYMBOL` distinct-count match, full `dbt run`+`dbt test`
+(884/884) against data extracted from the new table before it went
+live. `ops/incident.py restore()` recoded with a lazy per-day rewrite
+path so archived days older than the schema cutover stay restorable.
+
+**Remaining:**
+- `questdb_data` is currently on `/mnt/archive` (SATA), not the SSD --
+  a real, unplanned space constraint surfaced mid-migration (old+new
+  tables together don't fit the SSD's free space during
+  `bus_positions_old`'s burn-in week). Move back to SSD once
+  `bus_positions_old` is dropped post-burn-in.
+- `ops/incident.py`'s lazy-rewrite path is implemented but not yet
+  exercised against a real archived pre-cutover day.
+
 ## Known issues -- raised, not yet actioned
 
 Observed after a container restart cleared a memory-pressure symptom on
