@@ -153,7 +153,13 @@ Recreating these containers changes those IPs, so a
 and `/api/` 502 while the containers themselves are perfectly healthy. This
 applies unchanged to `/grafana/` and `/ntfy/` — and it bites there routinely,
 because rotating `NTFY_TOPIC` is done by recreating exactly those two
-containers.
+containers. **Applies to a full `docker compose down` + `up` just as much
+as a single `--force-recreate`** — every container in the stack gets a new
+IP either way, and `ghost-web` itself typically isn't touched, so it stays
+`Up` pointing at dead IPs with no health check anywhere catching it. See
+[Operations § Container lifecycle](operations.md#gotcha-docker-compose-down--up-silently-breaks-the-public-site)
+for the concrete 2026-09-17/18 incident and the check to run after any
+stack-wide restart.
 
 ## Data contracts and ontology
 

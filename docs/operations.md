@@ -430,3 +430,38 @@ docker compose logs -f ingestor   # tail the BODS poller
 docker compose logs -f archiver   # tail the daily retention sweep
 docker compose build api          # rebuild the API image after a code change
 ```
+
+### GOTCHA: `docker compose down` + `up` silently breaks the public site
+
+Not just a single-service `--force-recreate` -- a full stack bounce does
+this too, and it's easier to forget precisely because nothing looks
+wrong. Hit for real on 2026-09-17/18: the whole stack was stopped
+deliberately (`docker compose down`) for the dbt v2 migration, then
+brought back with `docker compose up -d`. Every container came back
+`Up`/`healthy`. Grafana (`/grafana/d/wraith-bus/...`) came back as a
+Cloudflare error; the public map (`/bus-map/`) came back with `map
+error: AJAXError: Bad Gateway (502): .../tiles/great-britain/0/0/0`.
+Both containers were fine -- confirmed with `docker exec ghost-tiles`/
+`ghost-grafana` directly. The break was entirely in `ghost-web`.
+
+**Cause** (see [Architecture](architecture.md)): `ghost-web` resolves
+`ghost-tiles`/`ghost-grafana`/`ghost-backend`/`ghost-ntfy` by container
+name to an IP once, at its own nginx startup, and never again. `down` +
+`up` gives every container a new IP on `ghost-net`. `ghost-web` itself
+was untouched (still `Up`, uptime unaffected by the other containers
+restarting), so it just kept sending traffic to the old, now-dead IPs --
+indefinitely, until told to look again.
+
+**Fix, every time this stack (or any subset of it) gets recreated:**
+
+```bash
+docker exec ghost-web nginx -s reload
+```
+
+Cheap, instant, zero downtime of its own -- but there's no automation
+that runs it, and no health check that catches its absence, because
+every container this stack owns reports genuinely healthy the whole
+time. The only signal is the public site itself breaking. **After any
+`docker compose down`/`up`, `--force-recreate`, or systemd-triggered
+container recreation on this stack, check `/grafana/`, `/bus-map/`, and
+`/tiles/...` from outside the host -- not just `docker compose ps`.**
