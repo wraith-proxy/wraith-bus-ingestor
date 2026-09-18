@@ -74,5 +74,25 @@ StandardError=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ing
 # paper over. If this cap starts tripping on genuinely clean runs (swap
 # actually near zero beforehand), that is the real signal to revisit
 # this number; a run measured against an already-degraded host is not.
-MemoryMax=9000M
+#
+# That signal arrived 2026-09-18, same day: THREE consecutive OOM-kills,
+# each peaking at exactly 8.7G (systemd's own reported ceiling, i.e. this
+# cap itself), the third one under genuinely clean conditions -- swap at
+# 0B beforehand (confirmed via /proc/swaps), ollama/immich/grafana all
+# stopped alongside osrm/backend/tiles, and both known page-cache sources
+# ($BUILD and data/*.parquet) fixed at the build.sh phase boundary. That
+# rules out contamination as the explanation this time: dbt v2's real,
+# clean peak need for this pipeline genuinely sits at or above 8.7GB, not
+# "9000M protecting the host from someone else's mess."
+#
+# Raised to 12000M as a MEASUREMENT pass, not a settled number -- every
+# attempt so far has been killed exactly at its own cap, so the true
+# peak has never actually been observed. Once a clean run completes (or
+# fails) under this higher ceiling, systemd's own peak tracking
+# (`systemctl status`, or `Consumed ... memory peak` in
+# `journalctl -u wraith-bus-build.service`) gives the real number:
+# re-tighten MemoryMax to that peak plus a real margin, the same
+# measure-first discipline as every other number in this file. Don't
+# leave 12000M as the permanent value without doing that.
+MemoryMax=12000M
 MemorySwapMax=0
