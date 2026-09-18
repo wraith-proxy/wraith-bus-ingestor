@@ -153,7 +153,19 @@ Recreating these containers changes those IPs, so a
 and `/api/` 502 while the containers themselves are perfectly healthy. This
 applies unchanged to `/grafana/` and `/ntfy/` — and it bites there routinely,
 because rotating `NTFY_TOPIC` is done by recreating exactly those two
-containers.
+containers. **Applies to a full `docker compose down` + `up` just as much
+as a single `--force-recreate` — and to plain `docker stop` + `start` on
+an existing container too**, confirmed directly 2026-09-18: no recreate
+at all, same container ID, still a new IP on `ghost-net`. This is exactly
+what `wraith-bus-build.service`'s `ExecStartPre`/`ExecStopPost` does to
+`ghost-osrm`/`ghost-backend`/`ghost-tiles` every night (see
+`ops/systemd/wraith-bus-build.service`), so it carries its own reload
+step now rather than relying on this being known. `ghost-web` itself
+typically isn't touched by any of these, so it stays `Up` pointing at
+dead IPs with no health check anywhere catching it. See
+[Operations § Container lifecycle](operations.md#gotcha-docker-compose-down--up-silently-breaks-the-public-site)
+for the concrete 2026-09-17/18 incident and the check to run after any
+stack-wide restart.
 
 ## Data contracts and ontology
 

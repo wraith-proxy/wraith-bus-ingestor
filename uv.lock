@@ -526,9 +526,9 @@ wheels = [
 
 [[package]]
 name = "dbt-core-experimental-parser"
-version = "2.0.0rc2"
+version = "2.0.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/25/89/fabe9547f247b9422f32ef0935e9a4c10c60b28764b386d023d7275b5c7d/dbt_core_experimental_parser-2.0.0rc2.tar.gz", hash = "sha256:44d6d888b283c9b3805439800f1594f43cdefa0deb9887c4b4e5e81a061f15d0", size = 4993, upload-time = "2026-09-08T14:58:53.424Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/0f/84/84453bdb03396210846862853f45306b7b77e22fc1538f40d28c11408c2a/dbt_core_experimental_parser-2.0.4.tar.gz", hash = "sha256:80759f767445c079338539730d4169386fdb1222d518961f7b6f3040f62fafe0", size = 4835, upload-time = "2026-09-16T07:13:45.701Z" }
 
 [[package]]
 name = "dbt-duckdb"
@@ -2340,7 +2340,7 @@ requires-dist = [
     { name = "dbt-core", marker = "extra == 'dbt'", specifier = "==1.12.4" },
     { name = "dbt-duckdb", marker = "extra == 'dbt'", specifier = "==1.11.0" },
     { name = "detect-secrets", marker = "extra == 'dev'" },
-    { name = "duckdb", marker = "extra == 'duckdb'" },
+    { name = "duckdb", marker = "extra == 'duckdb'", specifier = "<2.0" },
     { name = "flask" },
     { name = "flask-cors" },
     { name = "genbadge", extras = ["coverage"], marker = "extra == 'dev'" },

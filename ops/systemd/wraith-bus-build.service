@@ -8,15 +8,37 @@ Type=oneshot
 User=thomaspeoples
 Group=thomaspeoples
 WorkingDirectory=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt
-# osrm/backend/tiles are pure downstream consumers of the published marts --
-# zero involvement in extract/run/test/publish (confirmed 2026-09-15, see
-# docs/ROADMAP.md 1.1.1) -- stopping them for the build window is free real
-# headroom on a 15GB host, not just a paper cap. ghost-ingestor and questdb
-# stay up: ingestor is needed for build.sh's own positions_ingest_is_live
-# contract check post-publish, questdb for extraction itself. `- ` (dash
-# prefix) so one already-stopped container doesn't fail the whole unit.
-ExecStartPre=-/usr/bin/docker stop ghost-osrm ghost-backend ghost-tiles
-ExecStopPost=/usr/bin/docker start ghost-osrm ghost-backend ghost-tiles
+# osrm/backend/tiles/grafana are pure downstream consumers of the published
+# marts (or, for grafana, of questdb -- read-only dashboards, no role in
+# extract/run/test/publish) -- zero involvement in the actual build
+# (osrm/backend/tiles confirmed 2026-09-15, see docs/ROADMAP.md 1.1.1).
+# Stopping them for the build window is free real headroom on a 15GB host,
+# not just a paper cap. ghost-ingestor and questdb stay up: ingestor is
+# needed for build.sh's own positions_ingest_is_live contract check
+# post-publish, questdb for extraction itself. `- ` (dash prefix) so one
+# already-stopped container doesn't fail the whole unit.
+#
+# grafana added 2026-09-18 after two consecutive real OOM-kills with
+# osrm/backend/tiles already stopped -- accepted deliberately as a full
+# downtime window (public site dark for the ~80min build, not just a
+# partial one) rather than a fix expected to close the gap on its own:
+# grafana's own footprint is modest (~120MB), and the two failures
+# happened with the bigger local consumers (osrm 3GB, backend up to
+# 1.4GB) already excluded. The real remaining pressure is questdb (can't
+# stop, extraction needs it) plus whatever else this shared host is doing
+# at build time -- see MemoryMax's own history below.
+ExecStartPre=-/usr/bin/docker stop ghost-osrm ghost-backend ghost-tiles ghost-grafana
+ExecStopPost=/usr/bin/docker start ghost-osrm ghost-backend ghost-tiles ghost-grafana
+# `docker start` on an already-created (stopped, not removed) container
+# still reassigns its IP on ghost-net -- confirmed directly 2026-09-18,
+# not assumed from the recreate/down-up case docs/operations.md and
+# docs/architecture.md already documented. ghost-web (nginx, in
+# ghost-site) resolves these container names to IPs once at its own
+# startup and never again, so without this line every nightly build was
+# silently 502'ing /tiles/ and /api/ on the public site afterward until
+# someone happened to reload nginx by hand. `- ` prefix: a reload
+# failure (ghost-web itself down) should not fail this unit.
+ExecStopPost=-/usr/bin/docker exec ghost-web nginx -s reload
 
 ExecStart=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/build.sh
 StandardOutput=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/build.log
@@ -34,5 +56,48 @@ StandardError=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ing
 # over every number actually measured, with osrm/backend/tiles now stopped
 # for the whole window above (not true during the extraction test, which
 # had to fight for headroom against them still running).
+#
+# Retested again 2026-09-18 after the dbt v2 migration bumped
+# profiles.yml's memory_limit 4GB -> 6GB (see ADR-0005). A manual
+# SKIP_EXTRACT=1 run (osrm/backend/tiles stopped, matching this unit)
+# peaked at 9.67GB RSS and ran ~4x slower than any prior clean
+# measurement (40m42s vs 12-17min for the same heavy model) -- but the
+# host had ~5.5GB of swap already resident from unrelated same-session
+# work before the run even started, not a clean baseline. That
+# contamination, not dbt v2 itself, is the likely driver of both the
+# slowdown and the inflated RSS.
+#
+# Deliberately NOT raised to cover that number. 9000M + MemorySwapMax=0
+# doing its job -- failing a contended run fast and contained rather
+# than growing the cap to match whatever the host's other tenants
+# happen to be doing that day -- is the correct behavior, not a bug to
+# paper over. If this cap starts tripping on genuinely clean runs (swap
+# actually near zero beforehand), that is the real signal to revisit
+# this number; a run measured against an already-degraded host is not.
+#
+# That signal arrived 2026-09-18, same day: THREE consecutive OOM-kills,
+# each peaking at exactly 8.7G (systemd's own reported ceiling, i.e. this
+# cap itself), the third one under genuinely clean conditions -- swap at
+# 0B beforehand (confirmed via /proc/swaps), ollama/immich/grafana all
+# stopped alongside osrm/backend/tiles, and both known page-cache sources
+# ($BUILD and data/*.parquet) fixed at the build.sh phase boundary. That
+# rules out contamination as the explanation this time: dbt v2's real,
+# clean peak need for this pipeline genuinely sits at or above 8.7GB, not
+# "9000M protecting the host from someone else's mess."
+#
+# Raised to 12000M as a MEASUREMENT pass 2026-09-18 -- that pass got its
+# answer: a 4th OOM-kill, kernel oom-killer log confirmed anon-rss at
+# 11.68GB (not page cache), 25/86 into the line_stops cluster, still
+# short of completing. dbt v2 + DuckDB 2.0 alpha's real peak for this
+# pipeline is genuinely above 12GB, on a 15GB host -- not closeable by
+# raising the cap further without starving everything else. Same day:
+# rolled the whole dbt v2 / DuckDB 2.0 alpha migration back to
+# dbt-core==1.12.4 + dbt-duckdb==1.11.0 (see docs/adr/0005, pyproject.toml).
+#
+# MemoryMax back to 9000M to match: this is the value the old stack ran
+# clean under repeatedly (see the measurement history above), with
+# osrm/backend/tiles/grafana already stopped for the window. Re-tighten
+# further only against a real measured peak on THIS (reverted) stack, not
+# by assumption.
 MemoryMax=9000M
 MemorySwapMax=0

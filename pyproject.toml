@@ -23,19 +23,35 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# duckdb ships no musllinux wheel and can't build from source on
-# ghost-runner either (no C++ compiler) -- see ROADMAP.md for baking a real
-# image. backend/app.py already treats a missing duckdb driver as a
-# degraded-but-running state (marts_state stays "unknown"), and the test
-# suite skips its duckdb-dependent assertions the same way, so CI's test job
-# (uv sync --extra dev) is fine without this. Real deployment (Debian-based,
-# see backend/Dockerfile) and local dev (--all-extras) both still get it.
+# Real manylinux wheel now that ghost-runner is Debian/glibc, not Alpine/musl
+# (see ci-images) -- that part of the 2026-09-17 migration stands. Unpinned,
+# tracks latest stable.
+#
+# Was pinned to the 2.0 alpha alongside a dbt v2 migration, 2026-09-17 to
+# 2026-09-18 -- rolled back same day. Real cause: production peak RSS hit
+# 11.7GB+ on a workload that ran clean under 9GB on dbt-core 1.12.4 +
+# dbt-duckdb 1.11.0, confirmed via the kernel oom-killer log itself
+# (anon-rss=11.68GB at kill, not page cache -- a real process memory
+# blowup). DuckDB's own team calls alpha clients "explicitly not
+# production-ready"; this is the concrete cost of that. See docs/adr/0005.
+#
+# `<2.0`, not left unpinned: dbt-duckdb 1.11.0 has no upper bound on its own
+# `duckdb` dependency, so an unpinned constraint here resolves right back to
+# the 2.0 alpha (confirmed -- it's the highest version on PyPI regardless).
 duckdb = [
-    "duckdb",
+    "duckdb<2.0",
 ]
-# Same story, plus dbt-core pulls in dbt-core-experimental-parser, a Rust
-# wheel with no musllinux build at all -- a second, independent reason this
-# can't install on ghost-runner. Only dbt/build.sh needs this group.
+# Reverted to the last known-stable pair 2026-09-18 (see docs/adr/0005).
+# dbt v2 + DuckDB 2.0 alpha ran clean in isolated verification (884/884
+# tests) but hit a real, unresolved memory blowup under actual production
+# load in the line_stops phase -- peaked past 12GB (MemoryMax raised as a
+# measurement pass) with anon-rss confirmed via kernel oom-killer log, not
+# page cache. Root cause not isolated: either DuckDB 2.0 alpha not honoring
+# its own memory_limit, or large overhead outside its buffer manager under
+# the new Fusion engine. Revisit once DuckDB 2.0 GAs and has production
+# mileage elsewhere. The Debian base switch on ghost-runner (see ci-images)
+# stands regardless -- it fixed a real dead-entrypoint bug and the musl
+# wheel gap applies to dbt-core v1.x too, not just v2.
 dbt = [
     "dbt-core==1.12.4",
     "dbt-duckdb==1.11.0",

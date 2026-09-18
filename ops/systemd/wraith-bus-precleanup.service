@@ -1,0 +1,17 @@
+[Unit]
+Description=wraith-bus-ingestor nightly host reclaim (swap + docker prune)
+# Ordering, not just the 1-hour timer gap: guarantees this finishes before
+# the build starts even if it somehow runs long, rather than relying only
+# on OnCalendar timing not to overlap.
+Before=wraith-bus-build.service
+After=docker.service
+
+[Service]
+Type=oneshot
+# Root, not thomaspeoples (unlike wraith-bus-build.service): swapoff/swapon
+# need CAP_SYS_ADMIN, which docker-group membership does not grant. docker
+# prune runs fine as root too, so one User= covers both steps.
+User=root
+ExecStart=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/ops/precleanup.sh
+StandardOutput=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/precleanup.log
+StandardError=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/precleanup.log

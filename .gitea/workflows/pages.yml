@@ -17,9 +17,10 @@ jobs:
           version: "latest"
 
       - name: Install dependencies
-        # --all-extras, not --extra dev: this job (unlike test.yml's, which
-        # runs on ghost-runner's musl and can't install duckdb/dbt at all)
-        # runs on ubuntu-latest and needs the dbt extra to generate dbt docs.
+        # --all-extras, not --extra dev: this job needs the dbt extra to
+        # generate dbt docs. ghost-runner (test.yml) can install --all-extras
+        # too now (Debian/glibc since 2026-09-17, see ci-images) -- this job
+        # still runs on ubuntu-latest regardless, unrelated to that.
         run: uv sync --all-extras
 
       - name: Run Tests & Coverage

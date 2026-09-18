@@ -66,14 +66,16 @@ regression already covered.
 
 CI still only gates tests + contracts, not a dbt build -- no job anywhere
 actually runs one. `pages.yml` runs `dbt docs generate` on `ubuntu-latest`,
-but that's docs, not a gated build/test. **Blocker:** `ghost-runner`
-(Alpine/musl) can't run dbt at all -- `dbt-core-experimental-parser`, a
-hard dep of `dbt-core`, ships no musllinux wheel and refuses to build from
-source on any platform without a matching prebuilt binary, so no image fix
-closes this. The fix has to be a job on `ubuntu-latest` (glibc, like
-`pages.yml` already uses) that runs `dbt build` + `dbt test` and fails the
-pipeline on a broken model or a failed assertion, not a job on
-`ghost-runner`.
+but that's docs, not a gated build/test.
+
+**Former blocker, resolved in 1.5.0:** `ghost-runner` (Alpine/musl)
+couldn't run dbt at all -- `dbt-core-experimental-parser` shipped no
+musllinux wheel and refused to build from source on any platform. 1.5.0
+moved `ghost-runner` to Debian/glibc, so a job on `ghost-runner` is a real
+option now, not just `ubuntu-latest`. Neither is done yet -- this entry is
+still open, just no longer platform-blocked. Whichever runner it lands on,
+the job runs `dbt build` + `dbt test` and fails the pipeline on a broken
+model or a failed assertion.
 
 Contract versions (`bus-marts.odcs.yaml`, `bus-positions.odcs.yaml`) are
 already at `2.0.0` from the September restructure -- 1.0.0 was a
@@ -278,9 +280,9 @@ APK build, F-Droid submission, the home-screen widget, and the repo
 split itself) used to live here; they're now
 [wraith-bus-ingestor-apk](https://git.thomaspeoples.com/thomaspeoples/wraith-bus-ingestor-apk)'s
 `docs/ROADMAP.md`, moved verbatim on `feature/TJP-17091` when `android/`
-left this repo on `feature/TJP-17090`. This repo has no active milestone
-right now -- see "Considered, not started" below for what's raised but
-not scheduled.
+left this repo on `feature/TJP-17090`. See 1.9.0 below for the most
+recently landed milestone, and "Considered, not started" for what's raised
+but not scheduled.
 
 ## Considered, not started -- static timetable ingest (TransXChange)
 
@@ -299,14 +301,79 @@ XML, one file per operator per service, GB-wide) and a second source of
 truth for routes that can disagree with what buses actually do. No
 decision made; not scheduled against a version number yet.
 
+## 1.9.0 -- ghost-runner off Alpine, dbt v2 + DuckDB 2.0 alpha migration (reverted)
+
+(1.5.0-1.8.0 are taken -- see "The Android app moved to its own repo" below.)
+
+Landed 2026-09-17, **reverted 2026-09-18**. Supersedes both the "dbt 2.0
+migration" and "DuckDB 2.0 migration" entries this section used to carry --
+neither panned out the way they were written, and the replacement didn't
+pan out either. Full investigation, decision, rollback, and consequences
+written up in [ADR-0005](adr/0005-dbt-v2-duckdb-alpha-migration.md) rather
+than repeated here.
+
+Short version: the `ghost-runner` musl blocker was real and confirmed
+twice (dbt v1's and v2's own hard deps both ship stub-only sdists with no
+musl wheel target), so `ci-images` moved to Debian -- **that part stands**.
+`dbt==2.0.4` + `duckdb==2.0.0.dev2609121639` were pinned as real
+dependencies, verified clean in isolation (884/884 tests, a real
+`build.sh` run), then rolled back the next day after `wraith-bus-
+build.service`'s actual nightly conditions (full 8-day extract,
+`--threads 1`, the 86-model `line_stops` cluster back-to-back with the
+main run) produced a real memory blowup isolated testing never caught --
+see the GOTCHA below. Back on `dbt-core==1.12.4` + `dbt-duckdb==1.11.0`.
+
+### GOTCHA: isolated dbt verification does not catch production-load memory blowups
+
+`dbt run` + `dbt test` passing clean, even against real data, is not the
+same test as the actual nightly build path. Four real OOM-kills on
+2026-09-18 (`MemoryMax` raised 9000M -> 12000M as an explicit
+measurement pass along the way) confirmed, via the kernel oom-killer log
+itself (`anon-rss` at kill, not page cache), that dbt v2's bundled
+DuckDB 2.0 alpha engine's real peak memory need for this pipeline's
+`line_stops` phase sits well above 12GB on a 15GB host -- `profiles.yml`'s
+`memory_limit: 6GB` was nowhere near honored by actual RSS. Full
+timeline in [ADR-0005's Rollback section](adr/0005-dbt-v2-duckdb-alpha-migration.md#rollback-2026-09-18).
+
+**Takeaway that outlives this specific migration:** before trusting any
+future engine/adapter version bump on this pipeline, rehearse it under
+the real `systemctl`-triggered nightly conditions and `MemoryMax` cap,
+not just an isolated `dbt run`/`dbt test` pass -- the gap between the two
+is where this one hid.
+
+**Remaining:**
+- ROADMAP 1.1.0 (gate dbt in CI) is unblocked by the Debian base
+  regardless of dbt version, not closed -- a `dbt build`/`dbt test` job
+  can run on `ghost-runner` itself now, but nothing adds that job yet.
+- `pages.yml`'s `dbt docs generate` could move off `ubuntu-latest` onto
+  `ghost-runner` now that the platforms match; not done as part of this
+  migration.
+- dbt v2 / DuckDB 2.0 alpha themselves: not retried until DuckDB 2.0
+  reaches a real GA with production mileage elsewhere, and only with the
+  full-scale rehearsal above included from the start.
+
 ## Known issues -- raised, not yet actioned
 
 Observed after a container restart cleared a memory-pressure symptom on
-the host. Two things unchanged and worth remembering: system memory
-barely moved (4,793M -> 4,751M available) because the freed 1.3GB went
-back to page cache rather than showing as free, and swap is still at
-4,222M -- that's accumulated pressure that won't clear without the
-swapped-out pages being touched again. Neither blocks anything.
+the host. System memory barely moved (4,793M -> 4,751M available)
+because the freed 1.3GB went back to page cache rather than showing as
+free, and swap is still at 4,222M -- that's accumulated pressure that
+won't clear without the swapped-out pages being touched again. Neither
+blocked anything at the time.
 
-The underlying DuckDB buffer creep is still unaddressed -- the restart
-reset the symptom, not the cause. It'll climb again over days.
+**The swap half of this is now actioned, 2026-09-18** (see
+[ADR-0005](adr/0005-dbt-v2-duckdb-alpha-migration.md)'s aftermath --
+tonight's dbt v2 rehearsal work hit the same accumulation for real,
+5.5GB resident, tight enough to threaten the next build). A new
+`wraith-bus-precleanup.timer` runs `ops/precleanup.sh` at 02:00, one
+hour ahead of the 03:00 build: safety-checked `swapoff`/`swapon` per
+swapfile (only attempted if `MemAvailable` actually covers that file's
+used bytes plus a 1GB margin -- skips and logs rather than forcing a
+too-tight reclaim) plus a dangling-image/unused-build-cache Docker
+prune. Soft-fail throughout; a skipped or failed step never blocks the
+03:00 build. See `ops/precleanup.sh` and
+`ops/systemd/wraith-bus-precleanup.service`/`.timer`.
+
+The underlying DuckDB buffer creep is still unaddressed -- a nightly
+swap reclaim resets the symptom, not the cause. It'll climb again over
+days. Still open.

@@ -30,6 +30,24 @@ and the API — pushing the API's p50 from 1.3s to 15.6s, long enough for
 nginx to start returning 504s. A slower rebuild is an acceptable cost; the
 site falling over during it is not.
 
+### The 02:00 precleanup, one hour ahead
+
+`ops/systemd/wraith-bus-precleanup.{service,timer}`, added 2026-09-18,
+runs `ops/precleanup.sh` an hour before the build: a safety-checked
+`swapoff`/`swapon` per swapfile (only attempted if `MemAvailable` actually
+covers that file's used bytes, skipped and logged otherwise — see the
+script's own comments) plus a dangling-image/unused-build-cache Docker
+prune. Closes the swap half of docs/ROADMAP.md's "Known issues" entry —
+swap that accumulates during the day never clears on its own, and a tight
+host makes the 03:00 build itself more likely to hit its `MemoryMax`
+cgroup cap. Every step soft-fails: a skipped or failed reclaim never
+blocks the build that follows it.
+
+```
+sudo systemctl status wraith-bus-precleanup.timer
+journalctl -u wraith-bus-precleanup.service
+```
+
 ### The three-file handoff
 
 `build.sh` never lets dbt build the file Flask has open. DuckDB holds an
@@ -430,3 +448,51 @@ docker compose logs -f ingestor   # tail the BODS poller
 docker compose logs -f archiver   # tail the daily retention sweep
 docker compose build api          # rebuild the API image after a code change
 ```
+
+### GOTCHA: `docker compose down` + `up` silently breaks the public site
+
+Not just a single-service `--force-recreate` -- a full stack bounce does
+this too, and it's easier to forget precisely because nothing looks
+wrong. Hit for real on 2026-09-17/18: the whole stack was stopped
+deliberately (`docker compose down`) for the dbt v2 migration, then
+brought back with `docker compose up -d`. Every container came back
+`Up`/`healthy`. Grafana (`/grafana/d/wraith-bus/...`) came back as a
+Cloudflare error; the public map (`/bus-map/`) came back with `map
+error: AJAXError: Bad Gateway (502): .../tiles/great-britain/0/0/0`.
+Both containers were fine -- confirmed with `docker exec ghost-tiles`/
+`ghost-grafana` directly. The break was entirely in `ghost-web`.
+
+**Cause** (see [Architecture](architecture.md)): `ghost-web` resolves
+`ghost-tiles`/`ghost-grafana`/`ghost-backend`/`ghost-ntfy` by container
+name to an IP once, at its own nginx startup, and never again. `down` +
+`up` gives every container a new IP on `ghost-net`. `ghost-web` itself
+was untouched (still `Up`, uptime unaffected by the other containers
+restarting), so it just kept sending traffic to the old, now-dead IPs --
+indefinitely, until told to look again.
+
+**Not just recreate -- plain `docker stop` + `start` on an existing
+container does this too**, confirmed directly 2026-09-18: no recreate,
+same container ID, still a new IP. This matters because
+`wraith-bus-build.service` does exactly `docker stop` then `docker
+start` on `ghost-osrm`/`ghost-backend`/`ghost-tiles` every single night
+(see `ops/systemd/wraith-bus-build.service`) -- so this bug had been
+silently breaking `/tiles/` and `/bus-map/` after every nightly build,
+not just after manual full-stack bounces. Fixed at the source 2026-09-18:
+the unit now carries its own `ExecStopPost=-docker exec ghost-web nginx
+-s reload` rather than depending on a human remembering.
+
+**Fix, every time this stack (or any subset of it) is stopped/started
+or recreated by hand:**
+
+```bash
+docker exec ghost-web nginx -s reload
+```
+
+Cheap, instant, zero downtime of its own -- but there's no automation
+that runs it for a manual action, and no health check that catches its
+absence, because every container this stack owns reports genuinely
+healthy the whole time. The only signal is the public site itself
+breaking. **After any manual `docker compose down`/`up`, `docker
+stop`/`start`, or `--force-recreate` on this stack, check `/grafana/`,
+`/bus-map/`, and `/tiles/...` from outside the host -- not just `docker
+compose ps`.**
