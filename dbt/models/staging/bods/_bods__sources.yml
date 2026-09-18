@@ -27,18 +27,6 @@ sources:
           dest_aimed_arr, ...) on 2026-09-12, so files written before that have
           strictly fewer columns. union_by_name fills the gaps with NULL instead
           of erroring on the schema mismatch.
-        meta:
-          external_location: "read_parquet('data/bus_positions_*.parquet', union_by_name=true)"
-        # extract.py runs once nightly at 03:00 and its window ends "yesterday"
-        # (never today -- see extract.py's day loop), so the freshest row is
-        # always at least ~24h old even on a perfectly healthy run. The one
-        # documented feed outage (2026-08-28..30, see stg_bods__vehicle_pings)
-        # was 3 days -- warn before that, error well past it rather than
-        # matching it exactly and paging on every repeat of a known-survivable gap.
-        loaded_at_field: "\"timestamp\""
-        freshness:
-          warn_after: {count: 2, period: day}
-          error_after: {count: 5, period: day}
         columns:
           - name: timestamp
             description: End of the 3-minute sample bucket, UTC (TIMESTAMPTZ on disk).
@@ -124,3 +112,21 @@ sources:
           - dbt_expectations.expect_table_row_count_to_be_between:
               arguments:
                 min_value: 500000
+        config:
+          # extract.py runs once nightly at 03:00 and its window ends "yesterday"
+          # (never today -- see extract.py's day loop), so the freshest row is
+          # always at least ~24h old even on a perfectly healthy run. The one
+          # documented feed outage (2026-08-28..30, see stg_bods__vehicle_pings)
+          # was 3 days -- warn before that, error well past it rather than
+          # matching it exactly and paging on every repeat of a known-survivable gap.
+          loaded_at_field: "\"timestamp\""
+          freshness:
+            warn_after: {count: 2, period: day}
+            error_after: {count: 5, period: day}
+          # dbt-duckdb lets a source point straight at a file instead of a table
+          # in the database: meta.external_location is substituted verbatim
+          # wherever {{ source(...) }} appears. Nothing is copied into
+          # wraith_bus_ingestor.duckdb -- the staging views read the parquet/CSV
+          # off disk on every query.
+          meta:
+            external_location: "read_parquet('data/bus_positions_*.parquet', union_by_name=true)"

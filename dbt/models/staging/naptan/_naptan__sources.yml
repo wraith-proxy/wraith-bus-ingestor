@@ -11,5 +11,6 @@ sources:
           empty strings, locale-formatted dates and numeric codes with leading
           zeros; staging does every cast explicitly so a new bad row fails loudly
           in one place instead of silently re-typing a column.
-        meta:
-          external_location: "read_csv('data/naptan_stops.csv', header=true, all_varchar=true, sample_size=-1)"
+        config:
+          meta:
+            external_location: "read_csv('data/naptan_stops.csv', header=true, all_varchar=true, sample_size=-1)"

@@ -92,7 +92,21 @@ wraith_bus_ingestor:
         # int_line_stops_real_real fits in it. That grain needs an
         # architectural fix (batching by line, see docs/ROADMAP.md), not a
         # bigger number here; no memory_limit value reliably bounds it.
-        memory_limit: '4GB'
+        #
+        # Raised 4GB -> 6GB on 2026-09-17 for the dbt v2 migration. Not a
+        # repeat of the tuning above -- v2's bundled DuckDB engine (Fusion's
+        # own, not the dbt-duckdb adapter this whole history above is about)
+        # has different memory overhead against the identical value: two
+        # models (int_pings_matched_to_stops, eta_models) that were stable at
+        # 4GB under v1.12.4 OOM'd at 3.7GB/3.7GB used under v2's engine on
+        # the exact same data. Confirmed NOT data growth first -- rerunning
+        # those same two models under v1.12.4 on the same data still passed
+        # cleanly at 4GB. 6GB retested clean: full `dbt run` (97 models,
+        # including the line_stops batch cluster) + `dbt test` (884/884).
+        # This value is now tied to v2's engine specifically; if a future
+        # dbt version changes the bundled engine again, retest before
+        # assuming this number still holds.
+        memory_limit: '6GB'
         # DO NOT set temp_directory here. dbt-duckdb replays every `settings:`
         # entry on each new connection it opens, and DuckDB refuses to change
         # the temp directory once it has spilled to the current one -- so the

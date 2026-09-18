@@ -24,7 +24,6 @@ macro-paths: ["macros"]
 test-paths: ["tests"]
 analysis-paths: ["analyses"]
 seed-paths: ["seeds"]
-target-path: "target"
 clean-targets: ["target", "dbt_packages"]
 
 models:
@@ -34,7 +33,7 @@ models:
       # Staging is rename+cast only, so a view costs nothing and always reflects
       # whatever parquet files currently sit in data/.
       +materialized: view
-      +schema: null
+      +schema:
     intermediate:
       # Views by default, but the two models that every downstream model scans
       # (journey segmentation and the stop spatial join) are materialised as
@@ -46,3 +45,5 @@ models:
       # Marts are read by a long-lived Flask process over a read-only DuckDB
       # handle; they must be real tables, not views over parquet.
       +materialized: table
+flags:
+  require_generic_test_arguments_property: true

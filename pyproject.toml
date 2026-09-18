@@ -23,22 +23,47 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# duckdb ships no musllinux wheel and can't build from source on
-# ghost-runner either (no C++ compiler) -- see ROADMAP.md for baking a real
-# image. backend/app.py already treats a missing duckdb driver as a
+# Real manylinux wheel now that ghost-runner is Debian/glibc, not Alpine/musl
+# (see ci-images). backend/app.py already treats a missing duckdb driver as a
 # degraded-but-running state (marts_state stays "unknown"), and the test
 # suite skips its duckdb-dependent assertions the same way, so CI's test job
-# (uv sync --extra dev) is fine without this. Real deployment (Debian-based,
-# see backend/Dockerfile) and local dev (--all-extras) both still get it.
+# (uv sync --extra dev) is fine without this either way.
+#
+# Pinned to the 2.0 alpha (2026-09-17, alongside the dbt v2 migration below).
+# DuckDB's own team calls alpha clients "explicitly not production-ready" --
+# deliberate, not an oversight. Move to a GA release once DuckDB 2.0
+# ("Cyanoptera") cuts one; don't let --pre ride indefinitely. NOTE: dbt
+# itself does NOT use this package -- dbt v2's DuckDB adapter bundles its own
+# engine entirely (confirmed: `dbt run` works in a venv with no `duckdb` pip
+# package installed at all). This pin only affects backend/app.py,
+# ops/incident.py, and build.sh's own inline publish step.
 duckdb = [
-    "duckdb",
+    "duckdb==2.0.0.dev2609121639",
 ]
-# Same story, plus dbt-core pulls in dbt-core-experimental-parser, a Rust
-# wheel with no musllinux build at all -- a second, independent reason this
-# can't install on ghost-runner. Only dbt/build.sh needs this group.
+# dbt v2 GA'd 2026-09-14. Real manylinux_2_28 wheel -- the actual fix for the
+# musl gap that kept dbt off ghost-runner entirely (dbt-core-experimental-
+# parser, a v1.x hard dep, shipped no musllinux wheel and its stub build
+# backend refused to compile from source on any platform). v2's `dbt`
+# package turned out to use the exact same stub-wheel-fetch pattern, but its
+# manifest DOES list manylinux_2_28 -- checked directly by unpacking the
+# sdist, not assumed.
+#
+# DuckDB support is bundled into `dbt` natively now -- do NOT also install
+# dbt-duckdb (PyPI has no 2.x release of it regardless; 1.11.0 is the
+# ceiling, built for dbt-core v1.x's adapter interface, not Fusion's).
+#
+# Migrated 2026-09-17. `dbt-autofix` moved three source-level keys (`meta`,
+# `loaded_at_field`, `freshness`) under `config:` in both _sources.yml
+# files -- v2's parser rejects them at the old top level (see git log for
+# the diff). Full `dbt run` + `dbt test` (884/884) verified clean against
+# real data before this pin changed. One real regression found and fixed:
+# profiles.yml's memory_limit went from 4GB to 6GB -- v2's bundled DuckDB
+# engine has different memory overhead than the old dbt-duckdb adapter (two
+# models that were stable at 4GB under v1.12.4 OOM'd at the same limit under
+# v2; confirmed NOT data growth by rerunning the identical models under
+# v1.12.4 on the same data, which still passed at 4GB). See profiles.yml.
 dbt = [
-    "dbt-core==1.12.4",
-    "dbt-duckdb==1.11.0",
+    "dbt==2.0.4",
 ]
 dev = [
     "ruff",
