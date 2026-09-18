@@ -19,9 +19,9 @@ relative paths (`data/bus_positions_*.parquet`), so running from the repo root
 will fail to find them.
 
 There is no separate `dbt/.venv` -- dbt runs under the repo root's own
-`.venv` (`uv sync --all-extras` there installs `dbt-core`/`dbt-duckdb`,
-their own optional group, alongside Flask and everything else), referenced
-below as `../.venv`.
+`.venv` (`uv sync --all-extras` there installs `dbt` (v2), its own
+optional group, alongside Flask and everything else), referenced below as
+`../.venv`.
 
 ```bash
 cd dbt

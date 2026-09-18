@@ -307,88 +307,25 @@ decision made; not scheduled against a version number yet.
 
 Landed 2026-09-17. Supersedes both the "dbt 2.0 migration" and "DuckDB 2.0
 migration" entries this section used to carry -- neither panned out the way
-they were written; both are folded in here with what actually happened.
+they were written. Full investigation, decision, and consequences written
+up in [ADR-0005](adr/0005-dbt-v2-duckdb-alpha-migration.md) rather than
+repeated here -- this section tracks only what's still open.
 
-**The `ghost-runner` musl blocker was real -- confirmed twice, not
-assumed.** Both `dbt-core-experimental-parser` (v1.x) and the new `dbt`
-package (v2.0.4, GA'd 2026-09-14) turned out to use the identical
-stub-sdist pattern: no real source, a custom `_dbt_sa_build` backend that
-fetches a prebuilt wheel from a fixed `assets.json` manifest. v1.x's
-manifest had no musl target at all; so, separately checked, did v2's --
-`macosx_10_12_x86_64`, `macosx_11_0_arm64`, `manylinux_2_28_{aarch64,x86_64}`,
-`win_amd64`, nothing else. No toolchain, at any dbt version, was ever going
-to fix this on Alpine.
+Short version: the `ghost-runner` musl blocker was real and confirmed
+twice (dbt v1's and v2's own hard deps both ship stub-only sdists with no
+musl wheel target), so `ci-images` moved to Debian; `dbt==2.0.4` and
+`duckdb==2.0.0.dev2609121639` (`--pre`, deliberately ahead of GA) are now
+real dependencies here; and one genuine regression (dbt v2's bundled
+DuckDB engine needing 6GB where v1's adapter needed 4GB for the same two
+models) was root-caused, not papered over, before being fixed.
 
-**So `ci-images`' `Dockerfile` moved from `gitea/act_runner:latest`
-(Alpine) to `debian:bookworm-slim`.** `act_runner` itself is a static Go
-binary -- confirmed via `ldd` ("not a valid dynamic program", no musl/glibc
-dependency at all) -- so it drops onto any base unmodified; only its
-`run.sh` wrapper and `tini` entrypoint needed copying over. Found for free
-while doing this: the old image's `ENTRYPOINT ["/bin/s6-svscan", "/etc/s6"]`
-pointed at a binary and a config directory that exist nowhere in the base
-image -- dead reference, not a working supervisor. Replaced with the base
-image's real entrypoint (confirmed by inspecting it directly: `["/sbin/tini",
-"--", "run.sh"]`).
-
-On glibc, both `duckdb` and `dbt` are now real wheel installs -- the
-from-source C++ duckdb compile (`gcc`/`g++`/`cmake`/`ninja`, previously the
-slow part of every `ci-images` build) is gone, and `dbt` is baked into
-`ghost-runner` globally for the first time.
-
-**DuckDB pinned to the 2.0 alpha** (`duckdb==2.0.0.dev2609121639`,
-`--pre`), a deliberate ahead-of-GA call, not an oversight -- DuckDB's own
-team calls alpha clients "explicitly not production-ready." Move this pin
-to a real GA release once DuckDB 2.0 ("Cyanoptera") cuts one.
-
-**dbt v2 migration on `wraith-bus-ingestor` itself, validated before any
-pin changed, not after:**
-- `dbt parse --use-v2-parser` (under 1.12.4) surfaced 4 real errors: both
-  `_sources.yml` files had `meta`/`loaded_at_field`/`freshness` at the old
-  top level, which v2's parser rejects. Fixed with `dbt-autofix
-  deprecations --all` (moved them under `config:`), then hand-restored the
-  inline comments the tool doesn't carry over. Also flipped
-  `require_generic_test_arguments_property: true` in `dbt_project.yml`
-  (this project's generic tests already pass `arguments:` the new way,
-  confirmed by the full test run below) and dropped the now-removed
-  `target-path` key (defaults to `target` regardless).
-- No YAML anchors in this project -- that breaking change doesn't apply.
-- `publish_run_results.py`'s `run_results.json` assumptions
-  (`metadata.generated_at`, `results[].unique_id/status/failures/execution_time`)
-  still hold -- checked against a real v2-produced file, schema unchanged.
-- **One real regression found and fixed, not papered over.** Full `dbt
-  run` at the existing `memory_limit: 4GB` OOM'd on 2 of 97 models
-  (`int_pings_matched_to_stops`, `eta_models`) that were stable at that
-  limit under v1.12.4. Root-caused before touching the number: the same
-  two models, same day's data, same host, re-run under v1.12.4 still
-  passed cleanly at 4GB -- ruling out data growth. dbt v2's bundled DuckDB
-  engine (Fusion's own, entirely separate from the `duckdb` PyPI package --
-  confirmed by running `dbt` v2 in a venv with no `duckdb` package
-  installed at all, which still worked) simply has different memory
-  overhead against the identical setting. Raised to 6GB, retested clean:
-  full `dbt run` (97 models, including all 86 `line_stops` per-line batch
-  models at `--threads 1`) + `dbt test` (884/884 pass, one cosmetic
-  `SyntaxInvalid` warning on the existing `describe select * from (...)`
-  schema-drift macro -- Fusion's static linter doesn't fully parse that
-  DuckDB construct even though it executes fine, same class of harmless
-  warning as the `type: SQL expression` one already dropped in 1.0.0).
-- `contracts/validate.py` and `publish_punctuality_summary.py` read the
-  built DuckDB file directly, not dbt's own artifacts -- no exposure to
-  check there.
-- `packages.yml` (`dbt_expectations`) resolved and ran clean under v2 with
-  no version bump needed.
-
-`pyproject.toml`'s `dbt` extra is `dbt==2.0.4` now (no separate
-`dbt-duckdb` -- DuckDB support is native to the `dbt` package under
-Fusion, and PyPI has no 2.x `dbt-duckdb` release regardless: 1.11.0 was
-built against dbt-core v1.x's adapter interface, not Fusion's).
-`.gitea/workflows/test.yml` and `pages.yml` had their musl-blocker
-comments corrected to match -- `ghost-runner` can run `--all-extras` now.
-
-**Not done here:** actually gating a `dbt build`/`dbt test` job on
-`ghost-runner` in CI (1.1.0, still open -- this milestone removes the
-blocker but doesn't add the job) and moving `pages.yml`'s `dbt docs
-generate` off `ubuntu-latest` onto `ghost-runner`, both real options now
-that the platform match, not done as part of this migration.
+**Remaining:**
+- ROADMAP 1.1.0 (gate dbt in CI) is unblocked, not closed -- a `dbt
+  build`/`dbt test` job can run on `ghost-runner` itself now, but nothing
+  adds that job yet.
+- `pages.yml`'s `dbt docs generate` could move off `ubuntu-latest` onto
+  `ghost-runner` now that the platforms match; not done as part of this
+  migration.
 
 ## Known issues -- raised, not yet actioned
 
