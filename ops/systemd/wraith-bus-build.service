@@ -8,15 +8,27 @@ Type=oneshot
 User=thomaspeoples
 Group=thomaspeoples
 WorkingDirectory=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt
-# osrm/backend/tiles are pure downstream consumers of the published marts --
-# zero involvement in extract/run/test/publish (confirmed 2026-09-15, see
-# docs/ROADMAP.md 1.1.1) -- stopping them for the build window is free real
-# headroom on a 15GB host, not just a paper cap. ghost-ingestor and questdb
-# stay up: ingestor is needed for build.sh's own positions_ingest_is_live
-# contract check post-publish, questdb for extraction itself. `- ` (dash
-# prefix) so one already-stopped container doesn't fail the whole unit.
-ExecStartPre=-/usr/bin/docker stop ghost-osrm ghost-backend ghost-tiles
-ExecStopPost=/usr/bin/docker start ghost-osrm ghost-backend ghost-tiles
+# osrm/backend/tiles/grafana are pure downstream consumers of the published
+# marts (or, for grafana, of questdb -- read-only dashboards, no role in
+# extract/run/test/publish) -- zero involvement in the actual build
+# (osrm/backend/tiles confirmed 2026-09-15, see docs/ROADMAP.md 1.1.1).
+# Stopping them for the build window is free real headroom on a 15GB host,
+# not just a paper cap. ghost-ingestor and questdb stay up: ingestor is
+# needed for build.sh's own positions_ingest_is_live contract check
+# post-publish, questdb for extraction itself. `- ` (dash prefix) so one
+# already-stopped container doesn't fail the whole unit.
+#
+# grafana added 2026-09-18 after two consecutive real OOM-kills with
+# osrm/backend/tiles already stopped -- accepted deliberately as a full
+# downtime window (public site dark for the ~80min build, not just a
+# partial one) rather than a fix expected to close the gap on its own:
+# grafana's own footprint is modest (~120MB), and the two failures
+# happened with the bigger local consumers (osrm 3GB, backend up to
+# 1.4GB) already excluded. The real remaining pressure is questdb (can't
+# stop, extraction needs it) plus whatever else this shared host is doing
+# at build time -- see MemoryMax's own history below.
+ExecStartPre=-/usr/bin/docker stop ghost-osrm ghost-backend ghost-tiles ghost-grafana
+ExecStopPost=/usr/bin/docker start ghost-osrm ghost-backend ghost-tiles ghost-grafana
 # `docker start` on an already-created (stopped, not removed) container
 # still reassigns its IP on ghost-net -- confirmed directly 2026-09-18,
 # not assumed from the recreate/down-up case docs/operations.md and
