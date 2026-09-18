@@ -24,7 +24,7 @@ BODS SIRI-VM feed (every 60s, mainland GB bbox)
   ↓ [ingestor container]
 QuestDB (time-series, ILP)
   ├─ Live table: bus_positions (append-only, partitioned by day)
-  └─ Retention: 22 days hot on SSD, older partitions DETACH + archive to separate drive
+  └─ Retention: 8 days hot on SSD, older partitions DETACH + archive to separate drive
   ↓ [dbt/build.sh, nightly 03:00 via systemd timer]
 dbt models (DuckDB)
   ├─ Staging: one model per source system (bods/, naptan/), views
@@ -161,7 +161,8 @@ git commit
 ## 🧩 The Hard Decisions Baked In
 
 **Partitions are archived, not deleted.** QuestDB's native `SET TTL` drops
-data outright; this keeps 22 days hot on fast SSD and moves older
+data outright; this keeps 8 days hot on fast SSD (`RETENTION_DAYS`, cut
+from 22 on 2026-09-14 — see `docs/ROADMAP.md` 1.0.0) and moves older
 partitions to a separate drive intact for long-term storage.
 
 **Direction is inferred.** The feed started sending real `DirectionRef` on
