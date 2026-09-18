@@ -138,27 +138,47 @@ echo "==> dbt run   (into $BUILD, at low priority)"
 # so --threads 1 here costs nothing to the rest of the build.
 "${DBT[@]}" run --profiles-dir . "${RUN_FLAGS[@]}" --exclude int_first_visit_per_journey+
 
-# Drop $BUILD's page cache before the second dbt run starts. Root cause of
-# a 2026-09-18 OOM-kill, confirmed via dbt.log timestamps against
-# journalctl (the kill landed 4s into the very first line_stops batch
-# model of the second run): cgroup v2 (wraith-bus-build.service's
-# MemoryMax) counts page cache against the same ceiling as a process's own
-# memory, and the run above just dirtied several GB of $BUILD. That
-# cgroup's MemorySwapMax=0 means there's no swap escape valve if the next
-# process's own fresh allocations land on top of still-warm cache before
-# the kernel reclaims it. `sync` flushes dirty pages system-wide first
-# (POSIX_FADV_DONTNEED only drops clean ones); the fadvise call then
-# un-charges $BUILD's specifically from cache. Needs no root -- fadvise on
-# a file you own is a normal per-fd hint, not a privileged operation, and
-# harmless if this ever runs outside the cgroup (a no-op cache drop).
+# Drop $BUILD's AND data/*.parquet's page cache before the second dbt run
+# starts. Root cause of a 2026-09-18 OOM-kill, confirmed via dbt.log
+# timestamps against journalctl (the kill landed 4s into the very first
+# line_stops batch model of the second run): cgroup v2 (wraith-bus-
+# build.service's MemoryMax) counts page cache against the same ceiling as
+# a process's own memory. That cgroup's MemorySwapMax=0 means there's no
+# swap escape valve if the next process's own fresh allocations land on
+# top of still-warm cache before the kernel reclaims it.
+#
+# Dropping $BUILD alone (the first fix attempt, same day) was not enough
+# on a real run: a second OOM-kill at effectively the same spot, systemd-
+# reported peak right at the 9000M ceiling, traced to a second source of
+# fresh cache this fix didn't touch -- a real (non-SKIP_EXTRACT) run's
+# extract.py had just written ~1.9GB of data/*.parquet moments earlier,
+# every byte freshly cached under this same cgroup. Safe to drop here:
+# every model int_first_visit_per_journey+ (the second run's --select)
+# depends on reads only already-materialized tables from the run above,
+# confirmed by grepping every model under it for ref()/source() calls --
+# none touch stg_bods__vehicle_pings, stg_naptan__stops, or a raw source,
+# so nothing downstream re-reads these files this build.
+#
+# `sync` flushes dirty pages system-wide first (POSIX_FADV_DONTNEED only
+# drops clean ones); the fadvise calls then un-charge these files
+# specifically from cache. Needs no root -- fadvise on a file you own is a
+# normal per-fd hint, not a privileged operation, and harmless if this
+# ever runs outside the cgroup (a no-op cache drop).
 sync
 "$PY" -c "
+import glob
 import os
-fd = os.open('$BUILD', os.O_RDONLY)
-try:
-    os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
-finally:
-    os.close(fd)
+
+def drop(path):
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+    finally:
+        os.close(fd)
+
+drop('$BUILD')
+for path in glob.glob('data/*.parquet'):
+    drop(path)
 "
 
 "${DBT[@]}" run --profiles-dir . "${RUN_FLAGS[@]}" --threads 1 --select int_first_visit_per_journey+
