@@ -17,6 +17,16 @@ WorkingDirectory=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingesto
 # prefix) so one already-stopped container doesn't fail the whole unit.
 ExecStartPre=-/usr/bin/docker stop ghost-osrm ghost-backend ghost-tiles
 ExecStopPost=/usr/bin/docker start ghost-osrm ghost-backend ghost-tiles
+# `docker start` on an already-created (stopped, not removed) container
+# still reassigns its IP on ghost-net -- confirmed directly 2026-09-18,
+# not assumed from the recreate/down-up case docs/operations.md and
+# docs/architecture.md already documented. ghost-web (nginx, in
+# ghost-site) resolves these container names to IPs once at its own
+# startup and never again, so without this line every nightly build was
+# silently 502'ing /tiles/ and /api/ on the public site afterward until
+# someone happened to reload nginx by hand. `- ` prefix: a reload
+# failure (ghost-web itself down) should not fail this unit.
+ExecStopPost=-/usr/bin/docker exec ghost-web nginx -s reload
 
 ExecStart=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/build.sh
 StandardOutput=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/build.log
@@ -34,5 +44,23 @@ StandardError=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ing
 # over every number actually measured, with osrm/backend/tiles now stopped
 # for the whole window above (not true during the extraction test, which
 # had to fight for headroom against them still running).
+#
+# Retested again 2026-09-18 after the dbt v2 migration bumped
+# profiles.yml's memory_limit 4GB -> 6GB (see ADR-0005). A manual
+# SKIP_EXTRACT=1 run (osrm/backend/tiles stopped, matching this unit)
+# peaked at 9.67GB RSS and ran ~4x slower than any prior clean
+# measurement (40m42s vs 12-17min for the same heavy model) -- but the
+# host had ~5.5GB of swap already resident from unrelated same-session
+# work before the run even started, not a clean baseline. That
+# contamination, not dbt v2 itself, is the likely driver of both the
+# slowdown and the inflated RSS.
+#
+# Deliberately NOT raised to cover that number. 9000M + MemorySwapMax=0
+# doing its job -- failing a contended run fast and contained rather
+# than growing the cap to match whatever the host's other tenants
+# happen to be doing that day -- is the correct behavior, not a bug to
+# paper over. If this cap starts tripping on genuinely clean runs (swap
+# actually near zero beforehand), that is the real signal to revisit
+# this number; a run measured against an already-degraded host is not.
 MemoryMax=9000M
 MemorySwapMax=0

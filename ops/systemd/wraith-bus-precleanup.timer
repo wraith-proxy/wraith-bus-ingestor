@@ -1,0 +1,10 @@
+[Unit]
+Description=Run wraith-bus-ingestor nightly host reclaim at 02:00, one hour ahead of the 03:00 build
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+Unit=wraith-bus-precleanup.service
+
+[Install]
+WantedBy=timers.target

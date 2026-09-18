@@ -330,11 +330,25 @@ models) was root-caused, not papered over, before being fixed.
 ## Known issues -- raised, not yet actioned
 
 Observed after a container restart cleared a memory-pressure symptom on
-the host. Two things unchanged and worth remembering: system memory
-barely moved (4,793M -> 4,751M available) because the freed 1.3GB went
-back to page cache rather than showing as free, and swap is still at
-4,222M -- that's accumulated pressure that won't clear without the
-swapped-out pages being touched again. Neither blocks anything.
+the host. System memory barely moved (4,793M -> 4,751M available)
+because the freed 1.3GB went back to page cache rather than showing as
+free, and swap is still at 4,222M -- that's accumulated pressure that
+won't clear without the swapped-out pages being touched again. Neither
+blocked anything at the time.
 
-The underlying DuckDB buffer creep is still unaddressed -- the restart
-reset the symptom, not the cause. It'll climb again over days.
+**The swap half of this is now actioned, 2026-09-18** (see
+[ADR-0005](adr/0005-dbt-v2-duckdb-alpha-migration.md)'s aftermath --
+tonight's dbt v2 rehearsal work hit the same accumulation for real,
+5.5GB resident, tight enough to threaten the next build). A new
+`wraith-bus-precleanup.timer` runs `ops/precleanup.sh` at 02:00, one
+hour ahead of the 03:00 build: safety-checked `swapoff`/`swapon` per
+swapfile (only attempted if `MemAvailable` actually covers that file's
+used bytes plus a 1GB margin -- skips and logs rather than forcing a
+too-tight reclaim) plus a dangling-image/unused-build-cache Docker
+prune. Soft-fail throughout; a skipped or failed step never blocks the
+03:00 build. See `ops/precleanup.sh` and
+`ops/systemd/wraith-bus-precleanup.service`/`.timer`.
+
+The underlying DuckDB buffer creep is still unaddressed -- a nightly
+swap reclaim resets the symptom, not the cause. It'll climb again over
+days. Still open.
