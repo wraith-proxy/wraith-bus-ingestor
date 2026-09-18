@@ -1,6 +1,6 @@
 # ADR 0006: Optimise `bus_positions`' on-disk schema
 
-**Status:** Accepted -- executing
+**Status:** Executed 2026-09-18 -- `bus_positions_old` retained for burn-in
 **Date:** 2026-09-18
 **Related:** [docs/ROADMAP.md § 1.0.0](../ROADMAP.md), `ops/incident.py`, `dbt/models/staging/bods/_bods__sources.yml`
 
@@ -256,21 +256,34 @@ follow-up ticket.
 
 ## Consequences
 
-**Expected:** meaningful reduction of `bus_positions`' 44GB footprint --
-real number not yet measured (would require executing the migration to
-know, not estimated here to avoid presenting a guess as a finding).
+**Measured, not estimated:** `bus_positions` went from 44GB to
+**21.6GB** on disk (QuestDB's own `table_partitions().diskSize`
+accounting, not `du` -- ~51% reduction). All verification gates passed
+before cutover: exact row count match (260,954,698 both tables),
+`avg`/`min`/`max` on `lat`/`lon`/`bearing` within sub-metre `FLOAT`
+precision loss, all 7 `SYMBOL` columns' distinct-value counts matching
+their `VARCHAR` originals exactly, and a full `dbt run` + `dbt test`
+(884/884 pass, 0 errors) against data extracted from the new table
+before it went live.
+
+**Real, unplanned cost surfaced during execution:** the SSD does not
+have room for `questdb_data`'s full round trip while `bus_positions_old`
+is kept for its burn-in window -- old (44GB) + new (21.6GB) = 66GB
+against only 54G free on SSD at execution time. Not anticipated in the
+plan above, which assumed the round trip would just work once the
+backfill itself was proven to fit on SATA. `/mnt/archive` (752G free)
+comfortably holds both, so the data root is staying there through the
+burn-in window rather than forcing an early drop of `bus_positions_old`
+or a rushed second SSD-space-clearing pass -- a real, deliberate
+trade-off (slower ingest/queries for the platform during burn-in) not
+in the original plan, decided live rather than guessed at in advance.
 
 **Real cost:** a one-way schema change to the platform's core ingest
 table, plus a new code path in `ops/incident.py` (lazy per-day rewrite)
-that needs its own testing against a real archived day before it can be
-trusted mid-incident. Not a quick edit -- full plan above should be
-followed in order, verified at each step, same bar as every other
-migration this repo has done.
+that's implemented but not yet exercised against a real archived
+pre-cutover day -- first real use will be its first real test.
 
 **Revisit if:** `restore`/`replay` on old-generation days turns out to
 be needed often enough that the lazy per-day rewrite cost becomes a real
 recurring burden -- at that point an upfront archive rewrite (the
-rejected option 1) may be worth revisiting; or a `count_distinct` over
-the full table (not just one sampled day) surfaces materially different
-cardinality than projected here, in which case the `SYMBOL CAPACITY` sizing above
-needs revisiting before creating the table for real.
+rejected option 1) may be worth revisiting.
