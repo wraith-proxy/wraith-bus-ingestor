@@ -14,8 +14,18 @@ contactPoints:
     receivers:
       - uid: ntfy-webhook
         type: webhook
+        # Grafana's webhook body is a large JSON document, which ntfy would show
+        # verbatim on the phone. `tpl=yes` makes ntfy treat the body as JSON and
+        # render `m` as a Go template over it: one line per alert, "ALERT: " plus
+        # the rule's `summary` annotation (or its name if it has none), nothing
+        # else. Decoded, the template is:
+        #   {{range .alerts}}ALERT: {{or .annotations.summary .labels.alertname}}
+        #   {{end}}
+        # Resolved messages are switched off: they are not alerts, and the format
+        # above would render them as "ALERT: ..." too.
+        disableResolveMessage: true
         settings:
-          url: http://ntfy:80/$NTFY_TOPIC
+          url: http://ntfy:80/$NTFY_TOPIC?tpl=yes&m=%7B%7Brange%20.alerts%7D%7DALERT%3A%20%7B%7Bor%20.annotations.summary%20.labels.alertname%7D%7D%0A%7B%7Bend%7D%7D
           httpMethod: POST
 
 policies:

@@ -198,7 +198,10 @@ file can never look like a finished archive.
 Every run records itself in QuestDB (`archiver_runs`: `ts, status, archived,
 skipped, detail`; status `ok` / `attention` / `error`). Grafana can see QuestDB
 but not the archive drive, so that table is what the two archiver alert rules
-read, and they reach your phone through the same ntfy path as the others:
+read, and they reach your phone through the same ntfy path as the others (every rule
+notifies as one plain line, `ALERT: <the rule's summary>`: ntfy renders it from
+Grafana's JSON with an inline template set in `contactpoints.yaml`, and resolved
+messages are off):
 
 - **archiver has not run cleanly**: no `ok` row in 36h. The dead-man switch:
   container down, or every run failing. This is the alert that would have caught
