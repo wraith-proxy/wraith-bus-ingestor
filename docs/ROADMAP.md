@@ -393,12 +393,14 @@ Cause not isolated. TJP-19090 removes one contributor (12 days / 81.9M rows
 were being read instead of 8 because `extract.py` never pruned old parquet),
 but that is a hypothesis until a real `build.sh` passes at 4GB.
 
-**The archiver stops at the first failure and stays stopped.** After a
-restored day collides with its own archive copy it logs "needs a human" and
-archives nothing further until cleared (nothing was archived 2026-09-16 to
-2026-09-19). See the GOTCHA in `docs/operations.md`. A harmless duplicate
-should probably be treated as already-archived rather than a hard stop; not
-changed.
+**The archiver jam on an already-archived day is fixed (TJP-19090).** A
+restored day colliding with its own archive copy used to stop the whole run
+and block everything behind it (nothing archived 2026-09-16 to 2026-09-19).
+It now skips, freeing the local copy only when the sizes match. Still open
+by design: any other failure (post-copy size mismatch, failed DETACH,
+missing sentinel) stops the run, and a WARNING-and-skip leaves a
+`<day>.detached` on the SSD that only a human removes. See the GOTCHA in
+`docs/operations.md`.
 
 Observed after a container restart cleared a memory-pressure symptom on
 the host. System memory barely moved (4,793M -> 4,751M available)

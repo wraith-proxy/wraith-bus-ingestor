@@ -131,11 +131,25 @@ def copy_and_finalize(name):
         return False
 
     dest = os.path.join(ARCHIVE_ROOT, TABLE, name)
-    if os.path.exists(dest):
-        log(f'ERROR: archive destination {dest} already exists -- stopping, needs a human')
-        return False
-
     src_bytes = dir_size(src)
+    if os.path.exists(dest):
+        # Already archived -- typically a day `ops/incident.py restore` brought
+        # back and this run is detaching again. Never copy over it, and never
+        # stop the run: this used to log "needs a human" and return False,
+        # which jammed every later partition behind it (nothing archived
+        # 2026-09-16 to 2026-09-19). Only free the local copy if the archive is
+        # provably the same size; a crashed earlier copy leaves a partial
+        # archive, and the local copy would then be the only complete one.
+        dest_bytes = dir_size(dest)
+        if dest_bytes == src_bytes:
+            shutil.rmtree(src)
+            log(f'{name}: already archived and identical ({src_bytes} bytes), '
+                'freed the local copy')
+        else:
+            log(f'WARNING: {name}: already archived but sizes differ ({src_bytes} local '
+                f'vs {dest_bytes} archived) -- skipping, left {src} in place to check by hand')
+        return True
+
     log(f'copying {src} ({src_bytes} bytes) -> {dest}')
     shutil.copytree(src, dest)
     dest_bytes = dir_size(dest)

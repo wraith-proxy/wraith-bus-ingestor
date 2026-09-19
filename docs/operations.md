@@ -188,21 +188,27 @@ dir, found []`), and `ops/incident.py` had the same pattern. Both now ask
 QuestDB: `SELECT directoryName FROM tables() WHERE table_name = 'bus_positions'`.
 Never hardcode or glob a table's directory.
 
-### GOTCHA: a restored day can jam the archiver, and it stays jammed
+### GOTCHA: a restored day comes back through the archiver
 
 `ops/incident.py restore` leaves the day attached in the live table. Once it
-is older than `RETENTION_DAYS` the archiver detaches it, finds
+is older than `RETENTION_DAYS` the archiver detaches it again and finds
 `${ARCHIVE_PATH}/bus_positions/<day>` already exists (that is where it came
-from), logs `archive destination ... already exists -- stopping, needs a
-human`, and stops the whole run. Every later run resumes that same orphan
-and stops again, so **nothing else is archived until it is cleared**. This
-happened after the 2026-07-03 restore proof: nothing archived from
-2026-09-16 to 2026-09-19 and Sep 7-10 sat on the SSD. It is not fixed in
-code. After finishing with a restored day, drop it from the live table once
-you have confirmed the archive copy exists (`ALTER TABLE bus_positions DROP
-PARTITION LIST '<day>'`; untested here). If a `<day>.detached` orphan is
-already there, compare its size with the archive copy before removing
-either.
+from). Until 2026-09-19 that logged `archive destination ... already exists --
+stopping, needs a human` and stopped the whole run, and every later run
+resumed the same orphan and stopped again, so **nothing else was archived**:
+nothing from 2026-09-16 to 2026-09-19, with Sep 7-10 left on the SSD.
+
+The archiver now never copies over an existing archive and never stops for
+it. If the archive is exactly the same size it frees the local copy (the same
+size-verified proof the normal path uses). If the sizes differ it logs a
+`WARNING`, skips, and **leaves the local `<day>.detached` in place**: a
+crashed earlier copy leaves a partial archive, and the local copy would then
+be the only complete one. Expect that WARNING for a restored old-layout day
+(its live copy was rewritten to the new layout, so it differs in size from the
+old-layout archive); once you have checked the archive, the leftover
+`<day>.detached` can be deleted by hand. Other failures (size mismatch after a
+fresh copy, a failed DETACH, a missing `.this-is-vault2` sentinel) still stop
+the run on purpose.
 
 ## Recovering a lost day: `ops/incident.py`
 
