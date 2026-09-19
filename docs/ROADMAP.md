@@ -386,8 +386,10 @@ partition only when it matches row for row. `ops/incident.py restore` loads a
 file back (fingerprint-checked on 2026-09-11) and the archive can be queried in
 place with DuckDB. Each run records itself in `archiver_runs`, and two Grafana
 rules (no clean run in 36h; latest run needs attention) reach the phone via
-ntfy. Delivery proven end to end on 2026-09-19: a hand-inserted `error` run took
-the rule pending, then firing, and the alert reached the owner's phone.
+ntfy. Delivery proven end to end on 2026-09-19, both firing and resolved: a
+hand-inserted `error` run took the rule pending, then firing (title = rule name,
+body `ALERT: <summary>`), and clearing it delivered `RESOLVED` about five minutes
+later (Grafana's group interval).
 
 **Remaining:**
 - The 68 raw partition directories were deleted on 2026-09-19 at the owner's

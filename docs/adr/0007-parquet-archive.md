@@ -69,10 +69,14 @@ verified)" and dropped the live copy.
 
 Alert delivery: a hand-inserted `error` row in `archiver_runs` took the
 "archiver needs attention" rule to pending at 07:35 and firing at 07:40 (five
-minute evaluation, five minute `for:`); ntfy counted one message published to one
-subscriber, and the alert arrived on the owner's phone. The rule cleared at the
-next evaluation once an `ok` row was written. Not confirmed: that a separate
-"resolved" message reached the phone.
+minute evaluation, five minute `for:`), and the alert reached the owner's phone.
+The first version arrived as Grafana's raw JSON with the topic name as its title,
+so the contact point now renders plain text through ntfy templating: the rule
+name as the title, `ALERT: <summary>` while firing, `RESOLVED` once it clears.
+Both halves were delivered end to end through the real path (ntfy stored
+`title='archiver needs attention'`, body `ALERT: ...` then `RESOLVED`). The
+resolved message lands about five minutes after the rule clears, which is
+Grafana's notification-group interval, not a fault.
 
 ## The 63 numeric-only days
 
