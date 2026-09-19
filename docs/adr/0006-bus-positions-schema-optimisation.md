@@ -1,6 +1,6 @@
 # ADR 0006: Optimise `bus_positions`' on-disk schema
 
-**Status:** Executed 2026-09-18 -- `bus_positions_old` retained for burn-in
+**Status:** Executed 2026-09-18; `bus_positions_old` dropped early on 2026-09-19 (burn-in waived) -- see Correction below
 **Date:** 2026-09-18
 **Related:** [docs/ROADMAP.md § 1.0.0](../ROADMAP.md), `ops/incident.py`, `dbt/models/staging/bods/_bods__sources.yml`
 
@@ -266,17 +266,18 @@ their `VARCHAR` originals exactly, and a full `dbt run` + `dbt test`
 (884/884 pass, 0 errors) against data extracted from the new table
 before it went live.
 
-**Real, unplanned cost surfaced during execution:** the SSD does not
-have room for `questdb_data`'s full round trip while `bus_positions_old`
-is kept for its burn-in window -- old (44GB) + new (21.6GB) = 66GB
-against only 54G free on SSD at execution time. Not anticipated in the
-plan above, which assumed the round trip would just work once the
-backfill itself was proven to fit on SATA. `/mnt/archive` (752G free)
-comfortably holds both, so the data root is staying there through the
-burn-in window rather than forcing an early drop of `bus_positions_old`
-or a rushed second SSD-space-clearing pass -- a real, deliberate
-trade-off (slower ingest/queries for the platform during burn-in) not
-in the original plan, decided live rather than guessed at in advance.
+**Real, unplanned cost surfaced during execution, and how it ended:**
+the SSD did not have room for `questdb_data`'s full round trip while
+`bus_positions_old` was kept for its burn-in window -- old (44GB) + new
+(21.6GB) = 66GB against only 54G free on SSD at execution time. That was
+not anticipated in the plan above, which assumed the round trip would just
+work once the backfill was proven to fit on SATA. The data root sat on
+`/mnt/archive` briefly, then on 2026-09-19 the owner chose to **drop
+`bus_positions_old` immediately and move back to the SSD** rather than run
+the week-long burn-in. That deliberately gave up the safety margin the plan
+built in: there is no old-schema hot table to fall back to any more. The
+SSD copy was verified (22G, 734 files, uid 10001 ownership intact) and the
+platform came back healthy with the ingestor writing the new schema.
 
 **Real cost:** a one-way schema change to the platform's core ingest
 table, plus a new code path in `ops/incident.py` (lazy per-day rewrite)
@@ -287,3 +288,35 @@ pre-cutover day -- first real use will be its first real test.
 be needed often enough that the lazy per-day rewrite cost becomes a real
 recurring burden -- at that point an upfront archive rewrite (the
 rejected option 1) may be worth revisiting.
+
+## Correction (2026-09-19)
+
+Two things in this ADR were wrong or incomplete, found the day after.
+
+**`restore()` cannot decide "old layout" from the day's date.** The design
+above keys the lazy rewrite on `day < schemaCutoverDate`. But every day that
+was in the live table on 2026-09-18 was migrated in place, so a day such as
+2026-09-08 that is archived *after* the cutover carries the new layout
+despite predating it, and would have been sent down the legacy path and
+failed to attach. `ops/incident.py` now tests the partition's own files
+instead: an archived day still containing `vehicle_id.*` column files (the
+column dropped in this migration; versioned, e.g. `vehicle_id.d.8`) has the
+old layout. `schemaCutoverDate` stays in the contract as documentation only
+and is no longer read by any code. The legacy path itself remains
+unexercised against a real old-layout day; the detector was checked against
+real archived days (2026-08-23 and 2026-09-06 both correctly flagged legacy).
+
+**The migration broke the archiver and `ops/incident.py`.** `RENAME TABLE`
+kept the physical directory `bus_positions_v2~17`, so both globbed
+`bus_positions~*` and found nothing. The archiver failed at 06:00 on
+2026-09-19 (`found []`); `restore()` would have failed the same way. Both
+now ask QuestDB for the directory (`tables().directoryName`). This was a
+direct consequence of the rename cutover and should have been caught by
+grepping for the directory pattern before cutover -- it was not.
+
+One loose end from the drop of `bus_positions_old`: it carried an orphaned
+`2026-07-03.detached` directory (the archiver was jammed on it since
+2026-09-16, see `docs/operations.md`). `DROP TABLE` removed it. The
+`2026-07-03` archive copy on SATA is present with all column files (447M)
+and is what that partition was restored from, but it was not re-verified
+byte-for-byte against the dropped orphan.

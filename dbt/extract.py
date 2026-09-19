@@ -5,8 +5,10 @@ QuestDB holds ~1e9 rows; dbt only needs enough to fit per-line models, so we
 downsample to one row per bus per SAMPLE_MINS and keep the last EXTRACT_DAYS
 days. One parquet file per day, so a re-run only redoes the days it is asked for.
 """
+import glob
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -121,6 +123,21 @@ def fetch(con, day, hour_start, hour_end, select, columns):
     return dest, n
 
 
+def prune_outside_window(first_day):
+    """The SSD keeps only the extract window; SATA is the archive. dbt's source
+    glob (bus_positions_*.parquet) reads every file in OUT, and nothing else
+    ever removed a day that had slid out of the window -- 2026-09-19's
+    nightly was reading 12 days (81.9M rows) against a 4GB memory_limit tuned
+    for 8. Only files whose date is before the window are touched."""
+    removed = []
+    for path in glob.glob(os.path.join(OUT, "bus_positions_*.parquet")):
+        m = re.match(r"bus_positions_(\d{4}-\d{2}-\d{2})", os.path.basename(path))
+        if m and date.fromisoformat(m.group(1)) < first_day:
+            os.remove(path)
+            removed.append(os.path.basename(path))
+    return sorted(removed)
+
+
 def main():
     import duckdb
 
@@ -157,6 +174,12 @@ def main():
               + ", ".join(f"{d} ({d:%a})" for d in gaps))
     print(f"total {total:,} rows in {OUT}")
     assert total > 0, "extract produced no rows -- is QuestDB reachable?"
+    # Only after a successful extract: a failed or empty run must never be the
+    # thing that deletes the last good data.
+    pruned = prune_outside_window(date.today() - timedelta(days=DAYS))
+    if pruned:
+        print(f"pruned {len(pruned)} file(s) outside the {DAYS}-day window "
+              f"(SATA is the archive, not the SSD): {pruned[0]} .. {pruned[-1]}")
 
 
 if __name__ == "__main__":

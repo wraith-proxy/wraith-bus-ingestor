@@ -94,14 +94,21 @@ def dir_size(path):
 
 
 def table_dir():
-    """bus_positions~N -- the suffix is assigned by QuestDB and is not
-    something to hardcode; discover it instead of guessing it never
-    changes. Directories only: a bare glob also matches QuestDB's
-    bus_positions~N.lock file."""
-    matches = [m for m in glob.glob(os.path.join(QDB_DB_ROOT, TABLE + '~*')) if os.path.isdir(m)]
-    if len(matches) != 1:
-        raise RuntimeError(f'expected exactly one {TABLE}~* dir, found {matches!r}')
-    return matches[0]
+    """Ask QuestDB where the table lives instead of globbing for a name.
+    RENAME TABLE changes the SQL name but keeps the physical directory, so
+    after docs/adr/0006's cutover the live bus_positions is bus_positions_v2~17
+    on disk and a `bus_positions~*` glob finds nothing -- this run failed with
+    exactly that on 2026-09-19. directoryName is authoritative whatever the
+    table was originally called or renamed to."""
+    rows = qdb_exec(
+        f"SELECT directoryName FROM tables() WHERE table_name = '{TABLE}'"
+    ).get('dataset', [])
+    if len(rows) != 1:
+        raise RuntimeError(f'expected exactly one table named {TABLE}, found {rows!r}')
+    path = os.path.join(QDB_DB_ROOT, rows[0][0])
+    if not os.path.isdir(path):
+        raise RuntimeError(f'{TABLE} reports directory {rows[0][0]} but {path} is not a directory')
+    return path
 
 
 def orphaned_detached_names():

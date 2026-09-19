@@ -296,10 +296,11 @@ customProperties:
     description: >-
       The physical schema changed on this date (docs/adr/0006): vehicle_id
       dropped, lat/lon/bearing DOUBLE -> FLOAT, seven VARCHAR columns ->
-      SYMBOL. ops/incident.py's restore() reads this value as the single
-      source of truth for telling old-generation archived days from new
-      ones -- a day older than this needs the legacy-schema rewrite path,
-      a day on or after it attaches straight into live bus_positions.
+      SYMBOL. Informational only -- no code reads it. ops/incident.py's
+      restore() decides whether an archived day has the old layout from the
+      partition's own files (vehicle_id.* present), because a day migrated
+      in place on this date and archived afterwards has the new layout
+      despite being dated before it.
   - property: producer
     value: ingestor/ingest.py
   - property: upstreamSource

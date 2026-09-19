@@ -27,23 +27,26 @@ Depends on bus_positions' DEDUP UPSERT KEYS(bus_id, timestamp) (enabled
 was only partially lost (not fully missing) double-counts the rows that
 were already there.
 
-restore() ALSO handles days archived before the 2026-09-18 schema
-optimisation (docs/adr/0006): bus_positions changed column types
-(vehicle_id dropped; journey_ref/published_line/origin_ref/origin_name/
-dest_ref/dest_name/block_ref VARCHAR -> SYMBOL; lat/lon/bearing DOUBLE ->
-FLOAT) and QuestDB has no live cast-on-attach -- ATTACH PARTITION requires
-the on-disk file to already match the live table's column definitions.
-For a day older than the cutover date (recorded in
-contracts/bus-positions.odcs.yaml, the single source of truth so this
-never drifts from what the contract documents), this module attaches the
-archived day into a small persistent legacy-schema shadow table instead
-(same physical layout the day was originally archived under), then
-INSERTs it into live bus_positions through the exact same CAST()
+restore() ALSO handles days archived under the pre-2026-09-18 schema
+(docs/adr/0006): bus_positions changed column types (vehicle_id dropped;
+journey_ref/published_line/origin_ref/origin_name/dest_ref/dest_name/
+block_ref VARCHAR -> SYMBOL; lat/lon/bearing DOUBLE -> FLOAT) and QuestDB
+has no live cast-on-attach -- ATTACH PARTITION requires the on-disk file to
+already match the live table's column definitions. An archived day whose
+files still carry the dropped vehicle_id column is attached into a small
+persistent legacy-schema shadow table instead (the layout it was archived
+under), then INSERTed into live bus_positions through the same CAST()
 expressions the bulk migration used. Rewritten lazily, one day at a time,
 only for a day someone actually restores -- not an upfront rewrite of the
 whole archive.
+
+The test is the partition's own files, NOT the day's date: every day that
+was in the live table on 2026-09-18 was migrated in place, so a day like
+2026-09-08 archived AFTER the cutover has the new layout despite predating
+it. Only days archived before the cutover carry the old one.
 """
 import argparse
+import glob
 import json
 import os
 import subprocess
@@ -53,8 +56,6 @@ import urllib.parse
 import urllib.request
 from datetime import date, timedelta
 
-import yaml
-
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DBT_DIR = os.path.join(REPO_ROOT, "dbt")
 sys.path.insert(0, DBT_DIR)
@@ -63,7 +64,6 @@ QUESTDB = os.environ.get("QUESTDB_HTTP", "http://localhost:9001")
 QUESTDB_CONTAINER = os.environ.get("QUESTDB_CONTAINER", "questdb")
 TABLE = "bus_positions"
 LEGACY_TABLE = "bus_positions_legacy_schema"
-CONTRACT_PATH = os.path.join(REPO_ROOT, "contracts", "bus-positions.odcs.yaml")
 ARCHIVE_ROOT = os.environ.get("ARCHIVE_PATH", "/mnt/archive/wraith-bus-ingestor-archive")
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "8"))
 
@@ -115,29 +115,24 @@ def is_attached(day, table=TABLE):
 
 
 def table_dir_name(table=TABLE):
-    """bus_positions~N -- discover it inside the container the same way
-    archiver/archive.py does on the host side; the suffix is QuestDB's own
-    and not something to hardcode."""
-    out = docker(
-        "exec", QUESTDB_CONTAINER, "sh", "-c",
-        f"find /var/lib/questdb/db -maxdepth 1 -name '{table}~*' -type d -printf '%f'",
-    ).stdout.strip()
-    if not out:
-        raise RuntimeError(f"could not find {table}~* dir inside {QUESTDB_CONTAINER}")
-    return out
+    """Ask QuestDB where the table lives instead of globbing for a name.
+    RENAME TABLE keeps the physical directory, so after docs/adr/0006 the live
+    bus_positions is bus_positions_v2~17 on disk and a `bus_positions~*` find
+    matches nothing. directoryName is authoritative."""
+    rows = qdb_exec(
+        f"SELECT directoryName FROM tables() WHERE table_name = '{table}'"
+    ).get("dataset", [])
+    if len(rows) != 1:
+        raise RuntimeError(f"expected exactly one table named {table}, found {rows!r}")
+    return rows[0][0]
 
 
-def schema_cutover_date():
-    """The date bus_positions moved to its current physical schema (see
-    docs/adr/0006). Read from the data contract's own customProperties so
-    there is one source of truth for this, not a second hardcoded date
-    that could drift out of sync with what the contract documents."""
-    with open(CONTRACT_PATH) as f:
-        contract = yaml.safe_load(f)
-    for prop in contract.get("customProperties", []):
-        if prop.get("property") == "schemaCutoverDate":
-            return date.fromisoformat(prop["value"])
-    raise RuntimeError(f"{CONTRACT_PATH}: no schemaCutoverDate customProperty found")
+def is_legacy_partition(src):
+    """True if an archived partition still has the pre-2026-09-18 layout.
+    vehicle_id was dropped from bus_positions in that migration, so its column
+    files (vehicle_id.d, versioned e.g. vehicle_id.d.8) exist only in
+    partitions archived before it -- a physical fact, unlike the day's date."""
+    return bool(glob.glob(os.path.join(src, "vehicle_id.*")))
 
 
 def attach_partition(table, day, src):
@@ -160,9 +155,9 @@ def attach_partition(table, day, src):
 
 def restore(day):
     """Bring a day back from cold storage into live bus_positions.
-    No-op if already present. Days older than the schema cutover are
-    rewritten through the legacy shadow table on the way in (see module
-    docstring and docs/adr/0006) -- transparent to the caller either way."""
+    No-op if already present. A day archived under the pre-2026-09-18
+    layout is rewritten through the legacy shadow table on the way in (see
+    module docstring and docs/adr/0006) -- transparent to the caller either way."""
     if is_attached(day):
         print(f"{day}: already attached, nothing to do")
         return
@@ -171,8 +166,8 @@ def restore(day):
     if not os.path.isdir(src):
         raise RuntimeError(f"no archived partition for {day} at {src}")
 
-    if date.fromisoformat(day) < schema_cutover_date():
-        print(f"{day}: predates schema cutover ({schema_cutover_date()}) -- rewriting via {LEGACY_TABLE}")
+    if is_legacy_partition(src):
+        print(f"{day}: archived under the pre-2026-09-18 layout -- rewriting via {LEGACY_TABLE}")
         qdb_exec(LEGACY_SCHEMA_DDL)
         attach_partition(LEGACY_TABLE, day, src)
         for _ in range(20):
@@ -180,7 +175,9 @@ def restore(day):
                 break
             time.sleep(0.5)
         else:
-            raise RuntimeError(f"{day}: ATTACH into {LEGACY_TABLE} accepted but not visible after 10s")
+            raise RuntimeError(
+                f"{day}: ATTACH into {LEGACY_TABLE} accepted but not visible after 10s"
+            )
 
         # Same CAST() expressions as the one-shot bulk migration (docs/adr/0006)
         # -- defined once there, mirrored here, not re-derived from scratch.

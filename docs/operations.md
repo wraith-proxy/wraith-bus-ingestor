@@ -123,11 +123,38 @@ pages a phone (see below), instead of being a non-zero exit sitting in
 results and freshness warnings — which never failed the build, and so
 previously surfaced nowhere at all — are counted in the same rows.
 
+### GOTCHA: every number sized before 2026-09-12 was sized for the North West, not Great Britain
+
+On 2026-09-12 the ingest bounding box went from the **north-west of England
+only** to **all of mainland Great Britain** (`bus-positions.odcs.yaml`
+`boundingBox`; a same-instant measurement showed 4.72x the vehicles). Rows
+per day went from ~3M (Sep 7-11) to ~13M at the Sep 15-16 peak. Anything
+tuned or measured before that date was measured against the wrong volume:
+`memory_limit`, `MemoryMax` (ADR-0001/0002/0005), QuestDB's 8g cap, the
+44GB `bus_positions` before ADR-0006, the ~65-minute nightly, the parquet
+window in `dbt/data/`. Treat every pre-09-12 number as suspect and retune
+against the current volume. The 8-day window also took a week to fill with
+wide-box days, so a limit that held on Sep 15 could fail on Sep 19 with
+nothing else changed. Whether to keep the whole-GB box is an open decision
+(ROADMAP, "Known issues").
+
+### GOTCHA: dbt reads every parquet file in `dbt/data/`, so the SSD must hold exactly the window
+
+`stg_bods__vehicle_pings` globs `data/bus_positions_*.parquet` with no date
+filter. `extract.py` re-extracts the last `EXTRACT_DAYS` (8) days, but until
+2026-09-19 nothing ever deleted a day that had slid out of the window, so
+the 03:00 build that night read 12 days (81.9M rows) instead of 8. The SSD
+holds the 8-day window and nothing older; **SATA is the archive** ("glacier"),
+not a second copy of the working set. `extract.py` now prunes parquet older
+than the window, but only after a successful extract, so a failed run can
+never be the thing that deletes the last good data. The parquet is derived
+data and is regenerable from QuestDB, so it is pruned rather than archived.
+
 ## Archiving, not deleting
 
 `archiver/archive.py` runs continuously in its own container, checking
 once every 24 hours (`POLL_S`) for `bus_positions` partitions older than
-`RETENTION_DAYS` (22, set in `.env`). QuestDB's native `SET TTL` was
+`RETENTION_DAYS` (8, set in `.env`). QuestDB's native `SET TTL` was
 considered and rejected because TTL **drops** partitions outright; this
 box instead moves them to a separate cold drive intact.
 
@@ -150,6 +177,32 @@ archiver hasn't finished migrating. Each run checks the filesystem
 directly for orphaned `.detached` directories first, before looking at
 what's newly eligible, so this resumes cleanly rather than being silently
 skipped.
+
+### GOTCHA: `RENAME TABLE` keeps the physical directory name
+
+QuestDB renames the SQL name only. After ADR-0006's cutover the live
+`bus_positions` is the directory `bus_positions_v2~17`, so any
+`bus_positions~*` glob or `find` matches nothing. The archiver failed
+on exactly that at 06:00 on 2026-09-19 (`expected exactly one bus_positions~*
+dir, found []`), and `ops/incident.py` had the same pattern. Both now ask
+QuestDB: `SELECT directoryName FROM tables() WHERE table_name = 'bus_positions'`.
+Never hardcode or glob a table's directory.
+
+### GOTCHA: a restored day can jam the archiver, and it stays jammed
+
+`ops/incident.py restore` leaves the day attached in the live table. Once it
+is older than `RETENTION_DAYS` the archiver detaches it, finds
+`${ARCHIVE_PATH}/bus_positions/<day>` already exists (that is where it came
+from), logs `archive destination ... already exists -- stopping, needs a
+human`, and stops the whole run. Every later run resumes that same orphan
+and stops again, so **nothing else is archived until it is cleared**. This
+happened after the 2026-07-03 restore proof: nothing archived from
+2026-09-16 to 2026-09-19 and Sep 7-10 sat on the SSD. It is not fixed in
+code. After finishing with a restored day, drop it from the live table once
+you have confirmed the archive copy exists (`ALTER TABLE bus_positions DROP
+PARTITION LIST '<day>'`; untested here). If a `<day>.detached` orphan is
+already there, compare its size with the archive copy before removing
+either.
 
 ## Recovering a lost day: `ops/incident.py`
 

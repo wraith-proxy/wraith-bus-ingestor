@@ -367,15 +367,38 @@ live. `ops/incident.py restore()` recoded with a lazy per-day rewrite
 path so archived days older than the schema cutover stay restorable.
 
 **Remaining:**
-- `questdb_data` is currently on `/mnt/archive` (SATA), not the SSD --
-  a real, unplanned space constraint surfaced mid-migration (old+new
-  tables together don't fit the SSD's free space during
-  `bus_positions_old`'s burn-in week). Move back to SSD once
-  `bus_positions_old` is dropped post-burn-in.
-- `ops/incident.py`'s lazy-rewrite path is implemented but not yet
-  exercised against a real archived pre-cutover day.
+- `ops/incident.py`'s lazy-rewrite path (an old-layout archived day) is
+  implemented but not yet exercised against a real one. The detector that
+  routes to it was checked against real archived days; the rewrite itself
+  was not.
+- `bus_positions_old` was dropped early (2026-09-19) instead of after the
+  planned week-long burn-in -- there is no old-schema hot table to fall back
+  to. See the ADR's Correction section.
 
 ## Known issues -- raised, not yet actioned
+
+**Open decision: the ingest bounding box.** It was widened from the
+north-west of England to all of mainland GB on 2026-09-12 (4.72x the
+vehicles; rows/day ~3M -> ~13M). Every capacity number in this repo that
+predates that (`memory_limit`, `MemoryMax`, QuestDB disk, nightly runtime)
+was sized for the old volume -- see the GOTCHA in `docs/operations.md`.
+Deliberately left undecided (2026-09-19): keep GB-wide and retune upwards,
+or narrow back to the area actually watched. Narrowing would shrink disk,
+memory and runtime at the source.
+
+**The 2026-09-19 03:00 nightly failed and nothing published.** DuckDB's own
+4GB `memory_limit` was exhausted in `int_pings_matched_to_stops` (not the
+cgroup cap, which held), so the API is serving marts from 2026-09-18 06:46.
+Cause not isolated. TJP-19090 removes one contributor (12 days / 81.9M rows
+were being read instead of 8 because `extract.py` never pruned old parquet),
+but that is a hypothesis until a real `build.sh` passes at 4GB.
+
+**The archiver stops at the first failure and stays stopped.** After a
+restored day collides with its own archive copy it logs "needs a human" and
+archives nothing further until cleared (nothing was archived 2026-09-16 to
+2026-09-19). See the GOTCHA in `docs/operations.md`. A harmless duplicate
+should probably be treated as already-archived rather than a hard stop; not
+changed.
 
 Observed after a container restart cleared a memory-pressure symptom on
 the host. System memory barely moved (4,793M -> 4,751M available)
