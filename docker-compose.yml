@@ -46,8 +46,15 @@ services:
       dockerfile: backend/Dockerfile
     container_name: ${API_CONTAINER}
     restart: unless-stopped
-    mem_limit: 1.5g
-    memswap_limit: 1.5g
+    # 6g, was 1.5g. The API loads every mart row into Python dicts (line_stops
+    # alone is ~2.6M rows) and the whole-GB bounding box (2026-09-12) grew the
+    # marts far past what 1.5g was sized for: on 2026-09-19 the first request
+    # after a publish took it from 93MB to the limit in ~6s and it was
+    # OOM-killed in a restart loop, leaving predictions dead. Measured: 2.46GiB
+    # steady after a fresh load, 4.29GiB peak on an in-place reload (old and new
+    # copies coexist), settling at 3.44GiB. See docs/operations.md.
+    mem_limit: 6g
+    memswap_limit: 6g
     environment:
       - QUESTDB_URL=${QUESTDB_URL}
       - OSRM_URL=${OSRM_URL}
@@ -102,8 +109,10 @@ services:
     environment:
       - QUESTDB_URL=${QUESTDB_URL}
       - RETENTION_DAYS=${RETENTION_DAYS}
+    # No QuestDB data mount any more: days are exported over QuestDB's own HTTP
+    # API to Parquet and dropped via SQL, so this container never touches its
+    # partition files (docs/adr/0007).
     volumes:
-      - ${QUESTDB_DATA_PATH}/db:/questdb_data/db
       - ${ARCHIVE_PATH}:/archive
     networks:
       - ghost-net

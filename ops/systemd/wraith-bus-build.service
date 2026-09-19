@@ -29,6 +29,18 @@ WorkingDirectory=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingesto
 # at build time -- see MemoryMax's own history below.
 ExecStartPre=-/usr/bin/docker stop ghost-osrm ghost-backend ghost-tiles ghost-grafana
 ExecStopPost=/usr/bin/docker start ghost-osrm ghost-backend ghost-tiles ghost-grafana
+#
+# ollama and immich (~4GB, and only the owner uses them) are stopped for the
+# build window too, then restarted afterwards -- 2026-09-19. Via
+# ops/build_window.sh rather than a plain `docker stop`/`docker start` pair, so
+# that only containers this run actually stopped come back: a container the
+# owner had deliberately left off stays off. ExecStopPost runs when the build
+# fails too. The state file lives in RuntimeDirectory (removed when the unit
+# ends). Dependencies are stopped first and started last (postgres/redis before
+# immich_server). Both lines are `-`-prefixed: this must never fail a build.
+RuntimeDirectory=wraith-bus-build
+ExecStartPre=-/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/ops/build_window.sh stop ollama immich_server immich_machine_learning immich_redis immich_postgres
+ExecStopPost=-/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/ops/build_window.sh start
 # `docker start` on an already-created (stopped, not removed) container
 # still reassigns its IP on ghost-net -- confirmed directly 2026-09-18,
 # not assumed from the recreate/down-up case docs/operations.md and
@@ -99,5 +111,17 @@ StandardError=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ing
 # osrm/backend/tiles/grafana already stopped for the window. Re-tighten
 # further only against a real measured peak on THIS (reverted) stack, not
 # by assumption.
-MemoryMax=9000M
+#
+# Raised to 13000M 2026-09-19 at the owner's instruction, on measured evidence
+# on this (reverted) stack, via ops/verify_build.sh with ollama/immich stopped:
+# the full unit run PASSED at 9000M but with almost no margin -- cgroup peak
+# 8.7G (systemd's ceiling for this cap), largest process 7.32GB -- and an
+# uncapped SKIP_EXTRACT=1 run peaked at 8.69GB RSS. A cap the run lands on
+# exactly is a coin flip on the next data day, so this leaves ~4GB of headroom.
+# Understand the trade: 13000M is 82% of a 15.4GB host and MemorySwapMax=0, so
+# if the build ever really uses it, the host's other tenants (QuestDB up to its
+# 8g cap, ingestor, and ollama/immich if running -- this unit does NOT stop
+# those) are what get squeezed or OOM-killed instead. It is a ceiling for a
+# run that needs ~9GB, not a reservation.
+MemoryMax=13000M
 MemorySwapMax=0

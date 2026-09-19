@@ -38,3 +38,6 @@ requirements.txt
 site/
 dist/
 .venv/
+
+# verify_build.sh logs (one directory per run)
+ops/logs/

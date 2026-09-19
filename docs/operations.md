@@ -123,55 +123,248 @@ pages a phone (see below), instead of being a non-zero exit sitting in
 results and freshness warnings — which never failed the build, and so
 previously surfaced nowhere at all — are counted in the same rows.
 
+### Proving a build end to end: `ops/verify_build.sh`
+
+```bash
+sudo ops/verify_build.sh --detach   # recommended: prompt returns at once, survives the terminal closing
+sudo ops/verify_build.sh            # foreground: blocks ~2.5-3 hours; a dropped SSH session aborts it
+ops/verify_build.sh --check         # preflight only (no sudo, stops nothing)
+ops/verify_build.sh --dry-run       # the whole flow with fake builds, in seconds
+tail -f ops/logs/verify-*/verify.log   # watch a detached run (the newest directory)
+```
+
+A clean isolated `dbt run` proved little on 2026-09-18/19: the failures only
+showed under the real nightly conditions. This runs **Run 1**, `SKIP_EXTRACT=1
+./build.sh` as your user under `time -v` (peak RSS of the biggest process, the
+DuckDB one that hits `memory_limit`), then **Run 2**, `systemctl start
+wraith-bus-build.service` (the production path: extract, build, test, publish,
+under the unit's `MemoryMax`, sampling peak RSS from its cgroup). It stops the
+containers the unit stops plus ollama/immich (all restored by a trap however it
+exits), reclaims swap first, and afterwards checks the marts were republished,
+the build was recorded as a success, the public site answers, and the API's
+`marts_state` is `ok`. Everything goes to one log, `ops/logs/verify-<stamp>/
+verify.log`, which is also tailed live in the terminal. The public site is dark
+for the duration (backend, tiles, grafana stopped). Exit status 0 means safe to
+push.
+
+Run 1 uses the same minimal environment systemd gives the unit (`env -i`, no
+`~/.local/bin` on PATH, not root's `HOME`), on purpose.
+
+### The build window stops what the build does not need, and restarts it
+
+`wraith-bus-build.service` stops `ghost-osrm`, `ghost-backend`, `ghost-tiles` and
+`ghost-grafana` before the build and starts them after (the public site is dark
+for the build's ~1h+), and, since 2026-09-19, **ollama and immich** too (~4GB,
+only the owner uses them). ollama/immich go through `ops/build_window.sh`, not a
+plain `docker stop`/`start` pair, so only containers that run actually stopped
+come back: one you had deliberately left off stays off. It records each
+container before stopping it, restarts them in reverse order (postgres/redis
+before `immich_server`), and refuses to stop anything if it cannot write its
+state file (`/run/wraith-bus-build/`, the unit's `RuntimeDirectory`), because
+without a record nothing could bring them back. The restart runs when the build
+fails too (`ExecStopPost`), and both lines are `-`-prefixed so this can never
+fail a build. `ops/verify_build.sh` does the same stopping itself for its
+manual Run 1. Changing the unit file needs `sudo cp` to `/etc/systemd/system/`
+and `daemon-reload`.
+
+### GOTCHA: the API holds every mart row in Python memory, and the marts outgrew its limit
+
+`backend/app.py` loads `eta_models`, `localities`, `line_localities` and
+`line_stops` (~2.6M rows) into Python dicts on the first request after a
+publish. Since the whole-GB bounding box (2026-09-12) that needs 2.46GiB steady
+after a fresh load and **4.29GiB peak on an in-place reload** (old and new
+copies coexist), settling at 3.44GiB. Its container limit was 1.5g, so on
+2026-09-19 the first request after a good publish took it from 93MB to the limit
+in ~6s, the kernel OOM-killed it, and Docker restarted it into the same
+death: `marts_state: ok` never came, the public `/api` returned nothing, and
+predictions stayed dead even though the build had succeeded. The limit is 6g
+now (`docker-compose.yml`). Symptoms to recognise: `journalctl -k | grep "Killed
+process"` naming a `python` in a `ghost-backend` docker scope, `docker inspect
+ghost-backend` with a climbing `RestartCount`, and the API log showing only
+repeated startup banners. Nothing alerts on this; an API-state alert is an open
+gap. Same root cause as the memory GOTCHA above: every capacity number sized
+before 2026-09-12 was sized for the North West.
+
+
+### GOTCHA: systemd's PATH does not include `~/.local/bin`
+
+`uv` lives there. On an interactive shell it is found; under
+`wraith-bus-build.service` it was not, so the contract gate (`uv run
+contracts/validate.py`) would have failed after an hour of build and before
+publishing. Nothing had ever run a systemd build that far. `build.sh` now
+resolves `uv` itself (PATH, then `$HOME/.local/bin`) and exits in seconds if it
+cannot find it.
+
+### GOTCHA: every number sized before 2026-09-12 was sized for the North West, not Great Britain
+
+On 2026-09-12 the ingest bounding box went from the **north-west of England
+only** to **all of mainland Great Britain** (`bus-positions.odcs.yaml`
+`boundingBox`; a same-instant measurement showed 4.72x the vehicles). Rows
+per day went from ~3M (Sep 7-11) to ~13M at the Sep 15-16 peak. Anything
+tuned or measured before that date was measured against the wrong volume:
+`memory_limit`, `MemoryMax` (ADR-0001/0002/0005), QuestDB's 8g cap, the
+44GB `bus_positions` before ADR-0006, the ~65-minute nightly, the parquet
+window in `dbt/data/`. Treat every pre-09-12 number as suspect and retune
+against the current volume. The 8-day window also took a week to fill with
+wide-box days, so a limit that held on Sep 15 could fail on Sep 19 with
+nothing else changed. Whether to keep the whole-GB box is an open decision
+(ROADMAP, "Known issues").
+
+### GOTCHA: dbt reads every parquet file in `dbt/data/`, so the SSD must hold exactly the window
+
+`stg_bods__vehicle_pings` globs `data/bus_positions_*.parquet` with no date
+filter. `extract.py` re-extracts the last `EXTRACT_DAYS` (8) days, but until
+2026-09-19 nothing ever deleted a day that had slid out of the window, so
+the 03:00 build that night read 12 days (81.9M rows) instead of 8. The SSD
+holds the 8-day window and nothing older; **SATA is the archive** ("glacier"),
+not a second copy of the working set. `extract.py` now prunes parquet older
+than the window, but only after a successful extract, so a failed run can
+never be the thing that deletes the last good data. The parquet is derived
+data and is regenerable from QuestDB, so it is pruned rather than archived.
+
 ## Archiving, not deleting
 
 `archiver/archive.py` runs continuously in its own container, checking
-once every 24 hours (`POLL_S`) for `bus_positions` partitions older than
-`RETENTION_DAYS` (22, set in `.env`). QuestDB's native `SET TTL` was
+once every 24 hours (`POLL_S`) for `bus_positions` days older than
+`RETENTION_DAYS` (8, set in `.env`). QuestDB's native `SET TTL` was
 considered and rejected because TTL **drops** partitions outright; this
-box instead moves them to a separate cold drive intact.
+box exports them to a separate cold drive first (ADR-0007).
 
-The mechanism: `ALTER TABLE bus_positions DETACH PARTITION LIST '<day>'`
-lifts a partition out of the live table without destroying it, then the
-detached directory is `copytree`'d to `${ARCHIVE_PATH}/bus_positions/<day>`
-and verified by byte size before the local copy is freed. A partition that
-fails the size check is left both detached-and-local and archived rather
-than deleted from either side — it costs disk space until the next run
-retries, which is a far better failure mode than losing a day of data.
+**The archive is Parquet.** For each eligible day the archiver:
+
+1. streams QuestDB's own Parquet export (`/exp?fmt=parquet`, zstd level 3) to
+   `${ARCHIVE_PATH}/bus_positions_parquet/<day>.parquet.part`;
+2. reads that file back with DuckDB and checks it against QuestDB: the row
+   count must equal `count()` for that day, and the first and last timestamps
+   must fall inside the day;
+3. only then renames it into place, hands it to the archive owner
+   (`ARCHIVE_OWNER`, default `1000:1000`), and `ALTER TABLE bus_positions DROP
+   PARTITION`s the live copy.
+
+A day is never dropped before its file has been read back and matches. If
+verification fails the file is discarded and the live copy stays. Measured on
+a 34.1M-row day: 3.0GB of QuestDB partition became 0.69GB of Parquet in 25s
+(the QuestDB default codec gave 1.22GB; zstd level 9 saved only 3.6% more for
+2.3x the time). QuestDB peaked at ~4GB of its 8GB doing it.
+
+Each file is self-describing: real strings, its own schema, no dependency on
+`bus_positions` continuing to exist. So the archive can be **queried in place**
+without restoring anything:
+
+```bash
+duckdb -c "SELECT line, count(*) FROM read_parquet(
+  '/mnt/archive/wraith-bus-ingestor-archive/bus_positions_parquet/*.parquet',
+  union_by_name = true) GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
+```
+
+`union_by_name` matters: the 63 numeric-only days (below) have `bus_id_key` /
+`line_key` instead of `bus_id` / `line`, and read as NULL for those columns.
 
 Before touching anything, the archiver checks for a `.this-is-vault2`
 sentinel file inside `ARCHIVE_PATH`. If it's missing, the run refuses to
 touch any partition rather than risk archiving onto the wrong disk if the
-real archive mount isn't actually mounted there.
+real archive mount isn't actually mounted there. An export interrupted
+mid-write leaves a `.part` file, which the next run deletes; a half-written
+file can never look like a finished archive.
 
-A crash between DETACH succeeding and the copy finishing leaves a
-`<day>.detached` directory that QuestDB no longer considers live but the
-archiver hasn't finished migrating. Each run checks the filesystem
-directly for orphaned `.detached` directories first, before looking at
-what's newly eligible, so this resumes cleanly rather than being silently
-skipped.
+Every run records itself in QuestDB (`archiver_runs`: `ts, status, archived,
+skipped, detail`; status `ok` / `attention` / `error`). Grafana can see QuestDB
+but not the archive drive, so that table is what the two archiver alert rules
+read, and they reach your phone through the same ntfy path as the others (every rule
+notifies in plain text: the rule's name as the title, `ALERT: <the rule's summary>`
+as the body while it fires, and `RESOLVED` when it clears. ntfy renders that from
+Grafana's JSON with inline templates set in `contactpoints.yaml`; without them the
+phone shows the raw JSON and the topic name, which is the credential, as the
+title):
+
+- **archiver has not run cleanly**: no `ok` row in 36h. The dead-man switch:
+  container down, or every run failing. This is the alert that would have caught
+  the 2026-09-16 to 09-19 jam, when nothing was archived and nobody was told.
+- **archiver needs attention**: the latest run was `attention` (a day was left
+  in place on purpose) or `error`. It clears when a later run is clean;
+  `docker restart ghost-archiver` runs one immediately.
+
+### The 63 numeric-only days
+
+The archive was raw QuestDB partition directories until ADR-0007. Those were
+converted and then **deleted on 2026-09-19** (46.7GB; a manifest is in
+`raw_partitions_deleted_2026-09-19.txt` on the archive drive). Parquet is the
+only archive now, 68 files:
+
+- 5 days (2026-09-07 to 09-11) were archived after the schema migration, so they
+  decoded fully and were converted losslessly (restored, then exported).
+- 63 days (2026-07-03 to 2026-09-06) had their `bus_id` / `line` symbol maps
+  destroyed (ADR-0006). `ops/salvage_legacy_archive.py` wrote what still exists:
+  `timestamp`, `lat`, `lon`, `bearing` and the raw `bus_id_key` / `line_key`
+  integers, with the file's key/value metadata (`wraith.layout =
+  numeric-salvage`) saying so. Padding rows were trimmed and every assumption
+  asserted first; an independent recount matched all 63 before the raw copy was
+  deleted. That script is kept as provenance and cannot be re-run: its source is
+  gone.
+
+### GOTCHA: `RENAME TABLE` keeps the physical directory name
+
+QuestDB renames the SQL name only. After ADR-0006's cutover the live
+`bus_positions` is the directory `bus_positions_v2~17`, so any
+`bus_positions~*` glob or `find` matches nothing. The archiver failed
+on exactly that at 06:00 on 2026-09-19 (`expected exactly one bus_positions~*
+dir, found []`), and `ops/incident.py` had the same pattern. Both now ask
+QuestDB: `SELECT directoryName FROM tables() WHERE table_name = 'bus_positions'`.
+Never hardcode or glob a table's directory.
+
+### GOTCHA: raw QuestDB partitions are not self-contained (why the archive is Parquet)
+
+A DETACHed partition holds SYMBOL columns (`bus_id`, `line`, ...) as integer
+keys into the **source table's** symbol maps, and those map files are not in
+the archive. QuestDB also re-attaches a partition only into the table it was
+detached from (`Detached partition metadata [table_id] is not compatible with
+current table metadata`). So a raw archive is only as good as the table it came
+from: dropping or recreating that table strands every archived day, which
+happened to 63 days in ADR-0006's migration. Parquet has neither problem, and
+is the archive format since ADR-0007. The raw directories were deleted once
+the Parquet copies were verified.
+
+### GOTCHA: a restored day comes back through the archiver
+
+`ops/incident.py restore` puts the day back in the live table. Once it is older
+than `RETENTION_DAYS` the archiver picks it up again and finds
+`bus_positions_parquet/<day>.parquet` already exists (that is where it came
+from). Until 2026-09-19 the old archiver logged `archive destination ... already
+exists -- stopping, needs a human` and stopped the whole run, and every later
+run stopped again, so **nothing else was archived** from 2026-09-16 to
+2026-09-19.
+
+It now never rewrites an existing file and never stops for it. It reads the file
+back: if its row count equals the live day it drops the live copy ("already
+archived (N rows verified)"); if not, it logs a `WARNING`, leaves the live day
+in place and skips it, the run status becomes `attention`, and the alert fires.
+Nothing is dropped on a guess about which side is right. The normal outcome is
+the first (verified on 2026-09-11, twice). Any other failure (an export that
+fails verification, a failed DROP, a missing sentinel) stops the run.
 
 ## Recovering a lost day: `ops/incident.py`
 
-`ops/incident.py` is the other half of the archive: `archive.py` moves
-partitions out, this brings them back and rebuilds whatever depended on
-them. It runs on the host rather than in a container because it needs both
-`docker` (to reach into QuestDB's uid-10001-owned partition directory —
-the same workaround used for `server.conf` edits) and this repo's
-virtualenv, since it imports `extract.py` and reuses its chunked fetch
+`ops/incident.py` is the other half of the archive: `archive.py` exports days
+out, this brings them back and rebuilds whatever depended on them. It runs on
+the host rather than in a container because it needs both `docker` (to copy the
+file into QuestDB's import directory, which is owned by uid 10001) and this
+repo's virtualenv, since it imports `extract.py` and reuses its chunked fetch
 rather than reimplementing it.
 
 ```bash
-ops/incident.py restore 2026-08-02             # one archived day back into QuestDB
-ops/incident.py replay 2026-08-01 2026-08-03   # restore + re-extract + rebuild
+ops/incident.py restore 2026-09-08             # one archived day back into QuestDB
+ops/incident.py replay 2026-09-01 2026-09-03   # restore + re-extract + rebuild
 ```
 
-`restore <day>` copies the archived partition into the container, chowns it
-to uid 10001, and `ALTER TABLE bus_positions ATTACH PARTITION LIST '<day>'`.
-It then polls `table_partitions()` for up to 10s instead of trusting the
-DDL's own return, because "accepted" and "visible as attached" are not the
-same moment. It is idempotent — a day already attached is a no-op, not an
-error — which is what makes it safe for `replay` to call blindly.
+`restore <day>` reads the day's Parquet file, copies it into QuestDB's `import`
+directory, and `INSERT`s it back through `read_parquet()`. It then polls until
+QuestDB's row count for the day equals the file's, because the insert is applied
+asynchronously, and removes the copy. It is idempotent: a day already in the
+table is a no-op, not an error, which is what makes it safe for `replay` to call
+blindly. It **refuses the 63 numeric-only days** (2026-07-03 to 2026-09-06),
+which have no `bus_id` to load; read those in place with DuckDB. Fidelity is
+checked, not assumed: on 2026-09-11 the restored partition matched its file on
+row count, distinct buses, distinct lines and the lat/lon/bearing sums.
 
 `replay <start> <end>` is built on `restore` rather than duplicating it.
 For each day in the range it restores the day if that day falls outside the

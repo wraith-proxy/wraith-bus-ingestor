@@ -131,7 +131,7 @@ system assumed BODS plus a live QuestDB table WAS the history:
   down 82+ days or `RETENTION_DAYS` raised without noticing the table TTL
   existed). Archiver is now the sole retention mechanism.
 - `ops/incident.py`: `restore <day>` (ATTACH a day back from
-  `/mnt/archive`, idempotent) and `replay <start> <end>` (restore-if-needed
+  `/mnt/archive`, idempotent; Parquet-based since ADR-0007) and `replay <start> <end>` (restore-if-needed
   + re-extract via `extract.py`'s own `fetch()` + `SKIP_EXTRACT=1
   FULL_REFRESH=1 build.sh`), one script per the "not two scripts a human
   has to sequence by hand" requirement. `restore` proven against a real
@@ -363,19 +363,93 @@ Landed 2026-09-18. Full investigation, decision, and measured outcome in
 cutover: exact row count match, sub-metre `FLOAT` precision loss,
 exact `SYMBOL` distinct-count match, full `dbt run`+`dbt test`
 (884/884) against data extracted from the new table before it went
-live. `ops/incident.py restore()` recoded with a lazy per-day rewrite
-path so archived days older than the schema cutover stay restorable.
+live. **Cost, found 2026-09-19:** the 63 days archived before the migration
+can no longer be decoded (their SYMBOL values went with the dropped old
+table). The owner approved the breaking change and judged it the wrong call;
+it is irreversible. See the ADR, and 1.11.0 for what was done about the
+archive.
 
 **Remaining:**
-- `questdb_data` is currently on `/mnt/archive` (SATA), not the SSD --
-  a real, unplanned space constraint surfaced mid-migration (old+new
-  tables together don't fit the SSD's free space during
-  `bus_positions_old`'s burn-in week). Move back to SSD once
-  `bus_positions_old` is dropped post-burn-in.
-- `ops/incident.py`'s lazy-rewrite path is implemented but not yet
-  exercised against a real archived pre-cutover day.
+- `bus_positions_old` was dropped early (2026-09-19), not after the planned
+  burn-in -- there is no old-schema hot table to fall back to.
+
+## 1.11.0 -- Parquet archive
+
+Landed 2026-09-19. Full decision, measurements and the bugs found in
+[ADR-0007](adr/0007-parquet-archive.md). The archive was raw QuestDB partition
+directories, which ADR-0006 showed cannot survive their source table being
+dropped. Every archived day is now one self-describing Parquet file
+(`bus_positions_parquet/<day>.parquet`, zstd level 3): a full 34M-row day is
+0.69GB against ~3.0GB as a QuestDB partition. The archiver exports over
+QuestDB's HTTP API, reads the file back with DuckDB, and drops the live
+partition only when it matches row for row. `ops/incident.py restore` loads a
+file back (fingerprint-checked on 2026-09-11) and the archive can be queried in
+place with DuckDB. Each run records itself in `archiver_runs`, and two Grafana
+rules (no clean run in 36h; latest run needs attention) reach the phone via
+ntfy. Delivery proven end to end on 2026-09-19, both firing and resolved: a
+hand-inserted `error` run took the rule pending, then firing (title = rule name,
+body `ALERT: <summary>`), and clearing it delivered `RESOLVED` about five minutes
+later (Grafana's group interval).
+
+**Remaining:**
+- The 68 raw partition directories were deleted on 2026-09-19 at the owner's
+  instruction, after every day had a verified Parquet file and an independent
+  recount of the 63 salvaged days matched (manifest on the archive drive).
+  Irreversible; the archive is now 68 Parquet files, 10GB (was 46.7GB).
+- 63 days (2026-07-03 .. 2026-09-06) are numeric-only Parquet: `timestamp`,
+  `lat`, `lon`, `bearing` and raw `bus_id_key`/`line_key`. Their bus and line
+  identities are gone for good.
+- The archiver depends on QuestDB's `/exp?fmt=parquet` and `read_parquet()`,
+  and the image is `questdb/questdb:latest`. A release that changes either
+  shows up as an `error` run (nothing is dropped unverified), not corruption.
 
 ## Known issues -- raised, not yet actioned
+
+**Open decision: the ingest bounding box.** It was widened from the
+north-west of England to all of mainland GB on 2026-09-12 (4.72x the
+vehicles; rows/day ~3M -> ~13M). Every capacity number in this repo that
+predates that (`memory_limit`, `MemoryMax`, QuestDB disk, nightly runtime)
+was sized for the old volume -- see the GOTCHA in `docs/operations.md`.
+Deliberately left undecided (2026-09-19): keep GB-wide and retune upwards,
+or narrow back to the area actually watched. Narrowing would shrink disk,
+memory and runtime at the source.
+
+**The 2026-09-19 03:00 nightly failed, and the marts were unreadable: fixed and
+proven (TJP-19090).** DuckDB's own 4GB `memory_limit` was exhausted in
+`int_pings_matched_to_stops` at 03:00, with 12 days / 81.9M rows in
+`dbt/data/` because `extract.py` never pruned old parquet. It now prunes to the
+8-day window. `ops/verify_build.sh` then ran both builds on 2026-09-19 and both
+passed: Run 1 (`SKIP_EXTRACT=1`, 1h02m, 884/884, contract gate 62/0) and Run 2
+(the systemd unit, full extract, 1h06m, 884/884, marts republished). No DuckDB
+out-of-memory error in either.
+
+Two side findings were fixed on the way: the served marts had been written by
+the abandoned dbt v2 alpha (DuckDB storage version 999) so the API reported
+`unreadable` and ETAs were off for ~26 hours (ADR-0005 Aftermath), and `uv` was
+not on systemd's PATH so the contract gate would have killed a unit build after
+an hour. And a third, found only because the run was watched to the end: the API
+container's 1.5g limit was far too small for the whole-GB marts and it
+OOM-restart-looped on first load (now 6g, see `docs/operations.md`).
+
+**`MemoryMax` raised 9000M -> 13000M (owner's call, 2026-09-19).** Run 2's cgroup
+peak was 8.7G against 9000M (largest process 7.32GB; Run 1 uncapped: 8.69GB
+RSS): it passed with ~0.3GB spare, and with ollama and immich stopped. 13000M is
+headroom, not a measured need. The trade is real: on a 15.4GB host with
+`MemorySwapMax=0`, a run that actually used it would squeeze QuestDB (up to
+8g), the ingestor and ollama/immich, which the unit does not stop. Not yet
+proven at the new cap: the unit file in the repo is 13000M, but
+`/etc/systemd/system/` must be updated by hand (sudo), and `ops/verify_build.sh`
+refuses to run until they match. Still open: nothing alerts on the API's
+`marts_state`.
+
+**The archiver jam on an already-archived day is fixed (TJP-19090).** A
+restored day colliding with its own archive copy used to stop the whole run
+and block everything behind it (nothing archived 2026-09-16 to 2026-09-19).
+It now reads the existing Parquet file back: matching rows drop the live copy,
+a mismatch skips the day and raises the `attention` alert, and the run carries
+on. Any other failure (an export that fails verification, a failed DROP, a
+missing sentinel) still stops the run, by design, and is recorded as `error`.
+See the GOTCHA in `docs/operations.md`.
 
 Observed after a container restart cleared a memory-pressure symptom on
 the host. System memory barely moved (4,793M -> 4,751M available)

@@ -257,27 +257,22 @@ slaProperties:
       Maximum age of recorded_at for a vehicle to count as live. Beyond this the
       consuming API drops the vehicle entirely rather than drawing a frozen bus.
   - property: retention
-    value: 35
+    value: 8
     unit: d
     driver: analytics
     description: >-
-      Archived, not deleted. The archiver service (archiver/archive.py)
-      DETACHes any day partition older than 35 days and copies it to a
-      separate drive (ARCHIVE_PATH, currently a 3.5" SATA disk at
-      /mnt/archive), verified byte-for-byte before the local copy is freed --
-      QuestDB's own DROP-based TTL was considered and rejected for this
-      table specifically because it destroys data outright. bus_positions
-      itself also carries a QuestDB-native `SET TTL 90 DAYS` as a backstop
-      only: at 35-day archival the table should never actually reach 90
-      days old, so that TTL firing at all means the archiver has been
-      broken for two months, and disk protection wins over data loss at
-      that point. Sized to the host SSD, not to any analytical need: at the
-      ~14M rows/day this feed's current north-of-England bounding box
-      produces (~46 bytes/row on disk), a full year would be ~237GB, more
-      than that SSD's entire volume. Widening the bounding box multiplies
-      both figures -- a same-instant measurement against the full Great
-      Britain extent on 2026-09-12 showed 4.72x the vehicle count of the
-      current box.
+      Archived, not deleted. The SSD holds an 8-day window (RETENTION_DAYS); the
+      archiver service (archiver/archive.py) exports any day older than that to
+      Parquet on a separate drive (ARCHIVE_PATH, a 3.5" SATA disk at
+      /mnt/archive, the "glacier"), reads the file back and checks it against
+      QuestDB row for row, and only then drops the live partition (docs/adr/0007).
+      QuestDB's own DROP-based TTL was rejected for this table because it
+      destroys data outright, and no TTL is set. The archive is
+      self-describing: real strings, no dependency on this table, readable by
+      DuckDB in place. Sized to the host SSD, not to any analytical need. Since
+      the bounding box widened from north-west England to all of mainland Great
+      Britain on 2026-09-12 a full day is ~13-34M rows (34.1M on 2026-09-16:
+      ~3.0GB as a QuestDB partition, 0.69GB as Parquet).
 
 support:
   - channel: ghost-stack-ops
@@ -296,10 +291,12 @@ customProperties:
     description: >-
       The physical schema changed on this date (docs/adr/0006): vehicle_id
       dropped, lat/lon/bearing DOUBLE -> FLOAT, seven VARCHAR columns ->
-      SYMBOL. ops/incident.py's restore() reads this value as the single
-      source of truth for telling old-generation archived days from new
-      ones -- a day older than this needs the legacy-schema rewrite path,
-      a day on or after it attaches straight into live bus_positions.
+      SYMBOL. Informational only -- no code reads it. ops/incident.py's
+      restore() spots an archived day with the old layout from the partition's
+      own files (vehicle_id.* present) and refuses it: such days cannot be
+      re-attached and their SYMBOL values are gone (docs/adr/0006,
+      Correction). A day migrated in place on this date and archived
+      afterwards has the new layout despite being dated before it.
   - property: producer
     value: ingestor/ingest.py
   - property: upstreamSource

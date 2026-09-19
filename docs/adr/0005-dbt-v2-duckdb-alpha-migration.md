@@ -186,3 +186,25 @@ run under the actual nightly `MemoryMax` cap -- not just an isolated
 `dbt run`/`dbt test` pass. That gap between "verified clean in
 isolation" and "clean under real production load" is the actual lesson
 here, independent of dbt/DuckDB version.
+
+## Aftermath (found 2026-09-19)
+
+**The revert left one artifact behind: the served marts file.** The
+2026-09-18 06:46 measurement pass ran on the v2 stack, so `build.sh`'s inline
+publish step wrote `wraith_bus_ingestor.duckdb` with DuckDB 2.0 alpha's storage
+format (version 999). After the revert no stable DuckDB can open it -- the API
+reported `marts_state: "unreadable"`, `duckdb: false`, *"we can only read
+versions between 64 and 68"* -- so ETA and route predictions were disabled on
+the public site until something republished, about 26 hours. Nothing did: the
+03:00 nightly failed, and nothing alerts on `marts_state`. Live bus positions
+kept working because they come from QuestDB, which is why it went unnoticed.
+Reverting a toolchain has to include republishing what the abandoned version
+produced. The fix is a successful publish by the current stack
+(`ops/verify_build.sh` does it as part of proving the build), and the API
+reloads on its own within a minute of the rename.
+
+**A second thing the revert-and-retry surfaced:** `build.sh`'s contract gate
+runs `uv run`, and `uv` is in `~/.local/bin`, which is not on systemd's PATH. Under
+`wraith-bus-build.service` a build would have died there, after an hour of work
+and before publishing. No systemd run had ever got that far. `build.sh` now
+resolves `uv` itself and fails in seconds if it cannot.
