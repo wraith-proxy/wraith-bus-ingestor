@@ -2,9 +2,13 @@
 #
 # Prove the nightly build end to end, on demand, before pushing anything.
 #
-#   sudo ops/verify_build.sh              # both runs below, roughly 2.5-3 hours
+#   sudo ops/verify_build.sh --detach     # RECOMMENDED: returns your prompt at once, runs
+#                                         # in its own session, survives the terminal closing
+#   sudo ops/verify_build.sh              # foreground (blocks the terminal ~2.5-3 hours,
+#                                         # and a dropped SSH session would abort it)
 #   ops/verify_build.sh --check           # preflight only: no sudo, stops nothing
 #   ops/verify_build.sh --dry-run         # the whole flow with fake builds (seconds)
+#                                         # (--dry-run --detach also works, to test detaching)
 #
 # Why: the 2026-09-18/19 OOM-kills, and ADR-0005's dbt v2 detour, showed that a
 # clean isolated `dbt run` proves little -- the failures only appeared under the
@@ -47,15 +51,17 @@ BUILD_STOP=(ghost-osrm ghost-backend ghost-tiles ghost-grafana)
 OPTIONAL_STOP=(ollama immich_machine_learning immich_server immich_postgres immich_redis)
 MEMORY_LIMIT_KB=$((4 * 1024 * 1024))   # profiles.yml's DuckDB memory_limit, for the summary
 
-CHECK=0; DRY=0
-case "${1:-}" in
-  --check) CHECK=1 ;;
-  --dry-run) DRY=1 ;;
-  "") ;;
-  *) echo "usage: $0 [--check | --dry-run]"; exit 2 ;;
-esac
+CHECK=0; DRY=0; DETACH=0
+for arg in "$@"; do
+  case "$arg" in
+    --check) CHECK=1 ;;
+    --dry-run) DRY=1 ;;
+    --detach) DETACH=1 ;;
+    *) echo "usage: $0 [--detach] [--check | --dry-run]"; exit 2 ;;
+  esac
+done
 
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+STAMP="${VERIFY_STAMP:-$(date -u +%Y%m%dT%H%M%SZ)}"
 LOGDIR="$REPO/ops/logs/verify-$STAMP"
 [[ $DRY -eq 1 ]] && LOGDIR="$REPO/ops/logs/dryrun-$STAMP"
 MAIN_LOG="$LOGDIR/verify.log"
@@ -80,8 +86,10 @@ kb_to_gb() { awk -v k="${1:-0}" 'BEGIN{printf "%.2f", k/1048576}'; }
 # ---- log + live tail --------------------------------------------------------
 setup_log() {
   mkdir -p "$LOGDIR"; : > "$MAIN_LOG"
-  tail -n +1 -f "$MAIN_LOG" &        # what you watch in the terminal
-  TAILPID=$!
+  if [[ -t 1 ]]; then                # a live view only when there is a terminal for it
+    tail -n +1 -f "$MAIN_LOG" &
+    TAILPID=$!
+  fi
   exec >>"$MAIN_LOG" 2>&1            # from here on, stdout AND stderr go to the log
 }
 
@@ -291,6 +299,22 @@ main() {
     preflight; echo; echo "  --check: preflight only. Nothing stopped, no log written. Run for real with:  sudo $0"; exit 0
   fi
   [[ $DRY -eq 1 || $EUID -eq 0 ]] || { echo "run with sudo:  sudo $0   (or --check / --dry-run without it)"; exit 1; }
+  if [[ $DETACH -eq 1 ]]; then
+    mkdir -p "$LOGDIR"
+    local flags=(); [[ $DRY -eq 1 ]] && flags=(--dry-run)
+    # own session (setsid): closing this terminal or dropping SSH cannot kill it
+    VERIFY_STAMP="$STAMP" setsid "$0" "${flags[@]}" </dev/null >/dev/null 2>&1 &
+    local child=$!
+    echo "started in the background (pid $child); it keeps running if this terminal closes."
+    echo "  watch it:   tail -f $MAIN_LOG"
+    echo "  where now:  grep -E '###|  OK |FAIL|WARN|RESULT' $MAIN_LOG | tail -15"
+    echo "  abort:      sudo pkill -f ops/verify_build.sh   (its trap puts stopped containers back;"
+    echo "              if Run 2 is going, also: sudo systemctl stop $UNIT)"
+    echo; echo "preflight, as it runs:"; sleep 10
+    if kill -0 "$child" 2>/dev/null || grep -q "STAGE" "$MAIN_LOG" 2>/dev/null; then sed -n '1,30p' "$MAIN_LOG"
+    else echo "(the run exited straight away -- see $MAIN_LOG)"; fi
+    exit 0
+  fi
   setup_log
   trap cleanup EXIT
   trap 'exit 130' INT TERM

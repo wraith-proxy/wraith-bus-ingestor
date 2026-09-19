@@ -126,9 +126,11 @@ previously surfaced nowhere at all — are counted in the same rows.
 ### Proving a build end to end: `ops/verify_build.sh`
 
 ```bash
-sudo ops/verify_build.sh            # both runs, roughly 2.5-3 hours
+sudo ops/verify_build.sh --detach   # recommended: prompt returns at once, survives the terminal closing
+sudo ops/verify_build.sh            # foreground: blocks ~2.5-3 hours; a dropped SSH session aborts it
 ops/verify_build.sh --check         # preflight only (no sudo, stops nothing)
 ops/verify_build.sh --dry-run       # the whole flow with fake builds, in seconds
+tail -f ops/logs/verify-*/verify.log   # watch a detached run (the newest directory)
 ```
 
 A clean isolated `dbt run` proved little on 2026-09-18/19: the failures only
