@@ -150,6 +150,25 @@ push.
 Run 1 uses the same minimal environment systemd gives the unit (`env -i`, no
 `~/.local/bin` on PATH, not root's `HOME`), on purpose.
 
+### GOTCHA: the API holds every mart row in Python memory, and the marts outgrew its limit
+
+`backend/app.py` loads `eta_models`, `localities`, `line_localities` and
+`line_stops` (~2.6M rows) into Python dicts on the first request after a
+publish. Since the whole-GB bounding box (2026-09-12) that needs 2.46GiB steady
+after a fresh load and **4.29GiB peak on an in-place reload** (old and new
+copies coexist), settling at 3.44GiB. Its container limit was 1.5g, so on
+2026-09-19 the first request after a good publish took it from 93MB to the limit
+in ~6s, the kernel OOM-killed it, and Docker restarted it into the same
+death: `marts_state: ok` never came, the public `/api` returned nothing, and
+predictions stayed dead even though the build had succeeded. The limit is 6g
+now (`docker-compose.yml`). Symptoms to recognise: `journalctl -k | grep "Killed
+process"` naming a `python` in a `ghost-backend` docker scope, `docker inspect
+ghost-backend` with a climbing `RestartCount`, and the API log showing only
+repeated startup banners. Nothing alerts on this; an API-state alert is an open
+gap. Same root cause as the memory GOTCHA above: every capacity number sized
+before 2026-09-12 was sized for the North West.
+
+
 ### GOTCHA: systemd's PATH does not include `~/.local/bin`
 
 `uv` lives there. On an interactive shell it is found; under

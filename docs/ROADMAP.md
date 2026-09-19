@@ -414,19 +414,30 @@ Deliberately left undecided (2026-09-19): keep GB-wide and retune upwards,
 or narrow back to the area actually watched. Narrowing would shrink disk,
 memory and runtime at the source.
 
-**The 2026-09-19 03:00 nightly failed and nothing published.** DuckDB's own
-4GB `memory_limit` was exhausted in `int_pings_matched_to_stops` (not the
-cgroup cap, which held). Cause not isolated. TJP-19090 removes one contributor
-(12 days / 81.9M rows were being read instead of 8 because `extract.py` never
-pruned old parquet), but that is a hypothesis until a real `build.sh` passes at
-4GB. **Worse, the served marts have been unreadable since 2026-09-18 06:46:**
-that publish came from the abandoned dbt v2 stack (DuckDB 2.0 alpha storage
-version 999), so ETAs and route predictions are disabled on the public site
-(`/api/model-info` -> `marts_state: "unreadable"`) until a stable-DuckDB build
-publishes. See ADR-0005's Aftermath. Nothing alerts on `marts_state`; an
-API-state alert is an open gap. `build.sh` also could not have published under
-systemd (`uv` not on its PATH); fixed. `ops/verify_build.sh` runs both the
-manual and the production build and checks all of this end to end.
+**The 2026-09-19 03:00 nightly failed, and the marts were unreadable: fixed and
+proven (TJP-19090).** DuckDB's own 4GB `memory_limit` was exhausted in
+`int_pings_matched_to_stops` at 03:00, with 12 days / 81.9M rows in
+`dbt/data/` because `extract.py` never pruned old parquet. It now prunes to the
+8-day window. `ops/verify_build.sh` then ran both builds on 2026-09-19 and both
+passed: Run 1 (`SKIP_EXTRACT=1`, 1h02m, 884/884, contract gate 62/0) and Run 2
+(the systemd unit, full extract, 1h06m, 884/884, marts republished). No DuckDB
+out-of-memory error in either.
+
+Two side findings were fixed on the way: the served marts had been written by
+the abandoned dbt v2 alpha (DuckDB storage version 999) so the API reported
+`unreadable` and ETAs were off for ~26 hours (ADR-0005 Aftermath), and `uv` was
+not on systemd's PATH so the contract gate would have killed a unit build after
+an hour. And a third, found only because the run was watched to the end: the API
+container's 1.5g limit was far too small for the whole-GB marts and it
+OOM-restart-looped on first load (now 6g, see `docs/operations.md`).
+
+**Still open, measured margins are thin.** Run 2's cgroup peak was 8.7G against
+`MemoryMax` 9000M, the largest single process 7.32GB. Run 1 (uncapped) peaked at
+8.69GB RSS. It passed, but with ~0.3GB to spare, and it passed with ollama and
+immich stopped: the real 03:00 run does not stop them (~4GB), so it competes for
+the box's 15GB. Whether to raise `MemoryMax`, stop them in the unit, or shrink
+the workload (narrower bounding box) is the owner's call. Nothing alerts on the
+API's `marts_state`; an alert is an open gap.
 
 **The archiver jam on an already-archived day is fixed (TJP-19090).** A
 restored day colliding with its own archive copy used to stop the whole run

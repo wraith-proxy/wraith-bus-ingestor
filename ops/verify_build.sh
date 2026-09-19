@@ -264,7 +264,10 @@ health() {
   done
   STOPPED=()
   act docker exec ghost-web nginx -s reload >/dev/null 2>&1; minor "nginx reloaded"
-  minor "waiting 45s for containers and the API's marts poll (it re-checks once a minute)"; [[ $DRY -eq 1 ]] || sleep 45
+  minor "waiting for the API to load the new marts (first request after a start takes ~10s; polling up to 3 min)"
+  if [[ $DRY -eq 0 ]]; then
+    local i; for i in $(seq 1 18); do [[ "$(marts_state)" == "ok True" ]] && break; sleep 10; done
+  fi
   local u code
   for u in https://www.thomaspeoples.com/grafana/api/health https://slaycoach.quest/tiles/great-britain/0/0/0 https://slaycoach.quest/bus-map/ https://slaycoach.quest/api/buses; do
     code=$([[ $DRY -eq 1 ]] && echo 200 || curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$u")
