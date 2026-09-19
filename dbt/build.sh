@@ -49,6 +49,20 @@ cd "$(dirname "$0")"          # every path below -- and every source in
 # points at ../.venv, the same environment `uv sync` at the repo root
 # already manages.
 PY="../.venv/bin/python"
+
+# `uv` lives in ~/.local/bin: on an interactive shell's PATH, but NOT on
+# systemd's default PATH. Under wraith-bus-build.service the contract gate near
+# the end would die with "uv: command not found" after an hour of build and
+# before publishing -- found 2026-09-19, because no systemd run had ever got
+# that far (they all died earlier, at DuckDB's memory limit). Resolve it here
+# and fail now, in seconds, rather than after the build.
+UV="$(command -v uv 2>/dev/null || true)"
+[[ -x "$UV" ]] || UV="${HOME:-/nonexistent}/.local/bin/uv"
+if [[ ! -x "$UV" ]]; then
+    echo "!! uv not found on PATH or in \$HOME/.local/bin -- the contract gate needs it." >&2
+    echo "   Failing now rather than after the build." >&2
+    exit 1
+fi
 : "${QUESTDB_HTTP:=http://localhost:9001}"
 : "${EXTRACT_DAYS:=8}"
 : "${SKIP_EXTRACT:=0}"
@@ -239,7 +253,7 @@ PYEOF
 # here stops the script before the mv below -- the previous good marts keep
 # serving rather than being replaced with something that broke a contract.
 echo "==> validating contracts against the candidate marts"
-(cd .. && uv run python3 contracts/validate.py --marts "dbt/$STAGED")
+(cd .. && "$UV" run python3 contracts/validate.py --marts "dbt/$STAGED")
 
 # Atomic within a filesystem: readers never see a partial file. The old .wal
 # must go with the old file, or DuckDB will try to replay it against the new one.

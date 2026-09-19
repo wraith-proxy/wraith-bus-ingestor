@@ -123,6 +123,40 @@ pages a phone (see below), instead of being a non-zero exit sitting in
 results and freshness warnings — which never failed the build, and so
 previously surfaced nowhere at all — are counted in the same rows.
 
+### Proving a build end to end: `ops/verify_build.sh`
+
+```bash
+sudo ops/verify_build.sh            # both runs, roughly 2.5-3 hours
+ops/verify_build.sh --check         # preflight only (no sudo, stops nothing)
+ops/verify_build.sh --dry-run       # the whole flow with fake builds, in seconds
+```
+
+A clean isolated `dbt run` proved little on 2026-09-18/19: the failures only
+showed under the real nightly conditions. This runs **Run 1**, `SKIP_EXTRACT=1
+./build.sh` as your user under `time -v` (peak RSS of the biggest process, the
+DuckDB one that hits `memory_limit`), then **Run 2**, `systemctl start
+wraith-bus-build.service` (the production path: extract, build, test, publish,
+under the unit's `MemoryMax`, sampling peak RSS from its cgroup). It stops the
+containers the unit stops plus ollama/immich (all restored by a trap however it
+exits), reclaims swap first, and afterwards checks the marts were republished,
+the build was recorded as a success, the public site answers, and the API's
+`marts_state` is `ok`. Everything goes to one log, `ops/logs/verify-<stamp>/
+verify.log`, which is also tailed live in the terminal. The public site is dark
+for the duration (backend, tiles, grafana stopped). Exit status 0 means safe to
+push.
+
+Run 1 uses the same minimal environment systemd gives the unit (`env -i`, no
+`~/.local/bin` on PATH, not root's `HOME`), on purpose.
+
+### GOTCHA: systemd's PATH does not include `~/.local/bin`
+
+`uv` lives there. On an interactive shell it is found; under
+`wraith-bus-build.service` it was not, so the contract gate (`uv run
+contracts/validate.py`) would have failed after an hour of build and before
+publishing. Nothing had ever run a systemd build that far. `build.sh` now
+resolves `uv` itself (PATH, then `$HOME/.local/bin`) and exits in seconds if it
+cannot find it.
+
 ### GOTCHA: every number sized before 2026-09-12 was sized for the North West, not Great Britain
 
 On 2026-09-12 the ingest bounding box went from the **north-west of England
@@ -199,9 +233,11 @@ Every run records itself in QuestDB (`archiver_runs`: `ts, status, archived,
 skipped, detail`; status `ok` / `attention` / `error`). Grafana can see QuestDB
 but not the archive drive, so that table is what the two archiver alert rules
 read, and they reach your phone through the same ntfy path as the others (every rule
-notifies as one plain line, `ALERT: <the rule's summary>`: ntfy renders it from
-Grafana's JSON with an inline template set in `contactpoints.yaml`, and resolved
-messages are off):
+notifies in plain text: the rule's name as the title, `ALERT: <the rule's summary>`
+as the body while it fires, and `RESOLVED` when it clears. ntfy renders that from
+Grafana's JSON with inline templates set in `contactpoints.yaml`; without them the
+phone shows the raw JSON and the topic name, which is the credential, as the
+title):
 
 - **archiver has not run cleanly**: no `ok` row in 36h. The dead-man switch:
   container down, or every run failing. This is the alert that would have caught

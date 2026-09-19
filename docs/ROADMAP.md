@@ -414,10 +414,17 @@ memory and runtime at the source.
 
 **The 2026-09-19 03:00 nightly failed and nothing published.** DuckDB's own
 4GB `memory_limit` was exhausted in `int_pings_matched_to_stops` (not the
-cgroup cap, which held), so the API is serving marts from 2026-09-18 06:46.
-Cause not isolated. TJP-19090 removes one contributor (12 days / 81.9M rows
-were being read instead of 8 because `extract.py` never pruned old parquet),
-but that is a hypothesis until a real `build.sh` passes at 4GB.
+cgroup cap, which held). Cause not isolated. TJP-19090 removes one contributor
+(12 days / 81.9M rows were being read instead of 8 because `extract.py` never
+pruned old parquet), but that is a hypothesis until a real `build.sh` passes at
+4GB. **Worse, the served marts have been unreadable since 2026-09-18 06:46:**
+that publish came from the abandoned dbt v2 stack (DuckDB 2.0 alpha storage
+version 999), so ETAs and route predictions are disabled on the public site
+(`/api/model-info` -> `marts_state: "unreadable"`) until a stable-DuckDB build
+publishes. See ADR-0005's Aftermath. Nothing alerts on `marts_state`; an
+API-state alert is an open gap. `build.sh` also could not have published under
+systemd (`uv` not on its PATH); fixed. `ops/verify_build.sh` runs both the
+manual and the production build and checks all of this end to end.
 
 **The archiver jam on an already-archived day is fixed (TJP-19090).** A
 restored day colliding with its own archive copy used to stop the whole run
