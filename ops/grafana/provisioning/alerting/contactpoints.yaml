@@ -15,17 +15,19 @@ contactPoints:
       - uid: ntfy-webhook
         type: webhook
         # Grafana's webhook body is a large JSON document, which ntfy would show
-        # verbatim on the phone. `tpl=yes` makes ntfy treat the body as JSON and
-        # render `m` as a Go template over it: one line per alert, "ALERT: " plus
-        # the rule's `summary` annotation (or its name if it has none), nothing
-        # else. Decoded, the template is:
-        #   {{range .alerts}}ALERT: {{or .annotations.summary .labels.alertname}}
-        #   {{end}}
-        # Resolved messages are switched off: they are not alerts, and the format
-        # above would render them as "ALERT: ..." too.
-        disableResolveMessage: true
+        # verbatim on the phone -- and with no title of its own the ntfy app shows
+        # the TOPIC NAME as the title, which is the credential. So `tpl=yes` makes
+        # ntfy treat the body as JSON and render `t` (title) and `m` (message) as
+        # Go templates over it. Decoded:
+        #   t: {{(index .alerts 0).labels.alertname}}
+        #   m: {{range .alerts}}{{if eq .status "resolved"}}RESOLVED{{else}}ALERT: {{or .annotations.summary .labels.alertname}}{{end}}
+        #      {{end}}
+        # i.e. the title is the rule's name, and the body is `ALERT: <summary>`
+        # while firing or `RESOLVED` once it clears. Rules are grouped by
+        # alertname (see the policy below), so the first alert's name is the
+        # group's name. Nothing else is sent.
         settings:
-          url: http://ntfy:80/$NTFY_TOPIC?tpl=yes&m=%7B%7Brange%20.alerts%7D%7DALERT%3A%20%7B%7Bor%20.annotations.summary%20.labels.alertname%7D%7D%0A%7B%7Bend%7D%7D
+          url: http://ntfy:80/$NTFY_TOPIC?tpl=yes&t=%7B%7B%28index%20.alerts%200%29.labels.alertname%7D%7D&m=%7B%7Brange%20.alerts%7D%7D%7B%7Bif%20eq%20.status%20%22resolved%22%7D%7DRESOLVED%7B%7Belse%7D%7DALERT%3A%20%7B%7Bor%20.annotations.summary%20.labels.alertname%7D%7D%7B%7Bend%7D%7D%0A%7B%7Bend%7D%7D
           httpMethod: POST
 
 policies:
