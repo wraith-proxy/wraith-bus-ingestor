@@ -67,6 +67,13 @@ and matched the file on distinct buses (6,684), distinct lines (1,533) and the
 lat/lon/bearing sums. The archiver then hit "already archived (16,786,332 rows
 verified)" and dropped the live copy.
 
+Alert delivery: a hand-inserted `error` row in `archiver_runs` took the
+"archiver needs attention" rule to pending at 07:35 and firing at 07:40 (five
+minute evaluation, five minute `for:`); ntfy counted one message published to one
+subscriber, and the alert arrived on the owner's phone. The rule cleared at the
+next evaluation once an `ok` row was written. Not confirmed: that a separate
+"resolved" message reached the phone.
+
 ## The 63 numeric-only days
 
 The days archived before the migration (2026-07-03 to 2026-09-06) cannot be
