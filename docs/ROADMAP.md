@@ -431,13 +431,16 @@ an hour. And a third, found only because the run was watched to the end: the API
 container's 1.5g limit was far too small for the whole-GB marts and it
 OOM-restart-looped on first load (now 6g, see `docs/operations.md`).
 
-**Still open, measured margins are thin.** Run 2's cgroup peak was 8.7G against
-`MemoryMax` 9000M, the largest single process 7.32GB. Run 1 (uncapped) peaked at
-8.69GB RSS. It passed, but with ~0.3GB to spare, and it passed with ollama and
-immich stopped: the real 03:00 run does not stop them (~4GB), so it competes for
-the box's 15GB. Whether to raise `MemoryMax`, stop them in the unit, or shrink
-the workload (narrower bounding box) is the owner's call. Nothing alerts on the
-API's `marts_state`; an alert is an open gap.
+**`MemoryMax` raised 9000M -> 13000M (owner's call, 2026-09-19).** Run 2's cgroup
+peak was 8.7G against 9000M (largest process 7.32GB; Run 1 uncapped: 8.69GB
+RSS): it passed with ~0.3GB spare, and with ollama and immich stopped. 13000M is
+headroom, not a measured need. The trade is real: on a 15.4GB host with
+`MemorySwapMax=0`, a run that actually used it would squeeze QuestDB (up to
+8g), the ingestor and ollama/immich, which the unit does not stop. Not yet
+proven at the new cap: the unit file in the repo is 13000M, but
+`/etc/systemd/system/` must be updated by hand (sudo), and `ops/verify_build.sh`
+refuses to run until they match. Still open: nothing alerts on the API's
+`marts_state`.
 
 **The archiver jam on an already-archived day is fixed (TJP-19090).** A
 restored day colliding with its own archive copy used to stop the whole run

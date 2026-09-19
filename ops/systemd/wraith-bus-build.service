@@ -99,5 +99,17 @@ StandardError=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ing
 # osrm/backend/tiles/grafana already stopped for the window. Re-tighten
 # further only against a real measured peak on THIS (reverted) stack, not
 # by assumption.
-MemoryMax=9000M
+#
+# Raised to 13000M 2026-09-19 at the owner's instruction, on measured evidence
+# on this (reverted) stack, via ops/verify_build.sh with ollama/immich stopped:
+# the full unit run PASSED at 9000M but with almost no margin -- cgroup peak
+# 8.7G (systemd's ceiling for this cap), largest process 7.32GB -- and an
+# uncapped SKIP_EXTRACT=1 run peaked at 8.69GB RSS. A cap the run lands on
+# exactly is a coin flip on the next data day, so this leaves ~4GB of headroom.
+# Understand the trade: 13000M is 82% of a 15.4GB host and MemorySwapMax=0, so
+# if the build ever really uses it, the host's other tenants (QuestDB up to its
+# 8g cap, ingestor, and ollama/immich if running -- this unit does NOT stop
+# those) are what get squeezed or OOM-killed instead. It is a ceiling for a
+# run that needs ~9GB, not a reservation.
+MemoryMax=13000M
 MemorySwapMax=0
