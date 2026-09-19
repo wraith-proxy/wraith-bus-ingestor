@@ -131,7 +131,7 @@ system assumed BODS plus a live QuestDB table WAS the history:
   down 82+ days or `RETENTION_DAYS` raised without noticing the table TTL
   existed). Archiver is now the sole retention mechanism.
 - `ops/incident.py`: `restore <day>` (ATTACH a day back from
-  `/mnt/archive`, idempotent) and `replay <start> <end>` (restore-if-needed
+  `/mnt/archive`, idempotent; Parquet-based since ADR-0007) and `replay <start> <end>` (restore-if-needed
   + re-extract via `extract.py`'s own `fetch()` + `SKIP_EXTRACT=1
   FULL_REFRESH=1 build.sh`), one script per the "not two scripts a human
   has to sequence by hand" requirement. `restore` proven against a real
@@ -363,20 +363,42 @@ Landed 2026-09-18. Full investigation, decision, and measured outcome in
 cutover: exact row count match, sub-metre `FLOAT` precision loss,
 exact `SYMBOL` distinct-count match, full `dbt run`+`dbt test`
 (884/884) against data extracted from the new table before it went
-live. **Correction 2026-09-19:** the 63 days archived before the migration
-can no longer be restored (their SYMBOL values went with the dropped old
-table) -- see the ADR's Correction section.
+live. **Cost, found 2026-09-19:** the 63 days archived before the migration
+can no longer be decoded (their SYMBOL values went with the dropped old
+table). The owner approved the breaking change and judged it the wrong call;
+it is irreversible. See the ADR, and 1.11.0 for what was done about the
+archive.
 
 **Remaining:**
-- **63 archived days (2026-07-03 .. 2026-09-06) are not restorable** -- only
-  their raw `timestamp`/`lat`/`lon`/`bearing` survive. Open decision: accept,
-  salvage the numeric columns, and/or make the archive format self-describing
-  (e.g. Parquet) so it no longer depends on the source table's symbol maps.
-- Days archived since the migration are restorable (proven on 2026-09-11) but
-  still depend on `bus_positions_v2~17`'s symbol maps: do not drop or recreate
-  that table while its archive matters.
 - `bus_positions_old` was dropped early (2026-09-19), not after the planned
   burn-in -- there is no old-schema hot table to fall back to.
+
+## 1.11.0 -- Parquet archive
+
+Landed 2026-09-19. Full decision, measurements and the bugs found in
+[ADR-0007](adr/0007-parquet-archive.md). The archive was raw QuestDB partition
+directories, which ADR-0006 showed cannot survive their source table being
+dropped. Every archived day is now one self-describing Parquet file
+(`bus_positions_parquet/<day>.parquet`, zstd level 3): a full 34M-row day is
+0.69GB against ~3.0GB as a QuestDB partition. The archiver exports over
+QuestDB's HTTP API, reads the file back with DuckDB, and drops the live
+partition only when it matches row for row. `ops/incident.py restore` loads a
+file back (fingerprint-checked on 2026-09-11) and the archive can be queried in
+place with DuckDB. Each run records itself in `archiver_runs`, and two Grafana
+rules (no clean run in 36h; latest run needs attention) reach the phone via
+ntfy.
+
+**Remaining:**
+- The 68 raw partition directories were deleted on 2026-09-19 at the owner's
+  instruction, after every day had a verified Parquet file and an independent
+  recount of the 63 salvaged days matched (manifest on the archive drive).
+  Irreversible; the archive is now 68 Parquet files, 10GB (was 46.7GB).
+- 63 days (2026-07-03 .. 2026-09-06) are numeric-only Parquet: `timestamp`,
+  `lat`, `lon`, `bearing` and raw `bus_id_key`/`line_key`. Their bus and line
+  identities are gone for good.
+- The archiver depends on QuestDB's `/exp?fmt=parquet` and `read_parquet()`,
+  and the image is `questdb/questdb:latest`. A release that changes either
+  shows up as an `error` run (nothing is dropped unverified), not corruption.
 
 ## Known issues -- raised, not yet actioned
 
@@ -399,11 +421,11 @@ but that is a hypothesis until a real `build.sh` passes at 4GB.
 **The archiver jam on an already-archived day is fixed (TJP-19090).** A
 restored day colliding with its own archive copy used to stop the whole run
 and block everything behind it (nothing archived 2026-09-16 to 2026-09-19).
-It now skips, freeing the local copy only when the sizes match. Still open
-by design: any other failure (post-copy size mismatch, failed DETACH,
-missing sentinel) stops the run, and a WARNING-and-skip leaves a
-`<day>.detached` on the SSD that only a human removes. See the GOTCHA in
-`docs/operations.md`.
+It now reads the existing Parquet file back: matching rows drop the live copy,
+a mismatch skips the day and raises the `attention` alert, and the run carries
+on. Any other failure (an export that fails verification, a failed DROP, a
+missing sentinel) still stops the run, by design, and is recorded as `error`.
+See the GOTCHA in `docs/operations.md`.
 
 Observed after a container restart cleared a memory-pressure symptom on
 the host. System memory barely moved (4,793M -> 4,751M available)

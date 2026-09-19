@@ -128,5 +128,5 @@ addopts = [
     "--tb=short",
     "--strict-markers",
 ]
-pythonpath = ["backend", "archiver"]
-testpaths = ["backend", "archiver"]
+pythonpath = ["backend", "archiver", "ops"]
+testpaths = ["backend", "archiver", "ops"]

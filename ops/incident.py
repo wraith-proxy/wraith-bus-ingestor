@@ -27,20 +27,21 @@ Depends on bus_positions' DEDUP UPSERT KEYS(bus_id, timestamp) (enabled
 was only partially lost (not fully missing) double-counts the rows that
 were already there.
 
-restore() CANNOT restore a day archived before the 2026-09-18 schema change
-(docs/adr/0006, Correction): 63 archived days, 2026-07-03 .. 2026-09-06. QuestDB
-re-attaches a partition only into the table it was detached from (its _meta
-records the table id -- "Detached partition metadata [table_id] is not
-compatible with current table metadata"), and an archived partition holds its
-SYMBOL columns (bus_id, line) as integer keys into that table's symbol maps,
-which are NOT archived with it and were dropped along with bus_positions_old.
-restore() detects such a day by its vehicle_id column files (dropped in that
-migration) and refuses with that explanation rather than half-running.
-Days archived since (from bus_positions_v2~17, the live table) restore as
-before, because they go back into the same table.
+The archive is Parquet (docs/adr/0007): one self-describing file per day in
+`${ARCHIVE_PATH}/bus_positions_parquet/<day>.parquet`, real strings and its
+own schema. restore() copies the file into QuestDB's import directory and
+INSERTs it back through read_parquet(); the archiver then finds the day already
+archived, checks the file against the live rows, and drops the live copy. A
+day can also be read in place, no restore needed:
+
+    duckdb -c "SELECT ... FROM read_parquet('<archive>/bus_positions_parquet/*.parquet')"
+
+63 days (2026-07-03 .. 2026-09-06) are numeric-only: their bus_id/line symbol
+maps were lost in the 2026-09-18 schema migration (docs/adr/0006). They were
+salvaged to Parquet with `timestamp lat lon bearing` and the raw integer keys,
+and restore() refuses them -- there is no bus_id to load into bus_positions.
 """
 import argparse
-import glob
 import json
 import os
 import subprocess
@@ -60,9 +61,10 @@ TABLE = "bus_positions"
 ARCHIVE_ROOT = os.environ.get("ARCHIVE_PATH", "/mnt/archive/wraith-bus-ingestor-archive")
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "8"))
 
-def qdb_exec(query):
+
+def qdb_exec(query, timeout=30):
     url = QUESTDB + "/exec?" + urllib.parse.urlencode({"query": query})
-    with urllib.request.urlopen(url, timeout=30) as r:
+    with urllib.request.urlopen(url, timeout=timeout) as r:
         return json.load(r)
 
 
@@ -78,71 +80,70 @@ def is_attached(day, table=TABLE):
     return len(resp.get("dataset", [])) > 0
 
 
-def table_dir_name(table=TABLE):
-    """Ask QuestDB where the table lives instead of globbing for a name.
-    RENAME TABLE keeps the physical directory, so after docs/adr/0006 the live
-    bus_positions is bus_positions_v2~17 on disk and a `bus_positions~*` find
-    matches nothing. directoryName is authoritative."""
-    rows = qdb_exec(
-        f"SELECT directoryName FROM tables() WHERE table_name = '{table}'"
-    ).get("dataset", [])
-    if len(rows) != 1:
-        raise RuntimeError(f"expected exactly one table named {table}, found {rows!r}")
-    return rows[0][0]
+PARQUET_DIR = os.path.join(ARCHIVE_ROOT, "bus_positions_parquet")
+COLUMNS = [
+    "bus_id", "lat", "lon", "bearing", "timestamp", "line", "operator", "direction",
+    "journey_ref", "origin_aimed_dep", "published_line", "origin_ref", "origin_name",
+    "dest_ref", "dest_name", "block_ref", "dest_aimed_arr", "recorded_at",
+]  # bus_positions' columns in table order (docs/adr/0006)
 
 
-def is_legacy_partition(src):
-    """True if an archived partition still has the pre-2026-09-18 layout.
-    vehicle_id was dropped from bus_positions in that migration, so its column
-    files (vehicle_id.d, versioned e.g. vehicle_id.d.8) exist only in
-    partitions archived before it -- a physical fact, unlike the day's date."""
-    return bool(glob.glob(os.path.join(src, "vehicle_id.*")))
+def parquet_info(path):
+    """(column names, row count) read from the file itself."""
+    import duckdb
 
-
-def attach_partition(table, day, src):
-    """docker cp the archived partition into `table`'s own directory inside
-    the container, chown to the uid QuestDB runs as, then ATTACH it. Only ever
-    valid into the table the partition was detached from (see module docstring)."""
-    tdir = table_dir_name(table)
-    dest_in_container = f"/var/lib/questdb/db/{tdir}/{day}.attachable"
-    print(f"{day}: copying {src} -> {QUESTDB_CONTAINER}:{dest_in_container} ({table})")
-    docker("cp", src, f"{QUESTDB_CONTAINER}:{dest_in_container}")
-    docker(
-        "exec", "-u", "root", QUESTDB_CONTAINER,
-        "chown", "-R", "10001:10001", dest_in_container,
-    )
-    resp = qdb_exec(f"ALTER TABLE {table} ATTACH PARTITION LIST '{day}'")
-    if "ddl" not in resp:
-        raise RuntimeError(f"ATTACH failed for {day} on {table}: {resp!r}")
+    con = duckdb.connect()
+    try:
+        probe = con.execute("SELECT * FROM read_parquet(?) LIMIT 0", [path])
+        cols = [d[0] for d in probe.description]
+        rows = con.execute("SELECT count(*) FROM read_parquet(?)", [path]).fetchone()[0]
+    finally:
+        con.close()
+    return cols, rows
 
 
 def restore(day):
-    """Bring a day back from cold storage into live bus_positions.
-    No-op if already present. Refuses a day archived before the 2026-09-18
-    schema change (see module docstring and docs/adr/0006)."""
+    """Bring a day back from the Parquet archive into live bus_positions.
+    No-op if already present. The row count is checked against the file."""
     if is_attached(day):
         print(f"{day}: already attached, nothing to do")
         return
 
-    src = os.path.join(ARCHIVE_ROOT, TABLE, day)
-    if not os.path.isdir(src):
-        raise RuntimeError(f"no archived partition for {day} at {src}")
-
-    if is_legacy_partition(src):
+    src = os.path.join(PARQUET_DIR, f"{day}.parquet")
+    if not os.path.isfile(src):
+        raise RuntimeError(f"no parquet archive for {day} at {src}")
+    cols, rows = parquet_info(src)
+    if "bus_id" not in cols:
         raise RuntimeError(
-            f"{day}: cannot restore -- archived under the pre-2026-09-18 layout. QuestDB "
-            "re-attaches a partition only into the table it was detached from, and its "
-            "SYMBOL columns (bus_id, line) are integer keys into that table's symbol maps, "
-            "which were dropped with bus_positions_old. See docs/adr/0006 (Correction)."
+            f"{day}: numeric-only archive (salvaged from a pre-2026-09-18 partition whose "
+            "bus_id/line symbol maps were lost, docs/adr/0006) -- there is no bus_id to load "
+            f"into {TABLE}. Read it in place: duckdb -c \"SELECT * FROM read_parquet('{src}')\""
         )
 
-    attach_partition(TABLE, day, src)
-    for _ in range(20):
-        if is_attached(day):
-            print(f"{day}: attached")
-            return
-        time.sleep(0.5)
-    raise RuntimeError(f"{day}: ATTACH accepted but not visible as attached after 10s")
+    name = f"restore_{day}.parquet"
+    in_container = f"/var/lib/questdb/import/{name}"
+    print(f"{day}: copying {src} -> {QUESTDB_CONTAINER}:{in_container} ({rows:,} rows)")
+    docker("cp", src, f"{QUESTDB_CONTAINER}:{in_container}")
+    try:
+        docker("exec", "-u", "root", QUESTDB_CONTAINER, "chown", "10001:10001", in_container)
+        cols_sql = ", ".join(COLUMNS)
+        resp = qdb_exec(
+            f"INSERT INTO {TABLE} ({cols_sql}) SELECT {cols_sql} FROM read_parquet('{name}')",
+            timeout=900,
+        )
+        if "ddl" not in resp and "dml" not in resp:
+            raise RuntimeError(f"{day}: INSERT from parquet failed: {resp!r}")
+        for _ in range(600):  # WAL apply is asynchronous
+            got = qdb_exec(f"SELECT count() FROM {TABLE} WHERE timestamp IN '{day}'")
+            got = got["dataset"][0][0]
+            if got == rows:
+                break
+            time.sleep(0.5)
+        else:
+            raise RuntimeError(f"{day}: restored {got:,} rows, the file has {rows:,}")
+    finally:
+        docker("exec", "-u", "root", QUESTDB_CONTAINER, "rm", "-f", in_container, check=False)
+    print(f"{day}: restored {rows:,} rows")
 
 
 def extract_day(day_obj):
@@ -203,7 +204,7 @@ def main():
     )
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("restore", help="ATTACH one archived day back into live QuestDB")
+    r = sub.add_parser("restore", help="load one archived day back from its Parquet file")
     r.add_argument("day", help="YYYY-MM-DD")
 
     rp = sub.add_parser(

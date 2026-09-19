@@ -153,30 +153,77 @@ data and is regenerable from QuestDB, so it is pruned rather than archived.
 ## Archiving, not deleting
 
 `archiver/archive.py` runs continuously in its own container, checking
-once every 24 hours (`POLL_S`) for `bus_positions` partitions older than
+once every 24 hours (`POLL_S`) for `bus_positions` days older than
 `RETENTION_DAYS` (8, set in `.env`). QuestDB's native `SET TTL` was
 considered and rejected because TTL **drops** partitions outright; this
-box instead moves them to a separate cold drive intact.
+box exports them to a separate cold drive first (ADR-0007).
 
-The mechanism: `ALTER TABLE bus_positions DETACH PARTITION LIST '<day>'`
-lifts a partition out of the live table without destroying it, then the
-detached directory is `copytree`'d to `${ARCHIVE_PATH}/bus_positions/<day>`
-and verified by byte size before the local copy is freed. A partition that
-fails the size check is left both detached-and-local and archived rather
-than deleted from either side — it costs disk space until the next run
-retries, which is a far better failure mode than losing a day of data.
+**The archive is Parquet.** For each eligible day the archiver:
+
+1. streams QuestDB's own Parquet export (`/exp?fmt=parquet`, zstd level 3) to
+   `${ARCHIVE_PATH}/bus_positions_parquet/<day>.parquet.part`;
+2. reads that file back with DuckDB and checks it against QuestDB: the row
+   count must equal `count()` for that day, and the first and last timestamps
+   must fall inside the day;
+3. only then renames it into place, hands it to the archive owner
+   (`ARCHIVE_OWNER`, default `1000:1000`), and `ALTER TABLE bus_positions DROP
+   PARTITION`s the live copy.
+
+A day is never dropped before its file has been read back and matches. If
+verification fails the file is discarded and the live copy stays. Measured on
+a 34.1M-row day: 3.0GB of QuestDB partition became 0.69GB of Parquet in 25s
+(the QuestDB default codec gave 1.22GB; zstd level 9 saved only 3.6% more for
+2.3x the time). QuestDB peaked at ~4GB of its 8GB doing it.
+
+Each file is self-describing: real strings, its own schema, no dependency on
+`bus_positions` continuing to exist. So the archive can be **queried in place**
+without restoring anything:
+
+```bash
+duckdb -c "SELECT line, count(*) FROM read_parquet(
+  '/mnt/archive/wraith-bus-ingestor-archive/bus_positions_parquet/*.parquet',
+  union_by_name = true) GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
+```
+
+`union_by_name` matters: the 63 numeric-only days (below) have `bus_id_key` /
+`line_key` instead of `bus_id` / `line`, and read as NULL for those columns.
 
 Before touching anything, the archiver checks for a `.this-is-vault2`
 sentinel file inside `ARCHIVE_PATH`. If it's missing, the run refuses to
 touch any partition rather than risk archiving onto the wrong disk if the
-real archive mount isn't actually mounted there.
+real archive mount isn't actually mounted there. An export interrupted
+mid-write leaves a `.part` file, which the next run deletes; a half-written
+file can never look like a finished archive.
 
-A crash between DETACH succeeding and the copy finishing leaves a
-`<day>.detached` directory that QuestDB no longer considers live but the
-archiver hasn't finished migrating. Each run checks the filesystem
-directly for orphaned `.detached` directories first, before looking at
-what's newly eligible, so this resumes cleanly rather than being silently
-skipped.
+Every run records itself in QuestDB (`archiver_runs`: `ts, status, archived,
+skipped, detail`; status `ok` / `attention` / `error`). Grafana can see QuestDB
+but not the archive drive, so that table is what the two archiver alert rules
+read, and they reach your phone through the same ntfy path as the others:
+
+- **archiver has not run cleanly**: no `ok` row in 36h. The dead-man switch:
+  container down, or every run failing. This is the alert that would have caught
+  the 2026-09-16 to 09-19 jam, when nothing was archived and nobody was told.
+- **archiver needs attention**: the latest run was `attention` (a day was left
+  in place on purpose) or `error`. It clears when a later run is clean;
+  `docker restart ghost-archiver` runs one immediately.
+
+### The 63 numeric-only days
+
+The archive was raw QuestDB partition directories until ADR-0007. Those were
+converted and then **deleted on 2026-09-19** (46.7GB; a manifest is in
+`raw_partitions_deleted_2026-09-19.txt` on the archive drive). Parquet is the
+only archive now, 68 files:
+
+- 5 days (2026-09-07 to 09-11) were archived after the schema migration, so they
+  decoded fully and were converted losslessly (restored, then exported).
+- 63 days (2026-07-03 to 2026-09-06) had their `bus_id` / `line` symbol maps
+  destroyed (ADR-0006). `ops/salvage_legacy_archive.py` wrote what still exists:
+  `timestamp`, `lat`, `lon`, `bearing` and the raw `bus_id_key` / `line_key`
+  integers, with the file's key/value metadata (`wraith.layout =
+  numeric-salvage`) saying so. Padding rows were trimmed and every assumption
+  asserted first; an independent recount matched all 63 before the raw copy was
+  deleted. That script is kept as provenance and cannot be re-run: its source is
+  gone.
 
 ### GOTCHA: `RENAME TABLE` keeps the physical directory name
 
@@ -188,61 +235,59 @@ dir, found []`), and `ops/incident.py` had the same pattern. Both now ask
 QuestDB: `SELECT directoryName FROM tables() WHERE table_name = 'bus_positions'`.
 Never hardcode or glob a table's directory.
 
-### GOTCHA: archived partitions are not self-contained
+### GOTCHA: raw QuestDB partitions are not self-contained (why the archive is Parquet)
 
-A partition archived by DETACH + copy holds SYMBOL columns (`bus_id`, `line`,
-...) as integer keys into the **source table's** symbol maps, and those map
-files are not in the archive. QuestDB also re-attaches a partition only into
-the table it was detached from (`Detached partition metadata [table_id] is not
-compatible with current table metadata`). So an archive is only as good as the
-table it came from: dropping or recreating that table strands every archived
-day. That happened to the 63 days archived before ADR-0006's migration
-(2026-07-03 .. 2026-09-06): `ops/incident.py restore` refuses them, and only
-their raw `timestamp`/`lat`/`lon`/`bearing` survive. **Never drop or recreate
-`bus_positions` while its archive matters.**
+A DETACHed partition holds SYMBOL columns (`bus_id`, `line`, ...) as integer
+keys into the **source table's** symbol maps, and those map files are not in
+the archive. QuestDB also re-attaches a partition only into the table it was
+detached from (`Detached partition metadata [table_id] is not compatible with
+current table metadata`). So a raw archive is only as good as the table it came
+from: dropping or recreating that table strands every archived day, which
+happened to 63 days in ADR-0006's migration. Parquet has neither problem, and
+is the archive format since ADR-0007. The raw directories were deleted once
+the Parquet copies were verified.
 
 ### GOTCHA: a restored day comes back through the archiver
 
-`ops/incident.py restore` leaves the day attached in the live table. Once it
-is older than `RETENTION_DAYS` the archiver detaches it again and finds
-`${ARCHIVE_PATH}/bus_positions/<day>` already exists (that is where it came
-from). Until 2026-09-19 that logged `archive destination ... already exists --
-stopping, needs a human` and stopped the whole run, and every later run
-resumed the same orphan and stopped again, so **nothing else was archived**:
-nothing from 2026-09-16 to 2026-09-19, with Sep 7-10 left on the SSD.
+`ops/incident.py restore` puts the day back in the live table. Once it is older
+than `RETENTION_DAYS` the archiver picks it up again and finds
+`bus_positions_parquet/<day>.parquet` already exists (that is where it came
+from). Until 2026-09-19 the old archiver logged `archive destination ... already
+exists -- stopping, needs a human` and stopped the whole run, and every later
+run stopped again, so **nothing else was archived** from 2026-09-16 to
+2026-09-19.
 
-The archiver now never copies over an existing archive and never stops for
-it. If the archive is exactly the same size it frees the local copy (the same
-size-verified proof the normal path uses). If the sizes differ it logs a
-`WARNING`, skips, and **leaves the local `<day>.detached` in place**: a
-crashed earlier copy leaves a partial archive, and the local copy would then
-be the only complete one. A restored day comes back byte-identical, so the normal
-outcome is "already archived and identical ... freed the local copy" (verified
-2026-09-19 on 2026-09-11, twice). Other failures (size mismatch after a
-fresh copy, a failed DETACH, a missing `.this-is-vault2` sentinel) still stop
-the run on purpose.
+It now never rewrites an existing file and never stops for it. It reads the file
+back: if its row count equals the live day it drops the live copy ("already
+archived (N rows verified)"); if not, it logs a `WARNING`, leaves the live day
+in place and skips it, the run status becomes `attention`, and the alert fires.
+Nothing is dropped on a guess about which side is right. The normal outcome is
+the first (verified on 2026-09-11, twice). Any other failure (an export that
+fails verification, a failed DROP, a missing sentinel) stops the run.
 
 ## Recovering a lost day: `ops/incident.py`
 
-`ops/incident.py` is the other half of the archive: `archive.py` moves
-partitions out, this brings them back and rebuilds whatever depended on
-them. It runs on the host rather than in a container because it needs both
-`docker` (to reach into QuestDB's uid-10001-owned partition directory —
-the same workaround used for `server.conf` edits) and this repo's
-virtualenv, since it imports `extract.py` and reuses its chunked fetch
+`ops/incident.py` is the other half of the archive: `archive.py` exports days
+out, this brings them back and rebuilds whatever depended on them. It runs on
+the host rather than in a container because it needs both `docker` (to copy the
+file into QuestDB's import directory, which is owned by uid 10001) and this
+repo's virtualenv, since it imports `extract.py` and reuses its chunked fetch
 rather than reimplementing it.
 
 ```bash
-ops/incident.py restore 2026-08-02             # one archived day back into QuestDB
-ops/incident.py replay 2026-08-01 2026-08-03   # restore + re-extract + rebuild
+ops/incident.py restore 2026-09-08             # one archived day back into QuestDB
+ops/incident.py replay 2026-09-01 2026-09-03   # restore + re-extract + rebuild
 ```
 
-`restore <day>` copies the archived partition into the container, chowns it
-to uid 10001, and `ALTER TABLE bus_positions ATTACH PARTITION LIST '<day>'`.
-It then polls `table_partitions()` for up to 10s instead of trusting the
-DDL's own return, because "accepted" and "visible as attached" are not the
-same moment. It is idempotent — a day already attached is a no-op, not an
-error — which is what makes it safe for `replay` to call blindly.
+`restore <day>` reads the day's Parquet file, copies it into QuestDB's `import`
+directory, and `INSERT`s it back through `read_parquet()`. It then polls until
+QuestDB's row count for the day equals the file's, because the insert is applied
+asynchronously, and removes the copy. It is idempotent: a day already in the
+table is a no-op, not an error, which is what makes it safe for `replay` to call
+blindly. It **refuses the 63 numeric-only days** (2026-07-03 to 2026-09-06),
+which have no `bus_id` to load; read those in place with DuckDB. Fidelity is
+checked, not assumed: on 2026-09-11 the restored partition matched its file on
+row count, distinct buses, distinct lines and the lat/lon/bearing sums.
 
 `replay <start> <end>` is built on `restore` rather than duplicating it.
 For each day in the range it restores the day if that day falls outside the

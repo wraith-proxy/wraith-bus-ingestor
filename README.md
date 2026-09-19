@@ -24,7 +24,7 @@ BODS SIRI-VM feed (every 60s, mainland GB bbox)
   ↓ [ingestor container]
 QuestDB (time-series, ILP)
   ├─ Live table: bus_positions (append-only, partitioned by day)
-  └─ Retention: 8 days hot on SSD, older partitions DETACH + archive to separate drive
+  └─ Retention: 8 days hot on SSD, older days exported to Parquet on a separate drive
   ↓ [dbt/build.sh, nightly 03:00 via systemd timer]
 dbt models (DuckDB)
   ├─ Staging: one model per source system (bods/, naptan/), views
@@ -111,7 +111,7 @@ cd wraith-bus-ingestor
 docker compose up -d
 
 docker logs -f ingestor     # polling BODS
-docker logs -f archiver     # runs once daily, moves old partitions
+docker logs -f archiver     # runs once daily, exports old days to Parquet
 docker logs -f api          # Flask API startup
 
 # Rebuild the dbt warehouse (~5 min once the incremental warehouse is warm,
@@ -149,7 +149,7 @@ git commit
 ├── backend/             — Flask API
 ├── dbt/                 — data warehouse (staging/bods, staging/naptan, intermediate, marts)
 ├── ingestor/            — BODS SIRI-VM → QuestDB poller
-├── archiver/            — partition retention (DETACH + archive, not delete)
+├── archiver/            — retention: export old days to Parquet on the archive drive, then drop
 ├── contracts/           — ODCS data contracts + ontology
 │
 │                        untracked, 29GB, written by the containers:
@@ -160,10 +160,12 @@ git commit
 
 ## 🧩 The Hard Decisions Baked In
 
-**Partitions are archived, not deleted.** QuestDB's native `SET TTL` drops
+**Days are archived, not deleted.** QuestDB's native `SET TTL` drops
 data outright; this keeps 8 days hot on fast SSD (`RETENTION_DAYS`, cut
-from 22 on 2026-09-14 — see `docs/ROADMAP.md` 1.0.0) and moves older
-partitions to a separate drive intact for long-term storage.
+from 22 on 2026-09-14 — see `docs/ROADMAP.md` 1.0.0) and exports older
+days to Parquet on a separate drive, verified row for row before the live
+copy is dropped (`docs/adr/0007`). The archive is self-describing and can be
+queried in place with DuckDB.
 
 **Direction is inferred.** The feed started sending real `DirectionRef` on
 2026-09-12, but historical data is NULL. `int_journeys_shaped_and_directed`

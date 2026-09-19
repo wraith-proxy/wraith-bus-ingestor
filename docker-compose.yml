@@ -102,8 +102,10 @@ services:
     environment:
       - QUESTDB_URL=${QUESTDB_URL}
       - RETENTION_DAYS=${RETENTION_DAYS}
+    # No QuestDB data mount any more: days are exported over QuestDB's own HTTP
+    # API to Parquet and dropped via SQL, so this container never touches its
+    # partition files (docs/adr/0007).
     volumes:
-      - ${QUESTDB_DATA_PATH}/db:/questdb_data/db
       - ${ARCHIVE_PATH}:/archive
     networks:
       - ghost-net

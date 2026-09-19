@@ -145,3 +145,97 @@ groups:
             Closes the gap where dbt's freshness warn and severity:warn results
             only ever reached build.log -- a warn exits the build green, so
             nothing surfaced it and nobody opened the log to find out.
+
+      # The archiver (archiver/archive.py) writes one row to archiver_runs per
+      # run; Grafana can see QuestDB but not the archive drive, so that table is
+      # what these two rules read. archiver_runs is created by the archiver's
+      # first run, so on a fresh stack these sit in health=error until it has
+      # run once -- the same cold-start state as the dbt rules above.
+      - uid: wraith-archiver-not-running
+        title: archiver has not run cleanly
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: questdb
+            relativeTimeRange:
+              from: 129600
+              to: 0
+            model:
+              refId: A
+              format: table
+              rawQuery: true
+              # 36h for a job that runs every 24h: one missed or slow run does
+              # not page, two do. This is the alert that would have caught the
+              # 2026-09-16..19 jam, when the archiver "ran" every day but
+              # archived nothing and nobody was told.
+              rawSql: >-
+                select count() from archiver_runs
+                where ts > dateadd('h', -36, now()) and status = 'ok'
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: lt
+                    params:
+                      - 1
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: No clean archiver run in the last 36 hours.
+          description: >-
+            Either the archiver container is down or every run since has failed
+            or needed attention. Until it runs, old days stay on the SSD and it
+            fills. See `docker logs ghost-archiver` and archive.log on the
+            archive drive, and docs/operations.md ("Archiving").
+
+      - uid: wraith-archiver-attention
+        title: archiver needs attention
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: questdb
+            relativeTimeRange:
+              from: 129600
+              to: 0
+            model:
+              refId: A
+              format: table
+              rawQuery: true
+              # last() follows the designated timestamp, so this is the most
+              # recent run. 'attention' = a day was left in place for a human
+              # (already archived but its file disagrees with the live rows);
+              # 'error' = the run itself failed. It clears when a later run is
+              # clean: `docker restart ghost-archiver` runs one immediately.
+              rawSql: >-
+                select case when last(status) != 'ok' then 1 else 0 end
+                from archiver_runs
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: NoData
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The most recent archiver run failed or left a day for you.
+          description: >-
+            A day was left on the SSD on purpose (its Parquet file and the live
+            rows disagree, or an export failed verification) or the run errored.
+            Nothing has been dropped that was not proven. Read archive.log on
+            the archive drive for the day and the reason.
