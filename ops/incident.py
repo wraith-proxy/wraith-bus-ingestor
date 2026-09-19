@@ -27,23 +27,17 @@ Depends on bus_positions' DEDUP UPSERT KEYS(bus_id, timestamp) (enabled
 was only partially lost (not fully missing) double-counts the rows that
 were already there.
 
-restore() ALSO handles days archived under the pre-2026-09-18 schema
-(docs/adr/0006): bus_positions changed column types (vehicle_id dropped;
-journey_ref/published_line/origin_ref/origin_name/dest_ref/dest_name/
-block_ref VARCHAR -> SYMBOL; lat/lon/bearing DOUBLE -> FLOAT) and QuestDB
-has no live cast-on-attach -- ATTACH PARTITION requires the on-disk file to
-already match the live table's column definitions. An archived day whose
-files still carry the dropped vehicle_id column is attached into a small
-persistent legacy-schema shadow table instead (the layout it was archived
-under), then INSERTed into live bus_positions through the same CAST()
-expressions the bulk migration used. Rewritten lazily, one day at a time,
-only for a day someone actually restores -- not an upfront rewrite of the
-whole archive.
-
-The test is the partition's own files, NOT the day's date: every day that
-was in the live table on 2026-09-18 was migrated in place, so a day like
-2026-09-08 archived AFTER the cutover has the new layout despite predating
-it. Only days archived before the cutover carry the old one.
+restore() CANNOT restore a day archived before the 2026-09-18 schema change
+(docs/adr/0006, Correction): 63 archived days, 2026-07-03 .. 2026-09-06. QuestDB
+re-attaches a partition only into the table it was detached from (its _meta
+records the table id -- "Detached partition metadata [table_id] is not
+compatible with current table metadata"), and an archived partition holds its
+SYMBOL columns (bus_id, line) as integer keys into that table's symbol maps,
+which are NOT archived with it and were dropped along with bus_positions_old.
+restore() detects such a day by its vehicle_id column files (dropped in that
+migration) and refuses with that explanation rather than half-running.
+Days archived since (from bus_positions_v2~17, the live table) restore as
+before, because they go back into the same table.
 """
 import argparse
 import glob
@@ -63,38 +57,8 @@ sys.path.insert(0, DBT_DIR)
 QUESTDB = os.environ.get("QUESTDB_HTTP", "http://localhost:9001")
 QUESTDB_CONTAINER = os.environ.get("QUESTDB_CONTAINER", "questdb")
 TABLE = "bus_positions"
-LEGACY_TABLE = "bus_positions_legacy_schema"
 ARCHIVE_ROOT = os.environ.get("ARCHIVE_PATH", "/mnt/archive/wraith-bus-ingestor-archive")
 RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "8"))
-
-# The pre-2026-09-18 physical schema, exactly as it was archived under --
-# SYMBOL capacities copied from a real `SHOW COLUMNS FROM bus_positions`
-# taken before the migration, not guessed, so an ATTACH of an old day's
-# files against this table never hits a column-shape mismatch.
-LEGACY_SCHEMA_DDL = f"""
-CREATE TABLE IF NOT EXISTS {LEGACY_TABLE} (
-    bus_id SYMBOL CAPACITY 65536 CACHE,
-    lat DOUBLE,
-    lon DOUBLE,
-    bearing DOUBLE,
-    timestamp TIMESTAMP,
-    vehicle_id SYMBOL CAPACITY 256 CACHE,
-    line SYMBOL CAPACITY 4096 CACHE,
-    operator SYMBOL CAPACITY 512 CACHE,
-    direction SYMBOL CAPACITY 256 CACHE,
-    journey_ref VARCHAR,
-    origin_aimed_dep LONG,
-    published_line VARCHAR,
-    origin_ref VARCHAR,
-    origin_name VARCHAR,
-    dest_ref VARCHAR,
-    dest_name VARCHAR,
-    block_ref VARCHAR,
-    dest_aimed_arr LONG,
-    recorded_at LONG
-) TIMESTAMP(timestamp) PARTITION BY DAY
-"""
-
 
 def qdb_exec(query):
     url = QUESTDB + "/exec?" + urllib.parse.urlencode({"query": query})
@@ -137,9 +101,8 @@ def is_legacy_partition(src):
 
 def attach_partition(table, day, src):
     """docker cp the archived partition into `table`'s own directory inside
-    the container, chown to the uid QuestDB runs as, then ATTACH it. Shared
-    by both the live table (new-schema days) and the legacy shadow table
-    (old-schema days) -- same mechanism, different destination table."""
+    the container, chown to the uid QuestDB runs as, then ATTACH it. Only ever
+    valid into the table the partition was detached from (see module docstring)."""
     tdir = table_dir_name(table)
     dest_in_container = f"/var/lib/questdb/db/{tdir}/{day}.attachable"
     print(f"{day}: copying {src} -> {QUESTDB_CONTAINER}:{dest_in_container} ({table})")
@@ -155,9 +118,8 @@ def attach_partition(table, day, src):
 
 def restore(day):
     """Bring a day back from cold storage into live bus_positions.
-    No-op if already present. A day archived under the pre-2026-09-18
-    layout is rewritten through the legacy shadow table on the way in (see
-    module docstring and docs/adr/0006) -- transparent to the caller either way."""
+    No-op if already present. Refuses a day archived before the 2026-09-18
+    schema change (see module docstring and docs/adr/0006)."""
     if is_attached(day):
         print(f"{day}: already attached, nothing to do")
         return
@@ -167,32 +129,12 @@ def restore(day):
         raise RuntimeError(f"no archived partition for {day} at {src}")
 
     if is_legacy_partition(src):
-        print(f"{day}: archived under the pre-2026-09-18 layout -- rewriting via {LEGACY_TABLE}")
-        qdb_exec(LEGACY_SCHEMA_DDL)
-        attach_partition(LEGACY_TABLE, day, src)
-        for _ in range(20):
-            if is_attached(day, table=LEGACY_TABLE):
-                break
-            time.sleep(0.5)
-        else:
-            raise RuntimeError(
-                f"{day}: ATTACH into {LEGACY_TABLE} accepted but not visible after 10s"
-            )
-
-        # Same CAST() expressions as the one-shot bulk migration (docs/adr/0006)
-        # -- defined once there, mirrored here, not re-derived from scratch.
-        resp = qdb_exec(
-            f"INSERT INTO {TABLE} "
-            f"SELECT bus_id, cast(lat AS FLOAT), cast(lon AS FLOAT), cast(bearing AS FLOAT), "
-            f"timestamp, line, operator, direction, journey_ref, origin_aimed_dep, "
-            f"published_line, origin_ref, origin_name, dest_ref, dest_name, block_ref, "
-            f"dest_aimed_arr, recorded_at "
-            f"FROM {LEGACY_TABLE} WHERE timestamp IN '{day}'"
+        raise RuntimeError(
+            f"{day}: cannot restore -- archived under the pre-2026-09-18 layout. QuestDB "
+            "re-attaches a partition only into the table it was detached from, and its "
+            "SYMBOL columns (bus_id, line) are integer keys into that table's symbol maps, "
+            "which were dropped with bus_positions_old. See docs/adr/0006 (Correction)."
         )
-        if "ddl" not in resp and "dml" not in resp:
-            raise RuntimeError(f"legacy rewrite INSERT failed for {day}: {resp!r}")
-        print(f"{day}: rewritten from legacy schema and inserted into {TABLE}")
-        return
 
     attach_partition(TABLE, day, src)
     for _ in range(20):

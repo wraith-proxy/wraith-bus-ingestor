@@ -1,6 +1,6 @@
 # ADR 0006: Optimise `bus_positions`' on-disk schema
 
-**Status:** Executed 2026-09-18; `bus_positions_old` dropped early on 2026-09-19 (burn-in waived) -- see Correction below
+**Status:** Executed 2026-09-18; `bus_positions_old` dropped early on 2026-09-19 (burn-in waived) -- see Correction below (the archive-restore design in this ADR does not work)
 **Date:** 2026-09-18
 **Related:** [docs/ROADMAP.md § 1.0.0](../ROADMAP.md), `ops/incident.py`, `dbt/models/staging/bods/_bods__sources.yml`
 
@@ -83,7 +83,11 @@ archived to `/mnt/archive` (anything older than the 8-day hot window) was
 written under the *current* schema. Changing `bus_positions`' column
 types breaks `ATTACH` for all of that history unless it's addressed.
 
-**Decided:** neither an upfront archive rewrite nor an accepted
+> **SUPERSEDED 2026-09-19 -- this design does not work. See "Correction" at the
+> end: an old-layout archived day cannot be attached into a shadow table, and
+> its SYMBOL values were lost with the old table.**
+
+**Decided (superseded):** neither an upfront archive rewrite nor an accepted
 regression. Data older than the 8-day hot window is rarely touched by
 `restore`/`replay` in practice -- no need to pay for rewriting all of it
 up front. Instead:
@@ -126,7 +130,7 @@ days from new ones, and a `vehicle_id` note added confirming it was
 never a documented property here to begin with -- its removal from the
 physical table is not a contract break.
 
-**`ops/incident.py` recoded to match -- done.** `restore()` now checks
+**`ops/incident.py` recoded to match -- done, then removed 2026-09-19 (see Correction).** `restore()` now checks
 `schema_cutover_date()` first. A day older than cutover attaches into a
 small persistent `bus_positions_legacy_schema` shadow table (the exact
 pre-2026-09-18 column layout, `SYMBOL CAPACITY` values copied from a
@@ -280,9 +284,8 @@ SSD copy was verified (22G, 734 files, uid 10001 ownership intact) and the
 platform came back healthy with the ingestor writing the new schema.
 
 **Real cost:** a one-way schema change to the platform's core ingest
-table, plus a new code path in `ops/incident.py` (lazy per-day rewrite)
-that's implemented but not yet exercised against a real archived
-pre-cutover day -- first real use will be its first real test.
+table, and the loss of 63 archived days' decodable `bus_id`/`line` (see
+Correction) -- a cost this ADR did not foresee.
 
 **Revisit if:** `restore`/`replay` on old-generation days turns out to
 be needed often enough that the lazy per-day rewrite cost becomes a real
@@ -291,32 +294,61 @@ rejected option 1) may be worth revisiting.
 
 ## Correction (2026-09-19)
 
-Two things in this ADR were wrong or incomplete, found the day after.
+**The archive-restore design in this ADR is wrong, and 63 archived days are
+no longer fully restorable.** It asserted that old-layout archived days would
+"stay restorable" through a lazy per-day rewrite, and that "nothing there is
+destroyed" by the cutover. That was never tested against a real old-layout day
+before the old table was dropped. The first real attempt (2026-08-31) failed
+at ATTACH with QuestDB's own message: `Detached partition metadata [table_id]
+is not compatible with current table metadata`.
 
-**`restore()` cannot decide "old layout" from the day's date.** The design
-above keys the lazy rewrite on `day < schemaCutoverDate`. But every day that
-was in the live table on 2026-09-18 was migrated in place, so a day such as
-2026-09-08 that is archived *after* the cutover carries the new layout
-despite predating it, and would have been sent down the legacy path and
-failed to attach. `ops/incident.py` now tests the partition's own files
-instead: an archived day still containing `vehicle_id.*` column files (the
-column dropped in this migration; versioned, e.g. `vehicle_id.d.8`) has the
-old layout. `schemaCutoverDate` stays in the contract as documentation only
-and is no longer read by any code. The legacy path itself remains
-unexercised against a real old-layout day; the detector was checked against
-real archived days (2026-08-23 and 2026-09-06 both correctly flagged legacy).
+**Why it cannot work.** A partition's `_meta` records the table it came from,
+and QuestDB re-attaches it only into that same table -- the same restriction
+its docs state as "moving partitions between tables ... is not supported",
+which was read earlier and under-weighted. Worse, an archived partition is not
+self-contained: `bus_id.d` and `line.d.9` are 4-byte integer keys into the
+source table's symbol maps (`bus_id.c/.k/.o/.v`), and **none of those files are
+in the archive**. Checked directly on `2026-08-31`: the partition holds only
+`bearing.d bus_id.d lat.d line.d.9 lon.d timestamp.d vehicle_id.d.8` plus
+`_meta _cv _txn`.
 
-**The migration broke the archiver and `ops/incident.py`.** `RENAME TABLE`
-kept the physical directory `bus_positions_v2~17`, so both globbed
-`bus_positions~*` and found nothing. The archiver failed at 06:00 on
-2026-09-19 (`found []`); `restore()` would have failed the same way. Both
-now ask QuestDB for the directory (`tables().directoryName`). This was a
-direct consequence of the rename cutover and should have been caught by
-grepping for the directory pattern before cutover -- it was not.
+**What was lost, and how.** The symbol maps lived in the old table's directory
+(`bus_positions~8`). Two steps removed the last copies: `DROP TABLE
+bus_positions_old` on 2026-09-19 (the burn-in that would have kept it was
+waived), and the `rsync --delete` that moved the migrated data back over the
+SSD's original `questdb_data` (which still held `bus_positions~8`). The SATA
+working copy had already been through the drop, and was later deleted. A
+search of the SSD and SATA found no surviving copy. Keeping `bus_positions_old`
+would have preserved restorability, because it retains the original table id
+-- so the burn-in was doing more than the rollback safety this ADR credited it
+with, and that was not understood at the time.
 
-One loose end from the drop of `bus_positions_old`: it carried an orphaned
-`2026-07-03.detached` directory (the archiver was jammed on it since
-2026-09-16, see `docs/operations.md`). `DROP TABLE` removed it. The
-`2026-07-03` archive copy on SATA is present with all column files (447M)
-and is what that partition was restored from, but it was not re-verified
-byte-for-byte against the dropped orphan.
+**Affected:** the 63 days archived before the migration, `2026-07-03` to
+`2026-09-06` (every archived day with a `vehicle_id.*` column file). What
+survives in them is the raw numeric columns (`timestamp`, `lat`, `lon`,
+`bearing`) -- positions with no bus or line identity. `restore()` now detects
+these days by their `vehicle_id.*` files and refuses with the reason, instead
+of half-running.
+
+**Unaffected, and proven:** days archived since the migration were detached
+from the live table, so they attach back into it and decode from its symbol
+maps. Verified on the real system on `2026-09-11` (twice): restore attached
+16,786,332 rows, exactly the archived count; real bus ids and lines decoded
+(`A2BV-24` / line `181`, north-west coordinates); the archiver's second
+detach hit "already archived and identical" and freed the local copy; the
+archive was byte-identical afterwards.
+
+**General lesson.** A QuestDB archive made by DETACH + copy depends on the
+symbol maps of the table it came from. Never drop or recreate a table whose
+archived partitions you still want to restore, and this includes today's
+`bus_positions_v2~17`. Parquet is self-describing and would remove that
+dependency; not decided here.
+
+**Also fixed 2026-09-19:** `RENAME TABLE` keeps the physical directory
+(`bus_positions_v2~17`), which broke the archiver and `ops/incident.py`; both
+now ask QuestDB (`tables().directoryName`). This should have been caught by
+grepping for the directory pattern before cutover.
+
+**Open, for the owner to decide:** accept the loss (the data was regarded as
+stale glacier); salvage the numeric columns of the 63 days; and/or move the
+archive format to something self-describing going forward.

@@ -297,10 +297,11 @@ customProperties:
       The physical schema changed on this date (docs/adr/0006): vehicle_id
       dropped, lat/lon/bearing DOUBLE -> FLOAT, seven VARCHAR columns ->
       SYMBOL. Informational only -- no code reads it. ops/incident.py's
-      restore() decides whether an archived day has the old layout from the
-      partition's own files (vehicle_id.* present), because a day migrated
-      in place on this date and archived afterwards has the new layout
-      despite being dated before it.
+      restore() spots an archived day with the old layout from the partition's
+      own files (vehicle_id.* present) and refuses it: such days cannot be
+      re-attached and their SYMBOL values are gone (docs/adr/0006,
+      Correction). A day migrated in place on this date and archived
+      afterwards has the new layout despite being dated before it.
   - property: producer
     value: ingestor/ingest.py
   - property: upstreamSource

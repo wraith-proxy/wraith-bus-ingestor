@@ -188,6 +188,19 @@ dir, found []`), and `ops/incident.py` had the same pattern. Both now ask
 QuestDB: `SELECT directoryName FROM tables() WHERE table_name = 'bus_positions'`.
 Never hardcode or glob a table's directory.
 
+### GOTCHA: archived partitions are not self-contained
+
+A partition archived by DETACH + copy holds SYMBOL columns (`bus_id`, `line`,
+...) as integer keys into the **source table's** symbol maps, and those map
+files are not in the archive. QuestDB also re-attaches a partition only into
+the table it was detached from (`Detached partition metadata [table_id] is not
+compatible with current table metadata`). So an archive is only as good as the
+table it came from: dropping or recreating that table strands every archived
+day. That happened to the 63 days archived before ADR-0006's migration
+(2026-07-03 .. 2026-09-06): `ops/incident.py restore` refuses them, and only
+their raw `timestamp`/`lat`/`lon`/`bearing` survive. **Never drop or recreate
+`bus_positions` while its archive matters.**
+
 ### GOTCHA: a restored day comes back through the archiver
 
 `ops/incident.py restore` leaves the day attached in the live table. Once it
@@ -203,10 +216,9 @@ it. If the archive is exactly the same size it frees the local copy (the same
 size-verified proof the normal path uses). If the sizes differ it logs a
 `WARNING`, skips, and **leaves the local `<day>.detached` in place**: a
 crashed earlier copy leaves a partial archive, and the local copy would then
-be the only complete one. Expect that WARNING for a restored old-layout day
-(its live copy was rewritten to the new layout, so it differs in size from the
-old-layout archive); once you have checked the archive, the leftover
-`<day>.detached` can be deleted by hand. Other failures (size mismatch after a
+be the only complete one. A restored day comes back byte-identical, so the normal
+outcome is "already archived and identical ... freed the local copy" (verified
+2026-09-19 on 2026-09-11, twice). Other failures (size mismatch after a
 fresh copy, a failed DETACH, a missing `.this-is-vault2` sentinel) still stop
 the run on purpose.
 

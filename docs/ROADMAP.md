@@ -363,17 +363,20 @@ Landed 2026-09-18. Full investigation, decision, and measured outcome in
 cutover: exact row count match, sub-metre `FLOAT` precision loss,
 exact `SYMBOL` distinct-count match, full `dbt run`+`dbt test`
 (884/884) against data extracted from the new table before it went
-live. `ops/incident.py restore()` recoded with a lazy per-day rewrite
-path so archived days older than the schema cutover stay restorable.
+live. **Correction 2026-09-19:** the 63 days archived before the migration
+can no longer be restored (their SYMBOL values went with the dropped old
+table) -- see the ADR's Correction section.
 
 **Remaining:**
-- `ops/incident.py`'s lazy-rewrite path (an old-layout archived day) is
-  implemented but not yet exercised against a real one. The detector that
-  routes to it was checked against real archived days; the rewrite itself
-  was not.
-- `bus_positions_old` was dropped early (2026-09-19) instead of after the
-  planned week-long burn-in -- there is no old-schema hot table to fall back
-  to. See the ADR's Correction section.
+- **63 archived days (2026-07-03 .. 2026-09-06) are not restorable** -- only
+  their raw `timestamp`/`lat`/`lon`/`bearing` survive. Open decision: accept,
+  salvage the numeric columns, and/or make the archive format self-describing
+  (e.g. Parquet) so it no longer depends on the source table's symbol maps.
+- Days archived since the migration are restorable (proven on 2026-09-11) but
+  still depend on `bus_positions_v2~17`'s symbol maps: do not drop or recreate
+  that table while its archive matters.
+- `bus_positions_old` was dropped early (2026-09-19), not after the planned
+  burn-in -- there is no old-schema hot table to fall back to.
 
 ## Known issues -- raised, not yet actioned
 
