@@ -29,6 +29,18 @@ WorkingDirectory=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingesto
 # at build time -- see MemoryMax's own history below.
 ExecStartPre=-/usr/bin/docker stop ghost-osrm ghost-backend ghost-tiles ghost-grafana
 ExecStopPost=/usr/bin/docker start ghost-osrm ghost-backend ghost-tiles ghost-grafana
+#
+# ollama and immich (~4GB, and only the owner uses them) are stopped for the
+# build window too, then restarted afterwards -- 2026-09-19. Via
+# ops/build_window.sh rather than a plain `docker stop`/`docker start` pair, so
+# that only containers this run actually stopped come back: a container the
+# owner had deliberately left off stays off. ExecStopPost runs when the build
+# fails too. The state file lives in RuntimeDirectory (removed when the unit
+# ends). Dependencies are stopped first and started last (postgres/redis before
+# immich_server). Both lines are `-`-prefixed: this must never fail a build.
+RuntimeDirectory=wraith-bus-build
+ExecStartPre=-/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/ops/build_window.sh stop ollama immich_server immich_machine_learning immich_redis immich_postgres
+ExecStopPost=-/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/ops/build_window.sh start
 # `docker start` on an already-created (stopped, not removed) container
 # still reassigns its IP on ghost-net -- confirmed directly 2026-09-18,
 # not assumed from the recreate/down-up case docs/operations.md and

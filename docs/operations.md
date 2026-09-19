@@ -150,6 +150,23 @@ push.
 Run 1 uses the same minimal environment systemd gives the unit (`env -i`, no
 `~/.local/bin` on PATH, not root's `HOME`), on purpose.
 
+### The build window stops what the build does not need, and restarts it
+
+`wraith-bus-build.service` stops `ghost-osrm`, `ghost-backend`, `ghost-tiles` and
+`ghost-grafana` before the build and starts them after (the public site is dark
+for the build's ~1h+), and, since 2026-09-19, **ollama and immich** too (~4GB,
+only the owner uses them). ollama/immich go through `ops/build_window.sh`, not a
+plain `docker stop`/`start` pair, so only containers that run actually stopped
+come back: one you had deliberately left off stays off. It records each
+container before stopping it, restarts them in reverse order (postgres/redis
+before `immich_server`), and refuses to stop anything if it cannot write its
+state file (`/run/wraith-bus-build/`, the unit's `RuntimeDirectory`), because
+without a record nothing could bring them back. The restart runs when the build
+fails too (`ExecStopPost`), and both lines are `-`-prefixed so this can never
+fail a build. `ops/verify_build.sh` does the same stopping itself for its
+manual Run 1. Changing the unit file needs `sudo cp` to `/etc/systemd/system/`
+and `daemon-reload`.
+
 ### GOTCHA: the API holds every mart row in Python memory, and the marts outgrew its limit
 
 `backend/app.py` loads `eta_models`, `localities`, `line_localities` and
