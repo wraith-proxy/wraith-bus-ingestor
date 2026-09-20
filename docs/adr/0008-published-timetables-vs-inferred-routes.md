@@ -1,6 +1,6 @@
 # ADR 0008: Published timetables (BODS GTFS) replace inferred route shape; London stays inferred
 
-**Status:** Accepted 2026-09-20. Phase 1 (delete `line_stops`/`line_localities`, adopt GTFS route shape) and Phase 2 (add a timetable-pinned ETA rung) are both scoped here. *Amended 2026-09-20:* the Phase 1 GTFS build now exists and has been run against the real feed (see "Amendment 2026-09-20"), but nothing has been deleted and the API still reads `line_stops`; Phase 2 has not been started. `memtest86+` came back clean on 2026-09-20, so the build gate that previously held this is lifted -- see "Before any of this is built."
+**Status:** Accepted 2026-09-20. Phase 1 (delete `line_stops`/`line_localities`, adopt GTFS route shape) and Phase 2 (add a timetable-pinned ETA rung) are both scoped here. *Amended again 2026-09-20 (see "(h) The API rewire specification"): the alias policy is now an allowlist and the NCTR rule is built; the position-based tiebreak is specified from a measurement but not built.* *Amended 2026-09-20:* the Phase 1 GTFS build now exists and has been run against the real feed (see "Amendment 2026-09-20"), but nothing has been deleted and the API still reads `line_stops`; Phase 2 has not been started. `memtest86+` came back clean on 2026-09-20, so the build gate that previously held this is lifted -- see "Before any of this is built."
 **Date:** 2026-09-20
 **Related:** [ADR-0001](0001-line-stops-memory-and-batching.md), [ADR-0002](0002-line-stops-final-assembly.md), [docs/ROADMAP.md](../ROADMAP.md), `dbt/models/marts/line_stops.sql`, `dbt/models/marts/line_localities.sql`, `dbt/models/intermediate/int_pings_matched_to_stops.sql`, `dbt/build.sh`, `backend/app.py`
 
@@ -527,7 +527,7 @@ recover all three, plus case and naming variants (KBUS `sky`, TBTN `one`).
 It also has limits. It cannot learn NCTR's `NT1`/`NT7`/`NT88` because NCTR
 pings carry no `origin_ref` and use non-NaPTAN destination codes; a
 strip-`NT` rule would cover 159 of 161 NCTR buses and 59 of 62 NCTR keys, and
-is not built. And its quality is mixed: 604 of the 631 rows (96%) are TfL,
+was not built when this paragraph was written (*amended: it is now built as a rule, see (h)(iii), and the coverage figure there differs*). And its quality is mixed: 604 of the 631 rows (96%) are TfL,
 and several non-TfL rows look wrong (HUYT `2481`>`248`, median 2.5 km off;
 MAGH `101`>`Beatles Explorer`; TBTN `ra`>`RA`, maximum 3.9 km; BRTB `sky`>`SN`
 and `cot`>`COT`; UNIB `341`>`641`; BNSM `181`>`182`; WHIP `U2`>`U1`). The
@@ -557,7 +557,7 @@ paragraphs above (631 rows, 604 TfL) describe the first build; the served
 database from that build still holds them until its next refresh, and nothing
 reads the table yet. The remaining non-TfL rows that looked wrong (`sky`>`SN`
 at 78% share, `181`>`182`, `2481`>`248`) are same-operator near-label matches
-that a shared terminus supports and that only a held-out check can judge. (This measurement also shows that GTFS does hold London
+that a shared terminus supports and that only a held-out check can judge. *(Amended: those 27 are now proposals, not applied aliases. Each was reviewed by hand and the accepted ones alone are applied; see (h)(ii). `sky`>`SN`, `181`>`182` and `2481`>`248` were rejected.)* (This measurement also shows that GTFS does hold London
 operators' routes, such as ARVA, ELBG and GAHL. The statement above that TfL
 does not publish to BODS is about the TFLO operator, which has no `agency_noc` = TFLO row in
 `gtfs_agency` (queried: 0 rows), and remains true of it.)
@@ -629,9 +629,9 @@ offer everything it reads. The gaps recorded by the first comparison are:
 `median_secs_from_origin`, which is not the observed one (the median ratio of
 observed to scheduled is 0.85); and a global lookup by ATCO code. Beyond that
 gap list, the live-pinning work adds three items: choosing between same-endpoint
-variants needs a second signal such as position along the pattern (not
-built); circular buses must be resolved by pattern match; and the alias table
-must not be applied to TFLO without a decision. Nothing on this list has been
+variants needs a second signal such as position along the pattern (specified
+in (h)(i), not built); circular buses must be resolved by pattern match; and the alias table
+must not be applied to TFLO without a decision (*amended: resolved by the reviewed allowlist in (h)(ii), which contains no TFLO row*). Nothing else on this list has been
 done. Deleting `line_stops`, `line_localities` and the 87 dependent models
 waits on all of it.
 
@@ -652,6 +652,63 @@ Jaccard 0.452 against the union). Those disagreements are consistent with
 `line_stops` being the wrong side (the original ADR's own reused-line-number
 evidence, and the 92.6% shorter-path result), but that is an inference, not a
 proof: no ground truth for the real stop list of a line was used.
+
+### (h) The API rewire specification
+
+*Added 2026-09-20, extending (f). (It is lettered (h) because (f) and (g) already exist above; it is the specification of the pinning and alias behaviour the rewire needs.) Everything here is a specification or a measurement. None of it is in `backend/app.py`, which still reads `line_stops`, and the refresh that would publish the reviewed alias table has not been run since the review (see (ii)).*
+
+#### (i) The position-based tiebreak
+
+**Why endpoints alone cannot select a pattern.** Pinning a live bus to a GTFS pattern by its `(operator, line, origin_ref, dest_ref)` leaves several candidates for 18.4% of pinnable buses (see (g)). Almost all of that is same-direction variants that share both termini: 2,473 of 2,656 ambiguous cases. They differ in the middle of the route (a diversion, a school-day variant, a detour through an estate), so a second signal is needed, and the obvious one is where the bus actually is.
+
+**What was measured.** Truth was built from the ambiguous buses that carry an aimed departure and match exactly one trip on `(operator, line, origin stop, aimed departure)`: **1,257 truth buses out of 2,636 ambiguous** at one snapshot (a Sunday, about 14:25 UTC). Candidate algorithms were scored against it (A1 to A5 use the last five pings against the stops that separate the candidates; A4 is the no-position prior, the highest `trip_share` pattern):
+
+| Algorithm | Accuracy | Buses resolved without a tie |
+|---|---|---|
+| A1 | 72.6% | 7.1% |
+| A2 | 72.5% | 7.1% |
+| A3 | 72.2% | 7.2% |
+| A4, the prior | 72.4% | 93.7% |
+| A5 | 72.5% | 7.3% |
+| A6, mean distance to each candidate's stop-to-stop polyline, last five pings | 71.4% | 12.0% |
+| A7, the same distance accumulated over the whole journey trail (up to 90 minutes, 250 m cap per ping) | 74.7% | 29.5% |
+| A7 used only when it leads by 3 m or more, else the prior ("hybrid") | 77.8% | |
+
+With about 1,257 truth buses the sampling error is roughly plus or minus 2.5 points, so **last-five-ping position does not beat the prior**: A1, A2, A3 and A5 sit inside the noise of A4. The reason is geometric. Variants share most of their stops (a median of 5 separating stops out of 52), so only 153 of the 1,257 truth buses had a recent ping within 120 m of a separating stop. This contradicts the assumption in (e) and in `gtfs/patterns.sql` that position along the pattern is a strong second signal over a short window. Accumulated evidence helps modestly.
+
+**Recommended algorithm: the hybrid (A7 with prior fallback), 77.8%.** Keep a running mean distance from each ping to each candidate pattern's stop-to-stop polyline over the current journey. If the best candidate leads the runner-up by **3 m or more**, use it; otherwise use the pattern with the highest `trip_share` (ties: lowest `pattern_id`). Above the 3 m margin A7 is 91.0% accurate on 19.7% of ambiguous buses (391 truth buses). Below 1 m it is no better than the prior (68.2% against 71.3% among the 781 truth buses with a gap under 1 m). In the hybrid, 102 buses were right only because of the trail and 34 were right only under the prior. A7 needs about 15 or more pings of trail (15 to 20 minutes) to pay: 71.0% with one to five pings and 70.5% with six to fifteen, against 75-76% with sixteen or more. The trail state must reset when the journey changes and is lost on an API restart (re-seeding from QuestDB took 0.37 s for 223,000 rows).
+
+**Unresolved policy.** When no candidate clears the margin, fall back to the prior's pattern and its next stop, and **flag the result as unresolved** so callers can tell. Refusing to answer was rejected: the prior's stop set has a mean Jaccard of 0.961 with the true pattern even when the pick is wrong, all candidates agree on the next stop for 90% of truth buses, and every algorithm gets the next stop right 97.9% to 98.5% of the time. Returning the union of candidates was rejected: its precision is 0.928.
+
+**Per-poll cost.** Ambiguous buses are 17.8% of live non-TfL buses (2,630 of 14,770), so about 1,070 per 6,000-vehicle poll (scaled, not measured on a real poll). Candidate patterns and stop coordinates should be cached per `(operator, line, origin_ref, dest_ref)` until the GTFS database is swapped, because `pattern_id` is not stable across refreshes: 1,272 keys, 2,866 patterns and 146,652 stop rows network-wide, fetched in one batched query in 0.29 s warm (3.7 s cold). Scoring one new ping against all candidates in pure Python took 0.32 s for 2,630 buses (0.12 ms a bus), about 0.13 s a poll, which merits a worker thread. Re-reading the trail on every poll would be about thirty times the work and is not recommended.
+
+**Weak spots, stated.** (1) The truth set covers only buses with an aimed departure today that match exactly one trip, and the served calendar starts today; per-operator accuracy was not measured. (2) There are no truth buses with six or more candidates (14 ambiguous buses have that many), so accuracy there is unmeasured, and the 3 to 5 candidate bucket has about plus or minus 8 points. (3) The 3 m margin and its 91.0% were tuned and reported on the same snapshot, so they are optimistic; a second snapshot must confirm them before the threshold is fixed. (4) With no shapes (they are skipped), the polyline is straight stop-to-stop lines, which adds tens of metres of error; a mean distance above about 60 m should be treated as uninformative. (5) A GPS-jitter filter of the type in A3 removed the true pattern for 60 of 1,257 truth buses. (6) The cost figures are scaled from one network-wide snapshot.
+
+**Side findings that correct earlier statements.** The direction mapping flagged as unmeasured in `gtfs/patterns.sql` holds: live outbound/inbound equals the GTFS direction for 10,014 of 10,022 single-candidate non-circular buses (99.92%) and for all 1,244 truth buses that carry it. In this sample clockwise mapped to GTFS outbound for 28 of 28 single-candidate non-circular buses and anticlockwise to inbound for 30 of 30; that is a small sample and does not overturn (d), and a direction filter adds nothing because candidates span more than one direction in only 8 of 2,630 ambiguous buses. The live `direction` field also carries `1`, `2` and `southbound` (46,261, 49,472 and 26 rows in fifteen minutes), so a direction filter must map only outbound and inbound and ignore the rest. The 18.4% in (g) is over 14,405 pinnable buses; this run's 2,630 of 13,265 buses with any candidate (19.8%) is over a different denominator.
+
+#### (ii) The alias policy
+
+**Learned aliases are proposals; only reviewed ones are applied.** `gtfs/build_alias.py` still learns candidate aliases from 24 hours of live pings, but a learned row reaches `gtfs_line_alias` only if `gtfs/alias_review.csv` holds an `accept` row for that exact `(live_operator, live_line, gtfs_operator, gtfs_line)`. A `reject` row for a pair beats an `accept`. A pair not in the file is dropped and logged as a WARNING proposal. The policy **fails closed**: a missing, unreadable or malformed CSV applies no learned aliases and logs a warning, and the rule rows (iii) are still built. When QuestDB is unreachable the carried-over previous rows are filtered by the same allowlist, and the fallback in `gtfs/fetch.py` carries only rows that are learned, still accepted, and whose target still exists in the new feed. Rule rows are not carried by the fallback, which is deliberate: they are regenerated by the next successful build.
+
+**Why an allowlist.** The first build served 631 aliases, 604 of them TfL, wrong by construction (see (c)). A confidence threshold (`n_buses >= 3`, `share >= 0.6`) cannot tell a case fix from two unrelated routes that share termini, and after the cross-operator fix the 27 remaining rows still contained near-label matches that look plausible and are wrong (`181` for `182`, `2481` for `248`). A human decision, recorded with a reason, is the only check that catches that class, and it costs a minute a row on a table that changes rarely.
+
+**The rubric.** Accept a same-operator pair whose label difference is only case, punctuation, a brand or code name, or a number written as a word, and whose live buses lie within 120 m of the target's stops for at least 80% of buses. Reject a cross-operator pair, any pair whose label differs by a digit or a letter, any pair whose share is below 0.9, and any pair whose geography contradicts it; a case-only pair is exempt from the 80% bar unless under 50% of its buses are within 120 m. The 50% contradiction bar is the reviewer's own reading of the rubric, not an earlier rule.
+
+**The 27 reviewed.** The learner produced 27 proposals. As the CSV now stands **14 are accepted and 13 rejected**. (The first review, and the real run below, had 15 accepted and 12 rejected; a later re-check of TBTN `swi`>`SW` found 3 of 5 buses within 120 m over 24 hours, below the bar for a pair that is not case-only, and flipped it to reject.) Accepted: BRTB `cot`, `igo`, `key`, `mln`; KBUS `sky`, `sp`; TBTN `61`, `64`, `cmt`, `if`, `mic`, `one`, `two`, `vil`. Rejected, by reason: cross-operator (BORD `B1`>PERY, FCYM `4`>NADT `4A`, WNGS `HHL`>NXHH); a digit or letter differs (BNSM `181`>`182`, HUYT `1591`>`159`, HUYT `2481`>`248`, WHIP `U2`>`U1`); geography contradicts or falls under the bar (BRTB `cal`>`CC` 4 of 6, TBTN `60`>`6.0` 3 of 4, TBTN `ra`>`RA` 4 of 9 with a median 150 m, MAGH `101` to a name, 1 of 3, TBTN `swi`>`SW`); share under 0.9 (BRTB `sky`>`SN` at 0.82). The CSV holds each reason. No TfL row is present.
+
+**Caveats.** Geography used the last 30 minutes where at least three buses were live and a 24-hour window otherwise (six pairs), so the windows are inconsistent and several samples are three to five buses (67% is 2 of 3). A verifier's 24-hour re-check gave different figures for two pairs (`swi`, now rejected, and `cal`, whose 0.83 is above the bar but which stays rejected, the safe direction). BRTB `cot` was accepted on 2 of 3 because it is case-only and the sample is too small to contradict it.
+
+**State.** On the real served-database copy the alias table built to 109 rows: 15 learned and 94 rule. With `swi` now rejected the expected figure is 14 learned and 94 rule, 108 rows; that has not been run. The refresh (`gtfs/fetch.py`) was **not** run end to end after these changes and `verify()`'s new learned-row check compiled but has not been executed, so the served database still holds the first build's 631 rows until the next refresh. The failure fallback was exercised on scratch tables (old six-column schema, new schema, no previous database, dead QuestDB) and behaved as described. Nothing reads the table yet.
+
+#### (iii) The NCTR rule
+
+**What it is.** A rule in `build_alias.py` (`PREFIX_RULES = {"NCTR": "NT"}`) that, for every NCTR line in `gtfs_route_patterns`, emits an alias from the live label `NT` + line to the GTFS line, marked `source = 'rule'`. It never shadows a real match: no row is emitted if GTFS itself publishes the prefixed label or the alias already exists, and GTFS holds no NCTR line starting `NT`.
+
+**Why a rule and not learned.** NCTR pings carry no `origin_ref` and use non-NaPTAN destination codes, so the learner has nothing to match; the mapping is a pure label convention (the feed's `NT1` is GTFS `1`), which GTFS alone supports and only a rule can capture. Rule rows need no review because they cannot contradict the timetable.
+
+**Measured coverage.** 94 rule rows. Of 215 live NCTR buses (last 30 minutes, latest position per bus) all carry an `NT` label and 211 resolve through the rule, **98.1%**. The four that do not are buses 251, 282 and 288 on `NT18` and bus 252 on `NT18A`; GTFS has no NCTR line 18 or 18A, so no row can exist. The earlier estimate was 159 of 161 buses (98.8%); the fleet in the sample is larger now (215), so the two are different snapshots and not a like-for-like change.
+
+**Ceiling.** One operator and one prefix are hard-coded. A second operator with a systematic prefix needs a line in `PREFIX_RULES`. It is deliberately not generalised: guessing prefixes for other operators is exactly the unreviewed, wrong-by-construction behaviour the allowlist exists to stop.
 
 ## Roadmap
 

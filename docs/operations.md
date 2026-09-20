@@ -97,6 +97,18 @@ REPLAY=1 ./build.sh         # disable the incremental models' retention post-hoo
                             # (set by ops/incident.py — see below)
 ```
 
+### The segmentation window (amended 2026-09-20)
+
+`int_pings_segmented_to_journeys` reads `ping_local_date >= max(this) - 3 days`
+and rewrites `>= max(this) - 2 days`; on a `DATE` both are inclusive and `max`
+is the previous night's date, so a real nightly reads five dates and rewrites
+four, not three and two as the model's comments say. A narrower window (read
+`- 1 day`, rewrite `>= max`) was tested in scratch but is **not applied**; see
+[ADR-0009](adr/0009-fast-nightly-build.md). If it is applied, late data for any
+date older than the previous night is no longer re-segmented nightly. When late
+data is suspected (a backfill, or a restored day) run `FULL_REFRESH=1 ./build.sh`
+as above; it is the slow path but recomputes every date in the window.
+
 ### Test results are recorded, pass or fail
 
 Straight after `dbt test`, `build.sh` runs `publish_run_results.py`, which
@@ -244,6 +256,18 @@ not a second copy of the working set. `extract.py` now prunes parquet older
 than the window, but only after a successful extract, so a failed run can
 never be the thing that deletes the last good data. The parquet is derived
 data and is regenerable from QuestDB, so it is pruned rather than archived.
+
+## Reviewing alias proposals
+
+The GTFS refresh (`gtfs/fetch.py`, weekly, via `wraith-gtfs-refresh.service`) learns candidate line aliases from the live feed, but applies **only those accepted by hand** in `gtfs/alias_review.csv`; see [ADR-0008](adr/0008-published-timetables-vs-inferred-routes.md) (h)(ii). A learned pair that is not in the file is dropped and logged as a proposal:
+
+```
+build_alias: WARNING 3 unreviewed learned aliases NOT applied: XXXX/12->XXXX/12A, ...; review them in gtfs/alias_review.csv
+```
+
+That line is written with `print` by `build_alias.py`, which goes to standard output, and `fetch.py`'s file log (`gtfs/refresh.log`) holds only its own `logging` messages. So look for the WARNING in the journal (`journalctl -u wraith-gtfs-refresh.service | grep unreviewed`) or in the terminal of a manual run, and check `gtfs/refresh.log` for the resulting `alias: N rows` line. (This split was found while writing this section from the code; it has not been observed on a real run.) The warning lists at most twenty pairs.
+
+To decide one, add a row to `gtfs/alias_review.csv` with the columns `live_operator,live_line,gtfs_operator,gtfs_line,decision,reason,reviewed_on`, where `decision` is `accept` or `reject` and `reason` records the evidence. A `reject` row beats an `accept` for the same pair, and a rejected pair is never warned about again. Rubric in two lines: accept a same-operator pair that differs only by case, punctuation, a brand or code name or a number written as a word, and whose live buses sit within 120 m of the target's stops for at least 80% of them; reject cross-operator pairs, labels that differ by a digit or letter, a share under 0.9, and anything the geography contradicts. The next refresh applies the file; nothing needs restarting. A missing or unreadable CSV applies no learned aliases (it fails closed) and logs a warning, while the NCTR `NT` rule rows are still built.
 
 ## Archiving, not deleting
 

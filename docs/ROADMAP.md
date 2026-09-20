@@ -418,7 +418,7 @@ produces route geometry, so there is nothing for it to add.
 served database on `/mnt/archive` in 246 s (peak process-tree RSS 4,779 MB,
 1,054 MB file) with tables `gtfs_route_patterns` (42,009 rows),
 `gtfs_route_stops` (1,499,050), `gtfs_line_localities` (126,807),
-`gtfs_line_alias` (631 in the served file from the first build; 27 after the TfL cross-operator fix, live at its next refresh) and `gtfs_meta`, beside the raw `gtfs_*` tables. It is
+`gtfs_line_alias` (631 in the served file from the first build; the rebuilt table, live at its next refresh, is expected to hold 14 reviewed learned rows plus 94 NCTR rule rows, none TfL; a run before one review flip gave 15 plus 94) and `gtfs_meta`, beside the raw `gtfs_*` tables. It is
 NOT landed: `line_stops`, `line_localities` and the 89 models are all still
 present, and `backend/app.py` still reads `line_stops`. Nothing has been
 deleted.
@@ -478,20 +478,29 @@ loaded into `ghost-backend`'s Python process the way the existing marts are.
   `median_secs_from_origin` (observed to scheduled median ratio 0.85), and a
   global lookup by ATCO code. It must also choose between same-endpoint
   pattern variants with a second signal such as position along the pattern
-  (unbuilt; 18.4% of pinnable buses are ambiguous on endpoints alone), resolve
-  circular buses by pattern match rather than direction label, and not apply
-  TFLO aliases without a decision (the first build's alias table was 604 TFLO of 631 rows; fixed so operators absent from GTFS get no cross-operator alias, 0 TFLO rows in the re-run).
+  (specified, unbuilt: [ADR-0008](adr/0008-published-timetables-vs-inferred-routes.md)
+  (h)(i) recommends a whole-journey trail distance with a 3 m margin and a
+  highest-`trip_share` fallback flagged as unresolved, 77.8% against a 72.4%
+  prior on 1,257 truth buses; 18.4% of pinnable buses are ambiguous on
+  endpoints alone), resolve circular buses by pattern match rather than
+  direction label. The TFLO alias question is settled by policy: the first
+  build's table was 604 TFLO of 631 rows, and learned aliases are now only
+  applied if hand-accepted in `gtfs/alias_review.csv`, which holds no TFLO row.
 - Measured conditions to re-check before deletion: coverage and pin rates on
   a held-out window (the alias pin rate is optimistic, learned from the same
-  buses); the 952 unpinned buses' fallback (45% get no stop from the 120 m
+  buses; the alias table is now reviewed, so the same caution applies to the accepted rows); the 952 unpinned buses' fallback (45% get no stop from the 120 m
   nearest-stop fallback); the effect of the pruning rule, whose cost on
   expired-service one-offs is unproven; and a watched first `ops/verify_build.sh`
   run after deletion.
-- Open alias quality items: NCTR (161 live buses) sends no `origin_ref`, so
-  `NT1`/`NT7`/`NT88` are not learned (a strip-`NT` rule would cover 159 of
-  161, not built); several non-TfL aliases look wrong (HUYT `2481`>`248`,
-  TBTN `ra`>`RA`, BRTB `sky`>`SN`); and the build log does not say whether
-  aliases were learned or carried over.
+- Alias state (amended 2026-09-20): learned aliases are proposals and only the
+  hand-accepted ones apply (27 reviewed, 14 accepted, 13 rejected, including
+  the wrong-looking HUYT `2481`, TBTN `ra` and BRTB `sky`). An NCTR `NT` prefix
+  rule is built (94 rows; 211 of 215 live NCTR buses resolve, the other four
+  being `NT18`/`NT18A` with no GTFS line). Still open: the changes are in the
+  working tree, uncommitted, and the refresh has not been run end to end since,
+  so the served table is still the first build's 631 rows; the review's
+  geography windows were inconsistent and samples small; the build log gives
+  only the total row count, not learned versus rule.
 - Not exercised: the refresh script's promise that a failed run leaves the
   old served file intact, because no run has failed.
 - Not decided: whether `ghost-backend` opens the GTFS DuckDB file read-only
@@ -537,7 +546,7 @@ regression still earns its cost once the timetable rung is live is a
 after this phase has shipped and run for a while, not a decision made in
 advance of that data.
 
-## 1.14.0 -- a fast nightly build (planned, not started)
+## 1.14.0 -- a fast nightly build (planned; window fix tested in scratch, not applied)
 
 The owner's goal is a 03:00 nightly that **succeeds and is fast**; see
 [ADR-0009](adr/0009-fast-nightly-build.md) for the measured profile and the plan.
@@ -555,16 +564,32 @@ read 16,439,642 with a one-day buffer; 65% of pings never survive to a
 training journey; and a key-based journey identity was tested and rejected
 (44% of pings sit in long-lived keys that still need splitting).
 
-**Remaining, in order:** WF-S, a workflow that profiles the model and
-prototypes fewer-rows, fewer-sorts and narrower-rows variants in scratch against a
-bit-exact oracle, measured at 6 GB and 4 GB `memory_limit`, and edits nothing in
-the repository; then WF-S2, implementing whatever it proves in
-`dbt/models/intermediate/int_pings_segmented_to_journeys.sql` with a
-`journey_key`-stability test; then ADR-0008's Phase 1 (API rewire and the 89-model
-deletion). Unmeasured hypothesis, to be replaced by WF-S's numbers: the model
-could fall from about 44 minutes toward ten, and the nightly to the low twenties
-of minutes with the deletions. Also open: why `eta_models` varies from 6 s to
-360 s across runs.
+**Window fix, status (amended 2026-09-20):** designed and partly tested in
+scratch; **not applied**. The model is unchanged, so the next 03:00 nightly
+behaves as before. The candidate (read `>= max - 1 day`, rewrite `>= max`) ran on
+night 2026-09-17 (29,148,554 rows read, 16,110,481 written, 179.3 s) and the
+unchanged model on night 2026-09-19 (45,188,214 read, 32,150,141 written,
+942.1 s); different nights, so not a speed comparison. Both are identical to the
+persisted rows only on the strict scope, and the unchanged model shows the same
+pattern, which points at tie and replay-truncation noise, but the matching
+control-and-candidate pair on one night was not run. It is a two-constant edit
+once proven, whose price is that late data for dates older than the previous
+night is no longer healed nightly (`FULL_REFRESH=1` recomputes). Once applied
+it will be unproven in the real nightly until it has run. Details and the
+owner's steps: [ADR-0009](adr/0009-fast-nightly-build.md), "Amendment: the
+window fix".
+
+**Remaining, re-scoped:** the window fix takes the row-count lever
+off the table (read and rewrite windows) once it is proven, so the fewer-rows
+variant of WF-S no longer needs building beyond the optional 6 and 12 hour
+buffers, whose daylight-saving arithmetic is already proven. Still open:
+fewer window passes and narrower rows (unbuilt, unmeasured), the 4 GB
+measurements (peak RSS is about 6.5 GB either way, so the change is not a
+memory fix), the whole-nightly projection, a `journey_key`-stability test, the
+non-deterministic tie order in the model (20,971 of 27,079 buses on 2026-09-16
+have duplicated `(bus_id, ping_ts)`), why `eta_models` varies from 6 s to 360 s,
+then ADR-0008's Phase 1 (API rewire and the 89-model deletion). The earlier
+hypothesis of the model falling toward ten minutes remains unmeasured.
 
 ## Known issues -- raised, not yet actioned
 

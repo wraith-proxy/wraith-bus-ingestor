@@ -1,6 +1,6 @@
 # ADR 0009: A fast nightly build -- where the time goes, and the plan to cut it
 
-**Status:** Proposed 2026-09-20. Nothing in this ADR has been built. It records a measured profile of the nightly build, three ideas that were investigated read-only and what they showed, and the plan (workflow "WF-S") for finding and proving the change that pays. No model, test or build script has been edited.
+**Status:** Proposed 2026-09-20. *Amended 2026-09-20 (see "Amendment: the window fix"): the window fix was designed and partly tested, but it is NOT applied; `int_pings_segmented_to_journeys.sql` is unchanged and no variant was proven.* Nothing in this ADR has been built into the model. It records a measured profile of the nightly build, three ideas that were investigated read-only and what they showed, and the plan (workflow "WF-S") for finding and proving the change that pays. No model, test or build script has been edited.
 **Date:** 2026-09-20
 **Related:** [ADR-0008](0008-published-timetables-vs-inferred-routes.md) (whose speed claim this ADR corrects), [ADR-0001](0001-line-stops-memory-and-batching.md), [ADR-0006](0006-bus-positions-schema-optimisation.md), [docs/ROADMAP.md](../ROADMAP.md) (1.14.0), `dbt/build.sh`, `dbt/models/intermediate/int_pings_segmented_to_journeys.sql`
 
@@ -100,6 +100,18 @@ The order is: WF-S, then WF-S2, then ADR-0008's Phase 1. The alternative order (
 
 An honest estimate of the upside, marked as hypothesis and to be replaced by WF-S's measurement: rows through the windows fall from about 40.9 million to about 16.4 million with a one-day buffer, and lower still with an hour-sized one, and the sort width narrows; if the cost scales with either, `int_pings_segmented_to_journeys` falls from about 44 minutes toward the ten-minute range. With ADR-0008's deletions the nightly would then be on the order of 20-25 minutes. None of this is measured.
 
+### Finding: the segmentation model is not deterministic, because `bus_id` is not a vehicle
+
+Found by the WF-2 test rig (2026-09-20) and traced the same day. The rig could not reproduce the persisted table bit-for-bit even with the *unchanged* model, because `int_pings_segmented_to_journeys` partitions every window by `bus_id` and orders by `ping_ts` with no tiebreak, and `bus_id` is not unique across operators. The model's own header says so ("operators mint their own vehicle refs, so bus_id '3104' is fifteen different physical buses in fifteen different towns") and papers over it with a 120 km/h speed break, an operator-change break and a line-change break. Measured on the 2026-09-16 extract (13,365,206 rows):
+
+- 12,542,928 distinct `(bus_id, timestamp)` keys, so **822,278 surplus rows (6.2%)** share a key with another row. Sample: bus `154` at the same instant is line 37 (SWWD, Hampshire), line 11 (TFCN, Cornwall) and line Jo (GPLM, near Luton).
+- 27,063 distinct `bus_id` but only 28,836 distinct `(operator, bus_id)` (1.07x); 1,382 ids (5.1%) are used by more than one operator.
+- Keyed by `(operator, bus_id, timestamp)` the surplus falls to **49,295 rows (0.37%)**, and what remains is one vehicle reporting two lines inside a single 3-minute bucket (for example a TfL bus straddling a line change), which a deterministic tiebreak can order.
+
+Consequences: interleaved unrelated vehicles are cut into fragments (1,185,008 heuristic segments on that day against 443,289 keys), tied rows are ordered arbitrarily so a bus's journey split can change run to run, and, because the old window rewrote three older dates every night, those splits were re-rolled nightly. It also means "bit-identical to the persisted table" is an impossible bar for any change to this model, which is why WF-2's equivalence run could only be made on a *stable scope* (non-tied buses, journeys closed before the replay cutoff): there the new window matched persisted on 2,287,232 rows and 129,606 surviving journeys with zero duplicate `(journey_key, ping_seq)`, and the unchanged control shows differences of the same kind elsewhere.
+
+**Recommended, not built:** partition by `(coalesce(operator, '~none~'), bus_id)` and order by `ping_ts` plus enough columns (line, `journey_ref`, lat, lon) for a total order, and put the operator into `journey_key`. That is a semantic change: it changes the survivor set and possibly `eta_models`, so it needs its own measurement (journey counts, survivors, downstream fit) and a one-off full refresh, because existing `journey_key` values would have the old shape. `operator` has been 100% populated since 2026-09-13 and leaves the retention window entirely after the 2026-09-21 run, so the NULL-operator case is a transition detail only. It would also make every future equivalence test exact, which is the main reason to do it before further tuning of this model.
+
 ## Ceilings and what would change the plan
 
 - If the harness finds the oracle **disagrees with the persisted table**, the existing incremental pipeline has been accumulating inconsistent history, and that becomes the first priority ahead of speed.
@@ -107,6 +119,63 @@ An honest estimate of the upside, marked as hypothesis and to be replaced by WF-
 - The fixed floor (extract, container stop and restart, contract gate, tests, publish) is measured by the stage profile; if it is large, it is the next target and not the model.
 - `eta_models` varies from 6 s to 360 s for a reason nobody has established; if it turns out to be scheduling contention, `--threads` and model ordering are levers.
 
+## Amendment: the window fix
+
+*Written 2026-09-20, after a workflow ("stream A") tried to prove a narrower window. This section corrects the "not started" wording above. Nothing here has run in the real nightly.*
+
+### Outcome, stated first
+
+**The window fix is not applied.** The stream halted with no variant proven, and the repository was not edited: `dbt/models/intermediate/int_pings_segmented_to_journeys.sql` still reads `>= max(this) - interval '3 days'` and rewrites `>= max(this) - interval '2 days'`. The next 03:00 nightly therefore behaves exactly as before, reading about 40.9 million rows and rewriting about 27.5 million. Nothing in this section is in the working tree or in a commit, and nothing has been tested inside the real service.
+
+The reason it halted is a shortage of like-for-like evidence, not a failed test. The proof needs the same night replayed twice, once with the unchanged model (the control) and once with the candidate, and the two compared. Only half of each pair was run: the candidate for night 2026-09-17 and the control for night 2026-09-19. The candidate on 09-19 was skipped because the clock had passed the 00:30 UTC cut-off the workflow set for starting heavy runs, which exists to keep them clear of the 01:30-05:00 nightly window. The 09-19 control had itself been started at 15:29 UTC, on the reading that the cut-off protects the nightly window, so the skip was inconsistent; the next window was about nine and a half hours away, so the candidate run could have finished. A control on 09-17 was never in the run list, so it was not skipped, just absent. It is recorded here as a judgement that cost the proof, not as a technical obstacle.
+
+### What was tested and what it showed
+
+The candidate ("v24") changes two constants: read `>= max(this) - interval '1 day'`, rewrite `>= max(this)`. Because `ping_local_date` is a `DATE`, both comparisons are inclusive, so this reads the previous night's date, that date's predecessor, and the partial current date, and rewrites the previous night's date and the current one. It also corrects the header comments, which had claimed three days read and two rewritten. Two shorter-buffer variants (`vh6`, `vh12`) cut the carry-in day to 6 or 12 hours before local midnight; their daylight-saving arithmetic was proven (the exact SQL expression gave the right instant on 2026-03-28, 03-29, 03-30, 10-24, 10-25 and 10-26 and on a summer and a winter date, and a synthetic filter over the fall-back day kept the expected first ping), but neither was run against real data.
+
+Measured, each on its own night (a scratch replay of the nightly on a copy of the build database, niced and serialised, at the production `memory_limit` and thread count under a 13,000 MB cgroup cap):
+
+| Run | Night | Rows read | Rows written | Wall (segmentation) | Peak RSS |
+|---|---|---|---|---|---|
+| Control (unchanged model) | 2026-09-19 | 45,188,214 | 32,150,141 | 942.1 s | 6,575 MB |
+| v24 | 2026-09-17 | 29,148,554 | 16,110,481 | 179.3 s | 6,491 MB |
+
+**These two rows are not a comparison.** They are different nights with different data volumes, and night 09-19 has an empty partial day because the source has no 09-19 `_00` chunk (an ingest outage). Reading 179 s against 942 s as a speed-up would be overclaiming. What the table does show is that the candidate's read and write counts are what the reasoning predicted for a one-day buffer, and that peak memory is unchanged at about 6.5 GB, so the change is a speed change and not a memory fix. The rows-read and rows-written figures come from the compiled model with `max(this)` pinned to the value the run started from; dbt does not report them. On the 09-17 candidate run `int_journeys_shaped_and_directed` took 22.1 s at 3,726 MB.
+
+### Equivalence evidence, and why it is partial
+
+Two noise sources make any replay differ from the persisted rows, and both must be understood before reading a comparison.
+
+1. **Tie noise.** On 2026-09-16, 20,971 of 27,079 buses have at least one duplicated `(bus_id, ping_ts)`, and on 09-18, 20,825 of 28,904. The model orders by `ping_ts` with no tiebreak, so how a tied bus's pings are split into journeys changes from run to run. A replay can never match the persisted rows for those buses, and a control would differ from another control in the same way. This is a finding about the existing model in its own right: its output is not deterministic for most buses. It is the reason ADR-0008 needs a position-based tiebreak for a different purpose, and the two should not be confused.
+2. **Replay truncation.** A replay ends at the night's `_00` chunk (last ping about 03:57 UTC), whereas the persisted rows were finalised by later nights. Journeys still open at the cutoff, such as overnight depot standers, differ in end time, ping count and cumulative distance.
+
+The comparison tool therefore reports each check on three scopes: all buses; non-tied buses; and a stable scope (non-tied, journey closed before the cutoff, persisted reference only). Cumulative and path distances are compared to six decimal places because the parallel float sum varies by about 2e-14 between runs. Results:
+
+- **v24, night 09-17, against the persisted 09-16 rows.** Stable scope: 2,287,232 rows identical (zero rows in either direction of an `EXCEPT ALL`), 129,606 surviving journeys identical, no duplicate `(journey_key, ping_seq)`. On all buses, 605,512 journey keys differ (44,683 of them surviving journeys); on non-tied buses, 4,603 differ (3,646 surviving). The differing columns are journey end time and ping count, plus the first and last moving sequence on some rows; on the stable scope no row lacks a partner on `(journey_key, ping_seq)`, but on the all-buses scope 493,231 rows per side have no partner.
+- **Control, night 09-19, against the persisted 09-18 rows.** Row counts match (7,721,605 each). All buses: 1,188,858 rows differ in each direction, 344,223 journey keys involved; 19,050 differing keys are surviving journeys. Non-tied buses (1,995,532 rows) and the stable scope (1,710,223 rows): zero difference in both directions, and the survivor sets are identical (106,578 and 105,176 journeys).
+
+The control result matters most. The **unchanged model, replayed on 09-19, is identical to the persisted rows on the stable scope and differs elsewhere** (all-buses `EXCEPT ALL` 1,188,858 of 7,721,605 rows, about 15%; 267,436 rows per side with no partner on `(journey_key, ping_seq)`), as the candidate does on 09-17 (4,255,863 of 13,363,753, about 32%). These are different nights with different magnitudes, so the degree is not comparable; only the stable-scope result is common to both. It is therefore not evidence that the candidate did not cause the differences. It is not the proof, because the proof is a control and a candidate on the *same* night compared with each other (`--ref-label control`), which was not done. The stable scope is about 17% of rows on 09-16, so "identical" covers a minority of the data; the rest is unproven, not shown equal. The strict-scope result also says nothing about journeys whose start ping falls before a shortened buffer, which is why the shorter variants need their own run.
+
+### Why the one-day buffer, and why nothing smaller was tried
+
+A surviving journey lasts at most five hours (the duration filter in `int_journeys_shaped_and_directed`), and `journey_key` is `bus_id || '#' || epoch_ms(start ping_ts)`, taken from a running maximum over the pings read. The key is only stable if the start ping lies inside what was read. A buffer of three hours would cut journeys that started earlier than three hours before the window and give them a different key and a truncated start: **unsafe by construction**, so it was not built or tested. Six and twelve hours cover the five-hour limit with a margin, and were built for the sake of a further saving, but the stream stopped before running them. The whole-day buffer (v24) is the conservative choice, is the one that was run, and is what the model's own comment already fixes; it takes rows read from five dates to about three and rows written from four dates to two, and it was preferred over a smaller buffer because reliability outranks speed and the extra day costs little next to removing two dates.
+
+### The trade-off, so it is not discovered later
+
+Rewriting only `>= max(this)` means **late-arriving data for a date older than the previous night's is no longer re-segmented nightly**. Today, with four dates rewritten, a ping that reaches the extract two days late still lands in a rewritten date and is healed on that or the next night. Under v24 it is not. In practice the extract is written from QuestDB after the fact and the retention window is eight days, so late data arises from a backfill or a restored day (`ops/incident.py`, which runs with `REPLAY=1`). When late data is suspected, `FULL_REFRESH=1 ./build.sh` recomputes the whole window; see [docs/operations.md](../operations.md). This is a real loss of a safety margin and it is accepted only if the owner agrees that the saving justifies it.
+
+### Verification
+
+No independent adversarial verification of stream A was reported. The findings above are the harness's own caveats. The workflow's plan called for three adversarial verifiers; for the window fix that step did not happen.
+
+### What the owner must do, and how to roll back
+
+To finish the proof, run the two missing nights with the rig kept in the session scratchpad (`wf2/night.sh`, `compare.py`, `bench.sh`, described in its `RIG.md`; it lives under `/tmp` and is not in the repository, so copy it if it is to outlive the session): candidate on 2026-09-19 and control on 2026-09-17, each about 40 minutes of which about 17 is the base-database copy, outside the 01:30-05:00 window, then `compare.py --ref-label control` on each night. If both are identical on all scopes except tie and truncation noise, apply the two-constant change to the model (a single commit) and let the next nightly exercise it. **That has not happened.** Once a change is applied it takes effect at the next 03:00 nightly and is **unproven in the real service** until that run finishes; watch that first run. Rolling back is a `git revert` of that commit; the persisted table needs no repair, since the window only chooses which dates are rewritten, and `FULL_REFRESH=1` rebuilds it if in doubt.
+
+### What remains of the plan
+
+The status above ("Nothing in this ADR has been built") stands for the model. What changed is the evidence: the window over-read is confirmed by a replay (the unchanged model read 45.2 million rows and rewrote 32.2 million on a night with an empty partial day), the noise sources are identified and a comparison tool that copes with them exists, and the daylight-saving arithmetic for the shorter buffers is proven. The fewer-window-passes and narrower-rows variants, the 4 GB measurements, the whole-nightly projection and the verification phase have **not** been done. The `eta_models` variance is still unexplained.
+
 ## Roadmap
 
-Recorded in [docs/ROADMAP.md](../ROADMAP.md) as 1.14.0 (planned, not started).
+Recorded in [docs/ROADMAP.md](../ROADMAP.md) as 1.14.0 (planned; the window fix was tested in scratch but not applied, see the amendment above).
