@@ -1,6 +1,6 @@
 # ADR 0009: A fast nightly build -- where the time goes, and the plan to cut it
 
-**Status:** Proposed 2026-09-20. *Amended 2026-09-20 (see "Amendment: the window fix"): the window fix was designed and partly tested, but it is NOT applied; `int_pings_segmented_to_journeys.sql` is unchanged and no variant was proven.* Nothing in this ADR has been built into the model. It records a measured profile of the nightly build, three ideas that were investigated read-only and what they showed, and the plan (workflow "WF-S") for finding and proving the change that pays. No model, test or build script has been edited.
+**Status:** Implemented 2026-09-20 (supervised migration run and publish the same night; not yet observed in a real 03:00 run). This ADR began as a proposal and a plan; the sections below are in the order they were written, and the last one, "Amendment: what was deployed", is the current state and supersedes any "not applied" statement above it. It records a measured profile of the nightly build, ideas that were investigated and what they showed, the window fix, and the deterministic segmentation change.
 **Date:** 2026-09-20
 **Related:** [ADR-0008](0008-published-timetables-vs-inferred-routes.md) (whose speed claim this ADR corrects), [ADR-0001](0001-line-stops-memory-and-batching.md), [ADR-0006](0006-bus-positions-schema-optimisation.md), [docs/ROADMAP.md](../ROADMAP.md) (1.14.0), `dbt/build.sh`, `dbt/models/intermediate/int_pings_segmented_to_journeys.sql`
 
@@ -110,7 +110,7 @@ Found by the WF-2 test rig (2026-09-20) and traced the same day. The rig could n
 
 Consequences: interleaved unrelated vehicles are cut into fragments (1,185,008 heuristic segments on that day against 443,289 keys), tied rows are ordered arbitrarily so a bus's journey split can change run to run, and, because the old window rewrote three older dates every night, those splits were re-rolled nightly. It also means "bit-identical to the persisted table" is an impossible bar for any change to this model, which is why WF-2's equivalence run could only be made on a *stable scope* (non-tied buses, journeys closed before the replay cutoff): there the new window matched persisted on 2,287,232 rows and 129,606 surviving journeys with zero duplicate `(journey_key, ping_seq)`, and the unchanged control shows differences of the same kind elsewhere.
 
-**Recommended, not built:** partition by `(coalesce(operator, '~none~'), bus_id)` and order by `ping_ts` plus enough columns (line, `journey_ref`, lat, lon) for a total order, and put the operator into `journey_key`. That is a semantic change: it changes the survivor set and possibly `eta_models`, so it needs its own measurement (journey counts, survivors, downstream fit) and a one-off full refresh, because existing `journey_key` values would have the old shape. `operator` has been 100% populated since 2026-09-13 and leaves the retention window entirely after the 2026-09-21 run, so the NULL-operator case is a transition detail only. It would also make every future equivalence test exact, which is the main reason to do it before further tuning of this model.
+**Since built, proven in scratch on a cold build, and then deployed with corrections:** see "Amendment: the deterministic key" for the scratch proof and "Amendment: what was deployed" for what reached the repository.
 
 ## Ceilings and what would change the plan
 
@@ -125,7 +125,7 @@ Consequences: interleaved unrelated vehicles are cut into fragments (1,185,008 h
 
 ### Outcome, stated first
 
-**The window fix is not applied.** The stream halted with no variant proven, and the repository was not edited: `dbt/models/intermediate/int_pings_segmented_to_journeys.sql` still reads `>= max(this) - interval '3 days'` and rewrites `>= max(this) - interval '2 days'`. The next 03:00 nightly therefore behaves exactly as before, reading about 40.9 million rows and rewriting about 27.5 million. Nothing in this section is in the working tree or in a commit, and nothing has been tested inside the real service.
+*(Superseded: see "Amendment: what was deployed".)* **The window fix was not applied at the time this section was written.** The stream halted with no variant proven, and the repository was not edited: `dbt/models/intermediate/int_pings_segmented_to_journeys.sql` still reads `>= max(this) - interval '3 days'` and rewrites `>= max(this) - interval '2 days'`. The next 03:00 nightly therefore behaves exactly as before, reading about 40.9 million rows and rewriting about 27.5 million. Nothing in this section is in the working tree or in a commit, and nothing has been tested inside the real service.
 
 The reason it halted is a shortage of like-for-like evidence, not a failed test. The proof needs the same night replayed twice, once with the unchanged model (the control) and once with the candidate, and the two compared. Only half of each pair was run: the candidate for night 2026-09-17 and the control for night 2026-09-19. The candidate on 09-19 was skipped because the clock had passed the 00:30 UTC cut-off the workflow set for starting heavy runs, which exists to keep them clear of the 01:30-05:00 nightly window. The 09-19 control had itself been started at 15:29 UTC, on the reading that the cut-off protects the nightly window, so the skip was inconsistent; the next window was about nine and a half hours away, so the candidate run could have finished. A control on 09-17 was never in the run list, so it was not skipped, just absent. It is recorded here as a judgement that cost the proof, not as a technical obstacle.
 
@@ -176,6 +176,155 @@ To finish the proof, run the two missing nights with the rig kept in the session
 
 The status above ("Nothing in this ADR has been built") stands for the model. What changed is the evidence: the window over-read is confirmed by a replay (the unchanged model read 45.2 million rows and rewrote 32.2 million on a night with an empty partial day), the noise sources are identified and a comparison tool that copes with them exists, and the daylight-saving arithmetic for the shorter buffers is proven. The fewer-window-passes and narrower-rows variants, the 4 GB measurements, the whole-nightly projection and the verification phase have **not** been done. The `eta_models` variance is still unexplained.
 
+## Amendment: the deterministic key
+
+*Written 2026-09-20, before deployment; see "Amendment: what was deployed" for the outcome. This records a workflow that built the operator-keyed model in scratch and measured it. **At that point the change was NOT applied**: `extract.py`, `stg_bods__vehicle_pings.sql`, `int_pings_segmented_to_journeys.sql` (beyond the window fix already committed) and `build.sh` are unchanged in the repository, and the next 03:00 run behaves as it did before this amendment. Everything below was run in a scratch copy of the project against scratch DuckDB files, never in the real service.*
+
+### Outcome, stated first
+
+The design (D1 to D5) was proven for what it was designed to fix, determinism on a cold build, and the workflow did not apply it because the workflow's Apply step did not run and the verifiers found unresolved gaps. The owner's instruction was to apply it after a passing dry run. The main gap: **the windowed (03:00) path does not equal a cold build**. On the night simulations the incremental run leaves the previous local date with truncated journey ends (below). The verifiers also found that the planned dry run would consume the one-off migration on old-shape data, and that the D5 test as prototyped is too expensive to sit in the nightly. None of these is a flaw in the operator key itself; they are gaps in the surrounding plan, and each has a stated remedy.
+
+### What was designed
+
+- **D1, `dbt/extract.py`:** `KEYS = ["timestamp","bus_id","operator","line"]`, `operator` removed from `WANTED`, and `recorded_at` (the feed's per-record observation time, epoch milliseconds, typed `BIGINT`) added to `WANTED`.
+- **D2, staging:** `recorded_at` exposed as an optional column exactly like the existing optional ones (typed `NULL` when absent from the parquet union, so old files still build).
+- **D3, the model:** every window partitions by `(coalesce(operator,'~none~'), bus_id)` and orders by `(ping_ts, recorded_at, line, lat, lon)`, a total order. `journey_key` becomes `coalesce(operator,'~none~') || '|' || bus_id || '#' || epoch_ms(start ping_ts)`. The operator-change journey break and its `lag()` are removed, since an operator can no longer change inside a partition.
+- **D4, `dbt/build.sh`:** before the first dbt run, if the build database exists and `int_pings_segmented_to_journeys` holds any `journey_key` not matching `'%|%#%'`, print "==> legacy journey_key shape detected: forcing FULL_REFRESH=1 (one-off)" and set `FULL_REFRESH=1`, using the venv Python and DuckDB read-only in a process that exits before dbt starts.
+- **D5, tests:** keep `assert_segmented_ping_seq_unique`; add `assert_segmented_order_is_total`.
+
+The prototype of D4's detector passed every isolation case the verifier ran (legacy keys, all-old, all-new, empty table, absent table, absent file, file held open by another process, leftover WAL, corrupt file; a writable connection succeeded afterwards each time, so no lock survives into dbt). It silently skips when the file is locked or corrupt, which is safe but should print a warning.
+
+### The extract fix: rows the old extract merged
+
+`extract.py` builds each four-hour chunk with QuestDB `SAMPLE BY 3m` and groups on the non-aggregated columns. `operator` was not among them, so two vehicles of different operators sharing a `bus_id` and a `line` inside one bucket were silently merged into one row: data loss at the source. Over the five days 2026-09-13 to 09-17 the old extract merged 28,927 rows (0.052%); the new extract has 55,449,341 rows against the old 55,420,414. In the one chunk examined (2026-09-16 08:00 to 12:00 UTC: 2,258,913 rows old, 2,260,013 new) all 1,100 merged groups were across different operators. The new query cost about 0.45 GiB more QuestDB memory in that chunk test; 16.5 s old against 15.8 s new.
+
+### Does `recorded_at` reach 0%? The exact answer
+
+Yes, with a caveat about what "yes" means. Over the five days (55,449,341 rows) the `(operator, bus_id, timestamp)` key has 55,252,475 distinct values, so **196,866 surplus rows (0.355%) in 196,748 groups**; in every group the same vehicle reports two or more lines inside one three-minute bucket. `recorded_at` is distinct within all 196,748 groups, so keying on `(operator, bus_id, timestamp, recorded_at)` leaves **0 ties**, and the full sort key leaves 0 as well (55,449,341 groups for 55,449,341 rows, so not even a true duplicate survives). `recorded_at` is never null in this extract and no `bus_id` contains `|`. The old `(bus_id, timestamp)` key had 3,264,579 surplus rows over the same days. (The 0.37% quoted earlier is the single day 2026-09-16; 0.355% is the five-day figure.)
+
+The caveat, which the verifiers pressed and which is right: `extract.py` groups on `line`, so `(operator, bus_id, timestamp, line)` is unique by construction whatever the data does, and line alone would also reach 0. `recorded_at` is therefore **not needed for uniqueness**. What it adds is the true chronological order of the two lines' pings, where ordering by line would be total but arbitrary. It is also often stale as a clock (27% of a 09-16 sample lag the bucket start by more than five minutes, 15% by more than an hour, up to a day; the median of timestamp minus `recorded_at` is -41 s), which is why it is a tiebreak and nothing more.
+
+### The determinism proof
+
+Two cold builds of each model over the same five-day data (through a flock-serialised, niced wrapper under a cgroup cap):
+
+- **Old model:** 55,420,414 rows both times, but **9,294,773 rows (16.8%) in run 1 are not in run 2, and the same number the other way**. On a 2,260,013-row slice the old model differed between its own runs on 304,196 rows (13.5%). The old model does not reproduce itself.
+- **New model:** the second cold run is identical to the first: 0 rows in either direction, 0 duplicate `(journey_key, ping_seq)`, and the same on the slice.
+
+Caveats: the comparison of the full runs used a 64-bit per-row hash over all columns (floats rounded to six decimal places) because a column-by-column `EXCEPT ALL` on 55 million rows spilled and was abandoned after more than an hour; the chance of a hash collision hiding a difference is about 1e-4 at that size. Floats are therefore identical to six decimals, not bit-identical (`cum_km` differs at exact equality on some two million rows by up to 8.5e-14). The hash script prints DIFFERENT but exits 0, so it must not be wrapped in a script that trusts the exit code. Old and new used different extracts, so their row counts differ by the merged rows, which is not a determinism effect. The proof covers five days, not the eight-day window.
+
+### The windowed-equals-cold simulation: what passed and what did not
+
+The night simulation builds the state a real night would find (the cold reference for local dates up to the previous maximum), runs the model over the data a night would have (UTC days up to N-1) with the window fix, and compares the rewritten dates with the cold reference. A date is comparable only if it ended at least six hours before the last ping in both data sets.
+
+- **Night N = 2026-09-16 (state 31,008,923 rows, 13,046,399 replaced; 23,833,565 read, 13,595,422 written; 86 s of dbt):** no rewritten date was comparable, because the data ends 23:57 UTC and local 09-15 ends at 23:00 UTC. On a hand-made subset (journeys closed before 23:37 UTC on 09-15) the result is **identical**: 620,630 whole journeys, 10,628,696 rows, 0 differing rows both ways, 29,504 journeys crossing local midnight (27,019 starting on 09-14 into the rewritten 09-15, 2,485 from 09-15 into 09-16), 9,601 closed night-line journeys of which 305 cross midnight, and 14 strict `N<digits>` lines that cross. That subset is **not** the date-level comparison and covers 10.6 million of the 13.6 million rewritten rows. Compared whole, 09-15 differs on 2,421,490 rows in 24,248 journeys.
+- **Night N = 2026-09-17, chained on the state night 16 leaves (dbt 105 s, 26,967,836 read, 13,921,437 written):** local 09-16 is rewritten from data that stops at 23:57 UTC, which is 00:57 local on 09-17 in British Summer Time. **2,438,445 of 13,370,981 rows (18.2%, 24,314 journeys) have a wrong `journey_end_ts` and `journey_n_pings`** (61,472 also a wrong `last_moving_seq`, 2,335 a wrong `first_moving_seq`), all in journeys that end after the data cutoff. Both sides hold the same 13,370,981 keys and all other columns agree. The next night rewrites `>= max(this)`, which by then is 09-17, so 09-16 is never repaired.
+
+This is the main open gap. It is a property of the window fix (commit e2f905c) interacting with British Summer Time; that it is present with the old key too is inferred from the shared window logic (the night simulations ran only the new model), and the old model never proved equality either. It is not caused by the operator key, but it means the incremental table is not equal to a cold build,. It was measured on a synthetic state built from the reference, not on a real chain of nightly builds. Not exercised at all: a journey that started before the read window and runs into the rewritten dates (the scratch data begins 2026-09-13, so none exists; in the cold table 2,668 journeys are longer than 24 hours and 88,444 longer than six). Such a journey would be re-keyed at the window edge.
+
+The repair options, none built: rewrite `>= max(this) - interval '1 day'` (one more date written, size not measured; expected to fix the truncation, untested), or accept the truncation knowingly and document it. The choice is the owner's.
+
+### The semantic effect on journeys, survivors and `eta_models`
+
+Old model on the old extract against new model on the new extract, five days, in-sample, so model and extract change together:
+
+| Measure | Old | New |
+|---|---|---|
+| Journeys (distinct `journey_key`) | 4,806,992 | 2,586,231 (-46.2%) |
+| Survivors of `int_journeys_shaped_and_directed` | 1,228,561 | 1,371,776 (+11.7%) |
+| Pings in surviving journeys | 33,285,965 (60.06%) | 37,065,807 (66.85%) |
+| Training rows after trimming | 16,286,096 | 17,972,955 (+10.4%) |
+| `eta_models` rows | 89,657 | 97,695 (+8,038) |
+| Mean r2, whole table | 0.7711 | 0.7791 |
+| Global fallback r2 | 0.4177 | 0.4368 |
+| `line_punctuality` `n_journeys` | 530,281 | 662,163 (+24.9%) |
+
+The old model shreds journeys where `bus_id` collides across operators (median pings per raw journey 3 against 10). The survivor share of journeys (25.6% to 53.0%) is an artefact of the halved denominator and should not be quoted; the absolute survivor count and the ping share are the fair figures. Survivor shape is essentially unchanged (median pings 14, median duration 2,340 s, path length median 8.994 km against 8.994, p90 20.108 against 20.325).
+
+Verdict on the ETA fit: **the same, not worse.** On the 89,630 grains present in both, mean r2 moved by +0.00012 (median difference 0; 1,092 grains improved by more than 0.05 and 1,344 degraded by more than that). The whole-table +0.0080 is composition: 8,065 additional grains crossed the 200-observation floor. "Slightly better" is not supported. All r2 figures are in-sample with no held-out check. The eight assertions that were run on the new database passed (the full ~884-test suite, `int_pings_matched_to_stops` and the line_stops cluster were not run), including `assert_eta_model_*`, `assert_journey_shape_filters_held` and `assert_segmented_ping_seq_unique`. Marts will step-change on the deploy night: journeys, survivors, `n_journeys` and the `eta_models` size, and any panel or alert on them.
+
+### Cold timings and memory
+
+Cold segmentation of the five-day, 55.4 million row data through the wrapper (`memory_limit` 6 GB, three threads, 13,000 MB cgroup cap, one heavy model at a time): new model 811.3 s then 1,084.9 s wall, peak RSS 6,894 and 6,622 MB; old model 706.6 s then 1,068.9 s, 6,759 and 6,835 MB. **No speed claim is supported**: identical code varied by about 50% between runs, more than the gap between old and new. Peak memory sits just above `memory_limit` either way, so the sort key widening did not measurably change it. The shaped model took 18 s, and the downstream four-model rebuild about 40 s. The eight-day cold build (about 76 million rows) was **not run**: the extrapolation is 1.4 times the volume; on the production host the same model took 2,542 s in the 2026-09-20 nightly and 2,626 s in the cold verification, two to three times the scratch figure.
+
+### What the verifiers found
+
+- The night-A "identical" verdict is a restricted one (above), and the BST truncation is real wrong output on the 03:00 path.
+- **The planned dry run consumes the migration on the wrong data.** `SKIP_EXTRACT=1` reuses the parquet on disk, written by the old `extract.py`: no `recorded_at`, cross-operator rows merged. D4 keys only on the shape of `journey_key`, so that dry run would rebuild everything with new-shape keys from old-shape files; the real 03:00 run would then see only new-shape keys, not force, and rewrite only two dates, leaving about six dates built from old extract data until they age out. Remedies: run the dry run without `SKIP_EXTRACT`, or follow it with a `FULL_REFRESH=1` on a fresh extract, or make D4 also force when the newest parquet lacks `recorded_at`.
+- **D5 as prototyped is a nightly hazard.** `count(distinct struct)` took about 400 s and 6.1 GB, inside `dbt test`, before publishing. It must be written as group by key, then `having count(*) > 1`. The output-side version cannot include `recorded_at`, which is not carried into the table; the staging-side version can.
+- **Untested downstream:** `int_pings_matched_to_stops`, `int_first_visit_per_journey`, the `int_line_stops_*` cluster, `int_stop_identity` and the full test suite did not run on the new data. Survivors and training pings rise about 10%, and `line_stops` has OOM'd before.
+- **QuestDB memory.** The scratch extraction, without the nightly's restarts between days, reached 7.848 GiB in one poll (cap 8 GB) and 7.06 GiB on another day, then fell back; no OOM and no restart.
+- **Extract fragility:** `operator` is now in `KEYS`, which the availability filter does not check, so a QuestDB without the column would give an error body that `read_csv` mis-parses (hypothetical, since the column has existed since 2026-09-12).
+- **Rollback of a failed migration night:** `FULL_REFRESH` deletes the 10.5 GB warehouse before dbt starts, so a failure midway leaves a partial warehouse. The published marts are safe (publication is an atomic `mv` after tests and contract pass), and the next night does not re-force. The suggestion is to rename the old warehouse aside for one night instead of deleting it.
+
+### What was not tested
+
+The real systemd service, at all. The eight-day cold build. Concurrent production load (the ingestor, QuestDB and the API running as the build does). A real chain of nightly builds. `build.sh` with D4 in place. The rest of the pipeline listed above. The comparison of a journey longer than the read window.
+
+### If it is applied later
+
+It takes effect at the next 03:00 run after it is committed. The first run after deployment is a one-off `FULL_REFRESH=1` (D4), which deletes the warehouse and rebuilds everything: duration unknown (a guess of about an hour is unmeasured); the inputs are that cold segmentation alone took 811 to 1,085 s in scratch at five days and 2,542 to 2,626 s on the production host at the old key; **unproven** for eight days. Roll back by `git revert` of the commit; the previous good marts keep serving if the run fails, but because the old model reading a table with new-shape keys would mix shapes, the revert also needs one `FULL_REFRESH=1` run. Before applying: decide the BST window question, write D5 cheaply, and extend D4 (or the dry-run procedure) as above.
+
+## Amendment: what was deployed
+
+*Written the same night, after the fact. This is the current state and supersedes any "not applied" statement above.*
+
+### What is in the repository
+
+On `feature/TJP-20090`: `477ea0e` (deterministic segmentation, the extract change, the `build.sh` migration guard, the corrected window and the order test), `61543a2` (two source tests), `11674d0` (the API identity fix), `a22697d` (contracts and ontology), and `e2f905c` before them (the first, too-narrow window, which `477ea0e` corrects).
+
+### What differs from the design proven in scratch
+
+1. **The window is not the one the scratch proof used.** The proof, and commit `e2f905c`, read `>= max - 1 day` and rewrote `>= max`. The night simulations showed that leaves 18.2% of the previous local date's rows with truncated journey ends in British Summer Time, and the next run never repairs them. The deployed window reads `>= max - 2 days` and rewrites `>= max - 1 day`: about 27.5 million rows read and 16.4 million rewritten on the same night's numbers, against 40.9 and 27.5 million before 2026-09-20. **This correction was derived from the measured defect and was not re-simulated in scratch**, so "incremental equals cold" is still unproven for the deployed window. What was exercised is that it runs, passes all 887 tests and the contract gate in the real path (below).
+2. **The order test is cheap and warns.** `assert_segmented_order_is_total` groups by `(operator, bus_id, ping_ts, line)` over the last two dates and has severity `warn`, instead of the prototype that took about 400 s and 6 GB and would have blocked publishing. It passed with zero rows.
+3. **The migration guard was hardened** as the production verifier asked (visible message when the check is skipped, respects a preset `FULL_REFRESH`, safe under `set -e`) and re-tested on tiny DuckDB files: legacy keys, all-old keys, mixed, all-new, empty table, absent table, absent file, an invalid file, and a preset `FULL_REFRESH`.
+4. **Two source tests had to change, and only failed on the first real run.** `expect_compound_columns_to_be_unique (timestamp, bus_id, line)` reported 37,231 duplicates because vehicles of different operators that the old extract merged are now separate rows, and `columns_match_set` did not know `recorded_at`. Both are correct consequences of the extract change and were updated in `61543a2`. Nothing in the scratch proof could have found them, because the scratch runs did not execute the source tests against a new-shape extract.
+
+### The supervised migration run
+
+Run by hand on 2026-09-20 with the real `build.sh`, under the production memory cap (`systemd-run --user --scope -p MemoryMax=13000M -p MemorySwapMax=0`) and the systemd `PATH`, with the nightly's container stop set down (osrm, backend, tiles, ollama, immich) and the ingestor, QuestDB and Grafana up. The 03:00 service itself was not used.
+
+| Step | Measured |
+|---|---|
+| Real extract, 8 days (QuestDB restarted between days) | 9 min 40 s, 71,897,611 rows (2026-09-13 to 09-19; 09-12 had aged out of QuestDB) |
+| Guard | "legacy journey_key shape detected: forcing FULL_REFRESH=1 (one-off migration)", warehouse wiped |
+| Cold `int_pings_segmented_to_journeys` | 2,643 s (old model, cold, real service: 2,626 s) |
+| Cold `int_pings_matched_to_stops` | 860 s, and it **passed at `memory_limit` 6GB** (the model that failed the 2026-09-20 03:00 run at the old 4GB limit) |
+| Cold `eta_models` | 433 s |
+| First dbt run, whole | 3,523 s (58 min 43 s), 11 of 11 passed |
+| The 86 `line_stops` models | 224 s |
+| Tests | 96 s; **884 passed, 2 failed** (the two source tests above), so nothing was published and the old marts kept serving |
+| Whole first attempt | 1 h 14 min 15 s, largest process 11.5 GB resident |
+
+After fixing the two tests the build was run again with `SKIP_EXTRACT=1` against the migrated warehouse, which did not force a rebuild:
+
+| Step | Measured |
+|---|---|
+| **Incremental `int_pings_segmented_to_journeys`** | **60.8 s** (2,219 to 3,154 s in the four previous nightlies logged) |
+| The 86 `line_stops` models | 231 s |
+| Tests | 103 s, **887 passed, 0 warned, 0 failed** |
+| Contract gate | 62 passed, 0 failed; ontology resolves 51 bindings |
+| Whole run to publish | **9 min 52 s**, largest process 11.7 GB resident, exit 0 |
+
+The largest-process figure is consistent with the repo's earlier note that resident memory runs about 4.7 GB above `memory_limit`; both runs finished under the 13000M cap, but the margin on the cold path is about 1.5 GB.
+
+**Expected steady state, not yet observed:** the 03:00 nightly is the extract (9 min 40 s measured) plus this incremental build (9 min 52 s measured), so about 20 minutes, against about 66 before. That adds two measurements taken in separate runs and has not yet been seen as one service run.
+
+### Effect on the published marts
+
+`eta_models` 119,442 rows (was 102,143, +16.9%: more grains clear the 200-observation floor), mean r2 0.781 (0.773), median 0.854 (0.846); `line_stops` 3,233,014 (2,771,725); `line_localities` 65,443 (62,249); `line_punctuality` 21,981 (17,583, +25.0%); `localities` unchanged. Journeys fell 46% and survivors rose 11.7% in the scratch comparison, so anything that plots `n_journeys`, the model-fit size or the punctuality summary series in Grafana **steps once** at the migration; that is the change, not an incident. The r2 figures are in-sample and the extract and model changed together, so they show "no worse", not "better".
+
+### What is not proven
+
+- The real 03:00 service has not run this code. The hand run used the same script but not the unit's own hooks, container start/stop and nginx reload.
+- Equivalence of the deployed window with a cold build (point 1 above).
+- QuestDB's container reached 7.85 GiB of its 8 GiB in one poll during the scratch extraction with no restarts between days; the nightly restarts between days, and the hand run's extract did too and finished without incident, but that is one observation.
+- The API image was **not** redeployed: there is no deploy automation (ADR-0004), so the identity fix in `backend/app.py` is in the repository and tested but the running container still has the old code and still hides about 3% of vehicles until it is rebuilt.
+
+### Rollback
+
+`git revert` of `477ea0e` and `61543a2` (and `e2f905c` if the old window is wanted), then one `FULL_REFRESH=1 ./build.sh`, because the old model must not read new-shape keys and has no detector. The published marts file was replaced in place by the publish step, so there is no backup of the previous marts; a rollback rebuilds them.
+
 ## Roadmap
 
-Recorded in [docs/ROADMAP.md](../ROADMAP.md) as 1.14.0 (planned; the window fix was tested in scratch but not applied, see the amendment above).
+Recorded in [docs/ROADMAP.md](../ROADMAP.md) as 1.14.0 (window fix and deterministic key deployed 2026-09-20, see "Amendment: what was deployed").

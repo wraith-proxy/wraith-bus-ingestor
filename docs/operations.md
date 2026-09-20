@@ -99,15 +99,47 @@ REPLAY=1 ./build.sh         # disable the incremental models' retention post-hoo
 
 ### The segmentation window (amended 2026-09-20)
 
-`int_pings_segmented_to_journeys` reads `ping_local_date >= max(this) - 3 days`
-and rewrites `>= max(this) - 2 days`; on a `DATE` both are inclusive and `max`
-is the previous night's date, so a real nightly reads five dates and rewrites
-four, not three and two as the model's comments say. A narrower window (read
-`- 1 day`, rewrite `>= max`) was tested in scratch but is **not applied**; see
-[ADR-0009](adr/0009-fast-nightly-build.md). If it is applied, late data for any
-date older than the previous night is no longer re-segmented nightly. When late
-data is suspected (a backfill, or a restored day) run `FULL_REFRESH=1 ./build.sh`
-as above; it is the slow path but recomputes every date in the window.
+`int_pings_segmented_to_journeys` reads `ping_local_date >= max(this) - 2 days`
+and rewrites `>= max(this) - 1 day`. On a `DATE` both are inclusive and `max` is
+the previous night's date, so a run reads the three dates around it and rewrites
+the newest two, about 27.5 million and 16.4 million rows (it was 40.9 and 27.5
+million before 2026-09-20, five dates and four). Two consequences to know. Late
+data for a date older than that is not re-segmented nightly: when it is suspected
+(a backfill, or a restored day) run `FULL_REFRESH=1 ./build.sh` as above, the
+slow path that recomputes every date in the window. And the rewrite reaches one
+date further back than "yesterday" on purpose: in British Summer Time a 03:00 run
+sees data only about an hour past the end of the previous local date, so that
+date is rewritten again the next night with a full day behind it (ADR-0009
+explains the 18.2% truncation this avoids).
+
+### The deterministic-key migration, and what `build.sh` does if it meets old data
+
+`int_pings_segmented_to_journeys` keys vehicles by `(operator, bus_id)` and its
+`journey_key` is `<operator>|<bus_id>#<epoch_ms>` since 2026-09-20 (ADR-0009). The
+one-off migration was run by hand, supervised, on the night of 2026-09-20: a real
+extract, a forced `FULL_REFRESH`, tests, contract gate and publish (measured
+timings are in ADR-0009). It should never need to run again, but the guard stays as
+a safety net: before the first dbt run, `build.sh` checks the build database and,
+if `int_pings_segmented_to_journeys` holds any `journey_key` not matching
+`'%|%#%'`, prints "==> legacy journey_key shape detected: forcing FULL_REFRESH=1
+(one-off migration)" and rebuilds from cold. A missing file or table, an
+already-migrated warehouse, or a preset `FULL_REFRESH=1` leave it alone, and a
+warehouse it cannot read (locked, corrupt) prints "!! journey_key migration check
+skipped" and does not force.
+
+If you ever need it deliberately (restoring an old warehouse, or rolling the change
+back), expect a cold rebuild of the whole window: about an hour on this host, of
+which segmentation alone was 44 minutes for 71.9 million rows. Published marts keep
+serving if it fails. Rolling the change back is a `git revert` of the model and
+extract commits plus one `FULL_REFRESH=1` run, because the old model must not read
+new-shape keys and has no detector.
+
+**Dry runs.** `SKIP_EXTRACT=1 ./build.sh` reuses the parquet already in `dbt/data/`.
+That is fine once the new extract has run (the files then carry `recorded_at` and
+operator-keyed rows). Against parquet written by the OLD extract it still builds
+(staging types the missing column `NULL`), but the two source tests in
+`_bods__sources.yml` that pin the column set and the uniqueness key will report the
+old shape.
 
 ### Test results are recorded, pass or fail
 

@@ -546,52 +546,60 @@ regression still earns its cost once the timetable rung is live is a
 after this phase has shipped and run for a while, not a decision made in
 advance of that data.
 
-## 1.14.0 -- a fast nightly build (planned; window fix tested in scratch, not applied)
+## 1.14.0 -- a fast, deterministic nightly build (deployed 2026-09-20, not yet seen in a real 03:00 run)
 
-The owner's goal is a 03:00 nightly that **succeeds and is fast**; see
-[ADR-0009](adr/0009-fast-nightly-build.md) for the measured profile and the plan.
-Measured from `dbt/build.log`: the nightly takes about 66 minutes, of which
-`int_pings_segmented_to_journeys` is 37-53 minutes (85% of the first `dbt run`).
-The 84-model `line_stops` cluster costs 200 s and `int_pings_matched_to_stops`
-458 s, so ADR-0008's deletion saves about 11 minutes and is a reliability fix,
-not the speed fix. Segmentation is the wall.
+The owner's goal is a 03:00 nightly that **succeeds and is fast**. The measured
+profile ([ADR-0009](adr/0009-fast-nightly-build.md)) showed the nightly took about
+66 minutes, 85% of the first `dbt run` being `int_pings_segmented_to_journeys`,
+which ADR-0008's model deletions do not touch, and that the model was not
+deterministic. Two changes now address that:
 
-Read-only investigation so far (nothing changed): the incremental model reads
-five calendar dates (40,868,178 rows) and rewrites four (27,504,425) on a real
-nightly, because `interval '3 days'` on a date is inclusive and `max(this)` is
-the previous night's date, where the real need is to rewrite 8,718,037 rows and
-read 16,439,642 with a one-day buffer; 65% of pings never survive to a
-training journey; and a key-based journey identity was tested and rejected
-(44% of pings sit in long-lived keys that still need splitting).
+- **The incremental window** was off by two dates (five read and four rewritten
+  where the comments say three and two: 40.9 and 27.5 million rows). It now reads
+  `>= max - 2 days` and rewrites `>= max - 1 day` (27.5 and 16.4 million). A first
+  version that rewrote only `>= max` was shown in a night simulation to leave 18.2%
+  of the previous local date's rows truncated in British Summer Time, and was
+  corrected before the migration; the corrected window is proven to run and pass
+  the tests, but not re-simulated against a cold build.
+- **The model is deterministic.** `bus_id` is not a vehicle identity (operators
+  mint their own), so every window now partitions by `(operator, bus_id)` and
+  orders by a total key, `journey_key` carries the operator, and `dbt/extract.py`
+  keeps `operator` in its `SAMPLE BY` grouping (it had silently merged 28,927 rows
+  in five days) and carries `recorded_at`. Two cold builds of the old model differed
+  on 16.8% of rows; two of the new one on none. Journeys fell 46% (fewer fragments),
+  survivors rose 11.7%, and `eta_models` is no worse (in-sample). `build.sh` forces
+  a one-off full refresh when it meets an old-shape `journey_key`.
 
-**Window fix, status (amended 2026-09-20):** designed and partly tested in
-scratch; **not applied**. The model is unchanged, so the next 03:00 nightly
-behaves as before. The candidate (read `>= max - 1 day`, rewrite `>= max`) ran on
-night 2026-09-17 (29,148,554 rows read, 16,110,481 written, 179.3 s) and the
-unchanged model on night 2026-09-19 (45,188,214 read, 32,150,141 written,
-942.1 s); different nights, so not a speed comparison. Both are identical to the
-persisted rows only on the strict scope, and the unchanged model shows the same
-pattern, which points at tie and replay-truncation noise, but the matching
-control-and-candidate pair on one night was not run. It is a two-constant edit
-once proven, whose price is that late data for dates older than the previous
-night is no longer healed nightly (`FULL_REFRESH=1` recomputes). Once applied
-it will be unproven in the real nightly until it has run. Details and the
-owner's steps: [ADR-0009](adr/0009-fast-nightly-build.md), "Amendment: the
-window fix".
+Measured in the supervised migration run: cold segmentation 2,643 s (the old model's
+cold run in the real service was 2,626 s), the cold `int_pings_matched_to_stops`
+passed at `memory_limit` 6GB (860 s), and the **incremental segmentation took 60.8 s**
+where the four logged previous nightlies took 2,219 to 3,154 s; the whole incremental
+build to publish, tests and contract gate included, took 9 min 52 s. With the extract
+(9 min 40 s) that points to a nightly of about 20 minutes, a sum of two separate
+measurements that has not been seen as one service run.
 
-**Remaining, re-scoped:** the window fix takes the row-count lever
-off the table (read and rewrite windows) once it is proven, so the fewer-rows
-variant of WF-S no longer needs building beyond the optional 6 and 12 hour
-buffers, whose daylight-saving arithmetic is already proven. Still open:
-fewer window passes and narrower rows (unbuilt, unmeasured), the 4 GB
-measurements (peak RSS is about 6.5 GB either way, so the change is not a
-memory fix), the whole-nightly projection, a `journey_key`-stability test, the
-non-deterministic tie order in the model (20,971 of 27,079 buses on 2026-09-16
-have duplicated `(bus_id, ping_ts)`), why `eta_models` varies from 6 s to 360 s,
-then ADR-0008's Phase 1 (API rewire and the 89-model deletion). The earlier
-hypothesis of the model falling toward ten minutes remains unmeasured.
+**Remaining:** the first real 03:00 run (the hand run did not use the unit's hooks);
+deploy the API image so the vehicle-identity fix takes effect; WF-S, the narrower
+sort payload and fewer window passes (much of the segmentation cost is disk-bound:
+iowait 46 to 76% on the DRAM-less root SSD), is now a smaller prize and should only
+be picked up if the nightly is still too slow; ADR-0008's Phase 1 (the API rewire
+and the deletion of the 89 models) is still open and is now mainly a reliability
+change. Also open: why `eta_models` varies from 6 s to 433 s across runs.
 
 ## Known issues -- raised, not yet actioned
+
+**The live map hid about 3% of vehicles (fixed in code 2026-09-20, not deployed).**
+`backend/app.py` selected the newest row per vehicle with `LATEST ON timestamp
+PARTITION BY bus_id`, but operators mint their own vehicle references, so several
+unrelated buses share one `bus_id`: 474 of 16,580 vehicles (2.9%) were collapsed
+into a namesake on the live table that evening, and the last-known-ETA cache and
+`GET /bus/<bus_id>` shared the same flaw. It now partitions by `(bus_id, operator)`
+at the same query cost (about 0.1 s), keys the cache by `(operator, bus_id)`, and
+`/bus/<bus_id>` accepts an optional `?operator=` while still working for clients
+that send only `bus_id` (it returns the freshest namesake and lists the others in
+`same_bus_id`). The running container has not been rebuilt (no deploy automation,
+ADR-0004), and the Android app, which lives in its own repository, should start
+sending `operator`.
 
 **Open decision: the ingest bounding box.** It was widened from the
 north-west of England to all of mainland GB on 2026-09-12 (4.72x the
