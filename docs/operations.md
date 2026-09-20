@@ -167,6 +167,29 @@ fail a build. `ops/verify_build.sh` does the same stopping itself for its
 manual Run 1. Changing the unit file needs `sudo cp` to `/etc/systemd/system/`
 and `daemon-reload`.
 
+### A failed nightly now alerts within ~10 minutes
+
+`wraith-bus-build.service` runs `ops/record_build_failure.sh` as an `ExecStopPost`.
+If the unit did not end in `success` (an OOM in `dbt run`, an extract failure, a
+kill), it writes a `failed` row to `dbt_build_runs`, and the existing Grafana rule
+"nightly build missing or failed" (`last(result) != 'success'`) notifies ntfy.
+Before this, a run that died before dbt published its results recorded nothing:
+on 2026-09-20 the 03:00 build failed with a DuckDB OOM and everything looked fine,
+because the API kept serving the previous good marts and the rule only fires 26h
+after the last success. The next successful build writes its own `success` row,
+which resolves the alert. A hard crash of the host itself cannot record anything;
+the 26h rule is still the backstop for that.
+
+### GOTCHA: `memory_limit` is a coin flip at the edge, and RSS runs above it
+
+DuckDB's `memory_limit` (`dbt/profiles.yml`) bounds only its own buffer manager.
+On this stack the process RSS ran ~4.7GB **above** it (8.69GB RSS at a 4GB limit),
+so the limit and the systemd `MemoryMax` (13000M) must be sized together, not
+separately. 4GB passed `int_pings_matched_to_stops` twice on 2026-09-19 (under
+`ops/verify_build.sh`) and failed it at 03:00 the next morning, so "it passed"
+twice was not proof. It is 6GB since 2026-09-20 (~11GB peak RSS, under the cap);
+8GB would need `MemoryMax` raised first. Extra host RAM does not raise this limit.
+
 ### GOTCHA: the API holds every mart row in Python memory, and the marts outgrew its limit
 
 `backend/app.py` loads `eta_models`, `localities`, `line_localities` and

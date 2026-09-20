@@ -92,7 +92,16 @@ wraith_bus_ingestor:
         # int_line_stops_real_real fits in it. That grain needs an
         # architectural fix (batching by line, see docs/ROADMAP.md), not a
         # bigger number here; no memory_limit value reliably bounds it.
-        memory_limit: '4GB'
+        #
+        # Raised 4GB -> 6GB 2026-09-20 (TJP-20090). The 03:00 nightly failed
+        # AGAIN at 3.7GiB/3.7GiB in int_pings_matched_to_stops, one day after
+        # ops/verify_build.sh passed it twice at 4GB: the margin is a coin flip,
+        # not a pass. The host has 31GB now (was 15) and the build unit's cgroup
+        # cap is 13000M. Measured relation on this stack: process RSS runs ~4.7GB
+        # ABOVE memory_limit (Run 1: 8.69GB RSS at a 4GB limit), so 6GB should
+        # peak near 11GB, under the cap. Do NOT go to 8GB without raising
+        # MemoryMax: ~13GB RSS would hit it. Unproven at 6GB until a real run.
+        memory_limit: '6GB'
         # DO NOT set temp_directory here. dbt-duckdb replays every `settings:`
         # entry on each new connection it opens, and DuckDB refuses to change
         # the temp directory once it has spilled to the current one -- so the

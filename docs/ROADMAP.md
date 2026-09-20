@@ -442,6 +442,20 @@ proven at the new cap: the unit file in the repo is 13000M, but
 refuses to run until they match. Still open: nothing alerts on the API's
 `marts_state`.
 
+**2026-09-20 (TJP-20090): the "fixed" nightly failed again, and a manual run took
+the host down.** The 03:00 build hit DuckDB's 4GB `memory_limit` in
+`int_pings_matched_to_stops` a day after passing it twice at that limit, so 4GB
+was a coin flip, not a fix; `memory_limit` is now 6GB (see the GOTCHA in
+`docs/operations.md`, unproven until a real run). It looked fine because the API
+kept serving the previous marts and nothing alerted for 26h: a failed run now
+records itself and alerts within ~10 minutes. Separately, the 32GB host hard-froze
+at ~16:21 on 2026-09-19, mid-run of `ops/verify_build.sh` Run 1 (`last -x`: `crash`,
+no shutdown, no OOM or kernel log; the build was in the small line_stops batch
+models at the time, not the memory-heavy one). Sep 14 also ended as a `crash`
+under dbt load, on the old 15GB RAM. **Cause unknown**: the new RAM is the
+suspect but it is unproven; memtest86+ and `dmidecode` (matched sticks, speed)
+come before another heavy run.
+
 **The archiver jam on an already-archived day is fixed (TJP-19090).** A
 restored day colliding with its own archive copy used to stop the whole run
 and block everything behind it (nothing archived 2026-09-16 to 2026-09-19).
