@@ -493,7 +493,7 @@ loaded into `ghost-backend`'s Python process the way the existing marts are.
   expired-service one-offs is unproven; and a watched first `ops/verify_build.sh`
   run after deletion.
 - Alias state (amended 2026-09-20): learned aliases are proposals and only the
-  hand-accepted ones apply (27 reviewed, 14 accepted, 13 rejected, including
+  hand-accepted ones apply (28 reviewed, 16 accepted, 12 rejected, including
   the wrong-looking HUYT `2481`, TBTN `ra` and BRTB `sky`). An NCTR `NT` prefix
   rule is built (94 rows; 211 of 215 live NCTR buses resolve, the other four
   being `NT18`/`NT18A` with no GTFS line). Still open: the changes are in the
