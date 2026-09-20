@@ -107,8 +107,13 @@ objectTypes:
     pluralDisplayName: Vehicles
     icon: bus
     status: active
-    description: A physical bus currently reporting its position.
-    primaryKey: [busId]
+    description: >-
+      A physical bus currently reporting its position. Identified by
+      (operatorRef, busId), NOT busId: operators mint their own vehicle
+      references, so one busId can be several unrelated buses (bus '154' is a
+      Hampshire, a Cornwall and a Luton vehicle at the same instant). operatorRef
+      is null only for data before 2026-09-12; treat that as its own stream.
+    primaryKey: [operatorRef, busId]
     titleProperty: busId
     backingDatasets:
       - contract: positions
@@ -123,7 +128,7 @@ objectTypes:
         displayName: Vehicle reference
         valueType: String
         binding: {contract: positions, object: bus_positions, property: bus_id}
-        description: Not globally unique; short numeric references are reused across operators.
+        description: Not globally unique; short numeric references are reused across operators. Identifies a vehicle only together with operatorRef.
       - apiName: latitude
         valueType: Double
         binding: {contract: positions, object: bus_positions, property: lat}
@@ -195,14 +200,21 @@ objectTypes:
     icon: route
     status: active
     description: >-
-      One working of a line, from an origin stop at an aimed departure time to a
-      destination stop at an aimed arrival time.
-    primaryKey: [journeyRef, originRef, originAimedDeparture]
+      One working of a line by an operator, from an origin stop at an aimed
+      departure time to a destination stop at an aimed arrival time. journeyRef
+      is an operator's own code ('0910', '22'), so it repeats across operators and
+      identifies a journey only together with operatorRef.
+    primaryKey: [operatorRef, journeyRef, originRef, originAimedDeparture]
     titleProperty: journeyRef
     backingDatasets:
       - contract: positions
         object: bus_positions
     properties:
+      - apiName: operatorRef
+        displayName: Operator
+        valueType: String
+        nullable: true
+        binding: {contract: positions, object: bus_positions, property: operator}
       - apiName: journeyRef
         valueType: String
         binding: {contract: positions, object: bus_positions, property: journey_ref}
@@ -458,7 +470,8 @@ linkTypes:
       Known-weak link. The feed leaves a vehicle logged on to a completed
       journey while it starts the next one, so this can point at a working the
       bus finished an hour ago. Consumers sanity-check the aimed times before
-      trusting it.
+      trusting it. journeyRef repeats across operators, so the join must also
+      match operatorRef on both sides.
 
   - apiName: journeyOnLine
     displayName: runs on
