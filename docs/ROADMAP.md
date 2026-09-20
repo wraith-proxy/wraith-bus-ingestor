@@ -537,6 +537,34 @@ regression still earns its cost once the timetable rung is live is a
 after this phase has shipped and run for a while, not a decision made in
 advance of that data.
 
+## 1.14.0 -- a fast nightly build (planned, not started)
+
+The owner's goal is a 03:00 nightly that **succeeds and is fast**; see
+[ADR-0009](adr/0009-fast-nightly-build.md) for the measured profile and the plan.
+Measured from `dbt/build.log`: the nightly takes about 66 minutes, of which
+`int_pings_segmented_to_journeys` is 37-53 minutes (85% of the first `dbt run`).
+The 84-model `line_stops` cluster costs 200 s and `int_pings_matched_to_stops`
+458 s, so ADR-0008's deletion saves about 11 minutes and is a reliability fix,
+not the speed fix. Segmentation is the wall.
+
+Read-only investigation so far (nothing changed): the incremental model reads
+four calendar dates (27,504,425 rows) and rewrites three (16,439,642), because
+`interval '3 days'` on a date is inclusive, where the real need is about
+8.7 million rows plus a carry-in buffer; 65% of pings never survive to a
+training journey; and a key-based journey identity was tested and rejected
+(44% of pings sit in long-lived keys that still need splitting).
+
+**Remaining, in order:** WF-S, a workflow that profiles the model and
+prototypes fewer-rows, fewer-sorts and narrower-rows variants in scratch against a
+bit-exact oracle, measured at 6 GB and 4 GB `memory_limit`, and edits nothing in
+the repository; then WF-S2, implementing whatever it proves in
+`dbt/models/intermediate/int_pings_segmented_to_journeys.sql` with a
+`journey_key`-stability test; then ADR-0008's Phase 1 (API rewire and the 89-model
+deletion). Unmeasured hypothesis, to be replaced by WF-S's numbers: the model
+could fall from about 44 minutes toward ten, and the nightly to the low twenties
+of minutes with the deletions. Also open: why `eta_models` varies from 6 s to
+360 s across runs.
+
 ## Known issues -- raised, not yet actioned
 
 **Open decision: the ingest bounding box.** It was widened from the
