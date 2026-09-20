@@ -20,7 +20,10 @@ models:
     columns:
       - name: journey_key
         description: >
-          Synthetic journey identifier, '<bus_id>#<epoch_ms of its first ping>'.
+          Synthetic journey identifier,
+          '<operator or ~none~>|<bus_id>#<epoch_ms of its first ping>' (changed
+          2026-09-20 from '<bus_id>#<epoch_ms>': bus_id is minted by each
+          operator, so it is not a vehicle identity on its own).
           Deterministic for a given physical journey regardless of how wide a
           window it was read through -- see the model header for why that
           matters once this became incremental.

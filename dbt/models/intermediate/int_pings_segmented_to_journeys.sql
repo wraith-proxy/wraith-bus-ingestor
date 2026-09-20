@@ -19,18 +19,40 @@
                                consecutive missing buckets: depot, end of shift,
                                or sustained signal loss.
     3. line changes         -- the vehicle has been reassigned to another service
-    4. operator changes     -- only ever non-NULL post 2026-09-12; see 5.
-    5. implied speed > 120 km/h between consecutive pings
-    6. the vehicle has just pulled away after standing still for ~9 minutes
+    4. implied speed > 120 km/h between consecutive pings
+    5. the vehicle has just pulled away after standing still for ~9 minutes
 
-  Why 5 exists. Operators mint their own vehicle refs, so bus_id '3104' is
-  fifteen different physical buses in fifteen different towns, and without
-  `operator` (NULL in all historical data) nothing else tells them apart. Their
-  pings interleave in time, and on the same line number they would otherwise be
-  glued into one "journey" that teleports 300 km between pings.
+  A vehicle is (operator, bus_id), NOT bus_id. Operators mint their own vehicle
+  refs, so bus_id '154' is line 37/SWWD in Hampshire, line 11/TFCN in Cornwall
+  and line Jo/GPLM near Luton at one and the same instant. Every window below
+  therefore partitions by (coalesce(operator,'~none~'), bus_id): keyed by
+  bus_id alone 6.2% of a day's rows (822,278 of 13,365,206 on 2026-09-16) shared
+  a (bus_id, timestamp) with another vehicle; keyed by (operator, bus_id) 0.37%
+  do, and dbt/extract.py now keeps operator in the QuestDB SAMPLE BY grouping
+  so two operators' vehicles can no longer be merged into one row at the source.
+  Because operator cannot change inside a partition, there is no "operator
+  changed" break any more. NULL operator (files before 2026-09-12, and part of
+  09-12) is its own stream, '~none~'; that is no worse than before, where all
+  of them shared bus_id alone.
+  Condition 4 stays as a safety net, no longer as the way vehicles are told
+  apart: one operator can still reuse a ref across depots.
   Ceiling: 120 km/h. Raise it if long-distance coaches start being dropped.
 
-  Why 6 exists, and it is the important one. Buses keep transmitting while they
+  DETERMINISM. The old `order by ping_ts` had ties (several vehicles per
+  bus_id, or one vehicle on two lines in one 3-minute bucket) and DuckDB puts
+  tied rows in an arbitrary, run-dependent order, so journeys were split
+  differently from run to run: the unchanged model could not reproduce
+  itself. Every window now orders by the TOTAL key
+  (ping_ts, recorded_at, line, lat, lon), defined once as `ord` below.
+  After the extract change (operator + line are in the bucket grouping) two
+  rows of one (operator, bus_id) can only share ping_ts if they are on
+  different lines, and recorded_at (the feed's own observation time, always
+  populated in the new extract) then gives their true chronological order;
+  line/lat/lon are the backstop for old files where recorded_at is NULL. Two
+  rows that share the WHOLE key are true duplicates with identical payload, so
+  their order cannot show in any output column.
+
+  Why 5 exists, and it is the important one. Buses keep transmitting while they
   sit on the stand at a terminus, so condition 2 never fires on a layover: a bus
   working the same route all day came out as ONE journey of a dozen round trips.
   Measured on this dataset, 60% of surviving journeys ended within 30% of a
@@ -56,8 +78,8 @@
   three downstream models scan, so it is incremental by ping_local_date
   rather than a full `table` rebuild every run.
 
-  Read window vs. write window: `lag() over (partition by bus_id order by
-  ping_ts)` needs real history at the edge of whatever window gets
+  Read window vs. write window: `lag() over (partition by (operator, bus_id)
+  order by <total key>)` needs real history at the edge of whatever window gets
   reprocessed, or a bus mid-journey when local midnight ticks over looks like
   it has no previous ping and gets wrongly flagged as a journey start. So the
   `pings` CTE reads 3 calendar dates on an incremental run (2 dates to
@@ -70,21 +92,39 @@
   stable if a journey's start ping is inside what was read: surviving
   journeys last at most 5 hours (int_journeys_shaped_and_directed).
 
-  AMENDED 2026-09-20 -- the window arithmetic used to be off by two dates.
-  It read `max(ping_local_date) - interval '3 days'` and rewrote
-  `... - interval '2 days'`, which the paragraph above describes as 3 and 2
-  days but which was really 5 and 4 calendar dates, for two reasons that
-  compound: `>=` on a DATE is inclusive (so "- 3 days" is four dates back),
-  and `max(ping_local_date)` is evaluated when the run STARTS, which is the
-  PREVIOUS night's date (that run only saw 03:00's worth of it), not today.
-  A real nightly therefore read 40,868,178 rows and rewrote 27,504,425
-  (measured on the persisted table for the 2026-09-20 03:00 run), where the
-  intent needed 16,439,642 read and 8,718,037 rewritten. Now: read
-  `>= max - 1 day` (the previous night's date, whose data is now complete, plus
-  today's, plus one buffer date) and rewrite `>= max` (exactly those two dates).
-  Consequence to know: a date OLDER than max(this) is no longer recomputed
-  nightly, so late-arriving data for it is not healed; use FULL_REFRESH=1 or
-  ops/incident.py replay for that.
+  AMENDED 2026-09-20 -- the window arithmetic used to be off by dates, and the
+  first correction of it was too aggressive. It read
+  `max(ping_local_date) - interval '3 days'` and rewrote `... - interval '2 days'`:
+  5 and 4 calendar dates, not the 3 and 2 described above, because `>=` on a
+  DATE is inclusive and because max(ping_local_date) is evaluated when the run
+  STARTS, which is the PREVIOUS night's date. The 2026-09-20 03:00 run read
+  40,868,178 rows and rewrote 27,504,425.
+  Rewriting only `>= max` looked sufficient and is NOT. extract.py pulls whole UTC
+  days up to yesterday; in BST local date D ends at 23:00 UTC, so a 03:00 run
+  sees data only about an hour beyond the end of local date N-1 and rewrites it
+  from that truncated view. If the next run rewrote only `>= max` (= N), date N-1
+  would never be refreshed: a night simulation measured 18.2% of that date's rows
+  (24,314 journeys) keeping a wrong journey_end_ts, journey_n_pings and
+  last_moving_seq. Every local date has to be rewritten at least once with a full
+  day of data behind it. So a run now READS `>= max - 2 days` and REWRITES
+  `>= max - 1 day` (the previous night's date, the one before it, and today's):
+  about 27.5M rows read and 16.4M rewritten on the same night's numbers, against
+  40.9M and 27.5M before. (In GMT the same window over-rewrites by one date,
+  harmlessly.) A date older than that is not recomputed nightly, so late-arriving
+  data for it is not healed; use FULL_REFRESH=1 or ops/incident.py replay.
+
+  AMENDED 2026-09-20 (determinism) -- journey_key is now
+  '<operator or ~none~>|<bus_id>#<epoch_ms of the journey's first ping>', e.g.
+  'SWWD|154#1789545600000'. Two vehicles that share a bus_id can no longer
+  produce the same key. The consequence is a ONE-OFF MIGRATION: rows written
+  before this change carry the old '<bus_id>#<epoch_ms>' shape, and an
+  incremental run rewrites only the newest 3 dates, so old and new keys would
+  coexist in this table (and in the downstream tables keyed off it) until the
+  old dates age out of retention. dbt/build.sh detects a journey_key that does
+  not match '%|%#%' and forces FULL_REFRESH=1 once. The fix relies on
+  dbt/extract.py carrying `operator` in the QuestDB grouping and `recorded_at`
+  through to the parquet; recorded_at is used ONLY inside window ORDER BYs here
+  and is not part of this table's columns, so no downstream model changes.
 
   `delete+insert` with `unique_key='ping_local_date'` is dbt's standard
   "partition replace" pattern even though the key repeats across many rows:
@@ -96,6 +136,9 @@
   doesn't grow past what extract.py actually still has behind it.
 #}
 
+{%- set part = "coalesce(operator, '~none~'), bus_id" -%}
+{%- set ord = 'ping_ts, recorded_at, line, lat, lon' -%}
+
 with pings as (
 
     select
@@ -103,6 +146,7 @@ with pings as (
         line,
         feed_direction,
         operator,
+        recorded_at,
         journey_ref,
         origin_ref,
         dest_ref,
@@ -116,7 +160,7 @@ with pings as (
         dest_aimed_arr_ts
     from {{ ref('stg_bods__vehicle_pings') }}
     {% if is_incremental() %}
-    where ping_local_date >= (select max(ping_local_date) from {{ this }}) - interval '1 day'
+    where ping_local_date >= (select max(ping_local_date) from {{ this }}) - interval '2 days'
     {% endif %}
 
 ),
@@ -135,10 +179,9 @@ with_previous as (
         lag(ping_ts, 3) over w as ping_ts_3_back,
         -- journey_ref is NULL for every historical row; coalescing to a sentinel
         -- keeps "NULL then NULL" from reading as a change.
-        lag(coalesce(journey_ref, '~none~')) over w as prev_journey_ref,
-        lag(coalesce(operator,    '~none~')) over w as prev_operator
+        lag(coalesce(journey_ref, '~none~')) over w as prev_journey_ref
     from pings
-    window w as (partition by bus_id order by ping_ts)
+    window w as (partition by {{ part }} order by {{ ord }})
 
 ),
 
@@ -175,7 +218,7 @@ with_standing_history as (
 
     select
         *,
-        lag(is_standing) over (partition by bus_id order by ping_ts) as was_standing
+        lag(is_standing) over (partition by {{ part }} order by {{ ord }}) as was_standing
     from with_step
 
 ),
@@ -189,7 +232,6 @@ flagged as (
             when step_secs > 20 * 60                                               then 1
             when line is distinct from prev_line                                   then 1
             when coalesce(journey_ref, '~none~') is distinct from prev_journey_ref  then 1
-            when coalesce(operator, '~none~')    is distinct from prev_operator     then 1
             when step_secs > 0 and (step_km / (step_secs / 3600.0)) > 120          then 1
             -- Layover finished: it was standing, now it is not. The new journey
             -- starts with the first moving ping, which is what we want.
@@ -230,10 +272,10 @@ keyed as (
         -- the same accumulator shape as the sum() this replaces, which has
         -- run this exact scale repeatedly tonight without incident. NULLs
         -- need no special handling: max() already ignores them.
-        bus_id || '#' || cast(
+        coalesce(operator, '~none~') || '|' || bus_id || '#' || cast(
             epoch_ms(
                 max(case when is_journey_start = 1 then ping_ts end) over (
-                    partition by bus_id order by ping_ts
+                    partition by {{ part }} order by {{ ord }}
                     rows between unbounded preceding and current row
                 )
             ) as varchar
@@ -250,7 +292,7 @@ measured as (
         -- a journey, because there the lag() still points at the *previous*
         -- journey's last position (often a different town).
         case when is_journey_start = 1 then 0.0 else step_km end as hop_km,
-        row_number() over (partition by journey_key order by ping_ts) as ping_seq
+        row_number() over (partition by journey_key order by {{ ord }}) as ping_seq
     from keyed
 
 ),
@@ -282,7 +324,7 @@ final as (
         -- total to get "how far is left"; int_journeys_shaped_and_directed
         -- takes its max as the path length.
         sum(hop_km) over (
-            partition by journey_key order by ping_ts
+            partition by journey_key order by {{ ord }}
             rows between unbounded preceding and current row
         ) as cum_km,
         min(ping_ts) over (partition by journey_key) as journey_start_ts,
@@ -312,7 +354,7 @@ filtered as (
     {% if is_incremental() %}
     -- Only the last 2 days are ever (re)written; the 1-day buffer read above
     -- was for lag() context only and never lands here.
-    where ping_local_date >= (select max(ping_local_date) from {{ this }})
+    where ping_local_date >= (select max(ping_local_date) from {{ this }}) - interval '1 day'
     {% endif %}
 
 )

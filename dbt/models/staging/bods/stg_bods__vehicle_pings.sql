@@ -37,7 +37,8 @@
      ('dest_ref',         'varchar'),
      ('dest_name',        'varchar'),
      ('origin_aimed_dep', 'bigint'),
-     ('dest_aimed_arr',   'bigint')
+     ('dest_aimed_arr',   'bigint'),
+     ('recorded_at',      'bigint')
    ] -%}
 
 with source as (
@@ -140,6 +141,11 @@ derived as (
             else null
         end as feed_direction,
         operator,
+        -- The feed's own per-record observation time, epoch MILLIS. Carried only
+        -- as a sort tiebreak for int_pings_segmented_to_journeys (it is often
+        -- stale, so it is NOT a timestamp to trust); NULL in files written
+        -- before extract.py started carrying it.
+        recorded_at,
         journey_ref,
         origin_ref,
         origin_name,
