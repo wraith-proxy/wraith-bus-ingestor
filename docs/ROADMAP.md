@@ -405,16 +405,38 @@ later (Grafana's group interval).
 
 ## 1.12.0 -- GTFS replaces line_stops and line_localities (Phase 1)
 
-Planned, not landed. Decision and measurements in
-[ADR-0008](adr/0008-published-timetables-vs-inferred-routes.md). BODS's GTFS
-feed for the whole of GB becomes the source of route shape and stop sequence,
-replacing the two marts (`line_stops`, `line_localities`) that currently infer
-both from live pings. `shapes.txt` (2.57GB of the 7.8GB uncompressed feed) is
-skipped entirely -- OSRM already produces route geometry, so there is nothing
-for it to add.
+Planned, in progress; not landed. Decision and measurements in
+[ADR-0008](adr/0008-published-timetables-vs-inferred-routes.md), including its
+2026-09-20 amendment. BODS's GTFS feed for the whole of GB becomes the source
+of route shape and stop sequence, replacing the two marts (`line_stops`,
+`line_localities`) that currently infer both from live pings. `shapes.txt`
+(2.57GB of the 7.8GB uncompressed feed) is skipped entirely -- OSRM already
+produces route geometry, so there is nothing for it to add.
 
-This deletes 87 dbt models with no other consumers once the two marts are
-gone -- `int_stop_identity`, `int_first_visit_per_journey`,
+**State, honestly:** the build exists and has been run against real data.
+`gtfs/fetch.py`, `gtfs/patterns.sql` and `gtfs/build_alias.py` produced a
+served database on `/mnt/archive` in 246 s (peak process-tree RSS 4,779 MB,
+1,054 MB file) with tables `gtfs_route_patterns` (42,009 rows),
+`gtfs_route_stops` (1,499,050), `gtfs_line_localities` (126,807),
+`gtfs_line_alias` (631 in the served file from the first build; 27 after the TfL cross-operator fix, live at its next refresh) and `gtfs_meta`, beside the raw `gtfs_*` tables. It is
+NOT landed: `line_stops`, `line_localities` and the 89 models are all still
+present, and `backend/app.py` still reads `line_stops`. Nothing has been
+deleted.
+
+The first build changed the design. A single primary pattern per key covered
+only 80.6% of trips and hid same-operator number reuse (SCEM 1, SYRK 1), so
+every pattern is kept (the primary, or any with `n_trips >= 2`), carrying
+`pattern_id`, `first_atco`, `last_atco` and `is_circular`; the kept patterns
+cover 99.4% of trips. A learned alias table (`gtfs_line_alias`, built by
+`gtfs/build_alias.py` from 24 hours of live `origin_ref`/`dest_ref`, gated at
+`n_buses >= 3` and `share >= 0.6`, carried over when QuestDB is down) maps live
+labels to GTFS ones, because brand labels such as trentbarton `if`/`swi`
+cannot be derived from GTFS alone. GTFS never labels clockwise or
+anticlockwise, so circular buses must be resolved by pattern match, not by
+direction.
+
+When deleted, this removes 87 dbt models with no other consumers once the two
+marts are gone -- `int_stop_identity`, `int_first_visit_per_journey`,
 `int_pings_matched_to_stops`, and all 84 `int_line_stops_*` batch/grain
 models -- which with the two marts themselves is 89 of the project's 97,
 leaving 8 standing. Plus the 7 of 13 tests that went with them
@@ -433,18 +455,45 @@ change: `stg_bods__vehicle_pings`, `stg_naptan__stops`,
 `int_pings_measured_to_journey_end`, `eta_models`, `localities`,
 `line_punctuality`.
 
-Coverage: of the non-TfL live fleet, 95.2% have their (operator, line)
-published in the GTFS `routes`/`agency` tables -- this is the figure that
-matters for route shape, as distinct from the much weaker per-vehicle trip
-pinning that Phase 2 depends on. London/TfL is not covered at all (see
-"Known issues" below) and stays on the existing inferred path; that
-regression is accepted, not solved, by this phase.
+Coverage: of the non-TfL live fleet, 95.05% match a GTFS (operator, line)
+directly and 96.16% with the alias table (95.2% was the earlier route-level
+figure). Route-level coverage is not the same as a correct stop list: of
+14,405 pinnable buses, 54.8% pin uniquely to the primary, 20.1% to a
+non-primary pattern, 18.4% to several and 6.6% to none. Against `line_stops`,
+order agreement did not improve (Spearman median 0.975) and stop-set overlap
+is low (median Jaccard 0.452 against the union); 85,388 of 340,534
+`line_stops` stops (25.1%) are in no GTFS pattern for their line.
+London/TfL is not covered (see "Known issues" below) and stays on the
+regression path; that regression is accepted, not solved, by this phase.
 
 The GTFS database is refreshed weekly, Monday 01:00, onto `/mnt/archive` (the
 SATA archive, 844G free at last measurement) -- not the root SSD, and not
 loaded into `ghost-backend`'s Python process the way the existing marts are.
 
 **Remaining:**
+- The gate for deleting `line_stops`, `line_localities` and the 87 dependent
+  models is the API rewire, all of it: `backend/app.py` must serve from the
+  GTFS tables what it reads from `line_stops` today, namely `day_type`, the
+  pooled `*` fallback, `n_obs`, an observed (not scheduled)
+  `median_secs_from_origin` (observed to scheduled median ratio 0.85), and a
+  global lookup by ATCO code. It must also choose between same-endpoint
+  pattern variants with a second signal such as position along the pattern
+  (unbuilt; 18.4% of pinnable buses are ambiguous on endpoints alone), resolve
+  circular buses by pattern match rather than direction label, and not apply
+  TFLO aliases without a decision (the first build's alias table was 604 TFLO of 631 rows; fixed so operators absent from GTFS get no cross-operator alias, 0 TFLO rows in the re-run).
+- Measured conditions to re-check before deletion: coverage and pin rates on
+  a held-out window (the alias pin rate is optimistic, learned from the same
+  buses); the 952 unpinned buses' fallback (45% get no stop from the 120 m
+  nearest-stop fallback); the effect of the pruning rule, whose cost on
+  expired-service one-offs is unproven; and a watched first `ops/verify_build.sh`
+  run after deletion.
+- Open alias quality items: NCTR (161 live buses) sends no `origin_ref`, so
+  `NT1`/`NT7`/`NT88` are not learned (a strip-`NT` rule would cover 159 of
+  161, not built); several non-TfL aliases look wrong (HUYT `2481`>`248`,
+  TBTN `ra`>`RA`, BRTB `sky`>`SN`); and the build log does not say whether
+  aliases were learned or carried over.
+- Not exercised: the refresh script's promise that a failed run leaves the
+  old served file intact, because no run has failed.
 - Not decided: whether `ghost-backend` opens the GTFS DuckDB file read-only
   and queries it directly, or a slimmed extract is published alongside the
   marts the way the other served data is. Either way it must not be loaded

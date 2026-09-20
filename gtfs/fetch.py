@@ -2,8 +2,9 @@
 """Weekly refresh of the GB-wide BODS GTFS timetable into a DuckDB file.
 
 Downloads the public feed, loads it into a STAGING DuckDB, runs gtfs/patterns.sql
-to derive the two serving tables (gtfs_route_stops, gtfs_line_localities), checks
-the result is sane, and only then atomically renames the staging file over the
+to derive the serving tables (gtfs_route_patterns, gtfs_route_stops,
+gtfs_line_localities), learns gtfs_line_alias from the live feed (build_alias.py,
+never fatal), checks the result is sane, and only then atomically renames the staging file over the
 live one. A bad or half-vanished feed therefore never replaces a good one.
 
 shapes.txt (2.57GB) is never extracted: OSRM already does geometry.
@@ -20,6 +21,7 @@ import signal
 import socket
 import sys
 import time
+import traceback
 import urllib.parse
 import urllib.request
 import zipfile
@@ -37,6 +39,8 @@ NAPTAN_CSV = os.environ.get(
 # The host reaches QuestDB's HTTP port on 9001 (the container-network default,
 # db:9000, does not resolve outside docker).
 QUESTDB_URL = os.environ.get('QUESTDB_URL', 'http://localhost:9001')
+# build_alias reads the live feed's origin/dest refs from here (read-only).
+QUESTDB_HTTP = os.environ.get('QUESTDB_HTTP', QUESTDB_URL)
 LOG_FILE = HERE / 'refresh.log'
 
 MIN_FREE_BYTES = 12 * 1024**3   # 5.3GB of CSVs + the DB + headroom
@@ -139,39 +143,126 @@ def count(con, table):
 def previous_counts():
     if not DB_PATH.exists():
         return {}
+    out = {}
     try:
         with contextlib.closing(duckdb.connect(str(DB_PATH), read_only=True)) as old:
-            return {t: count(old, t) for t in ('gtfs_route_stops', 'gtfs_line_localities')}
+            # per table: a v1 DB has no gtfs_route_patterns, which must not
+            # switch off the shrink check for the tables it does have.
+            for t in ('gtfs_route_stops', 'gtfs_line_localities', 'gtfs_route_patterns'):
+                try:
+                    out[t] = count(old, t)
+                except duckdb.CatalogException:
+                    log(f'previous DB has no {t}, its shrink check skipped')
     except duckdb.Error as exc:
         log(f'previous DB unreadable, shrink check skipped: {exc!r}')
-        return {}
+    return out
+
+
+KEY = 'operator, line, direction'
+PAT = f'{KEY}, pattern_id'
 
 
 def verify(con):
-    n = {t: count(con, t) for t in ['gtfs_stop_times', 'gtfs_trips', 'gtfs_agency', 'gtfs_stops',
-                                    'gtfs_route_stops', 'gtfs_line_localities']}
+    tables = ['gtfs_stop_times', 'gtfs_trips', 'gtfs_agency', 'gtfs_stops', 'gtfs_route_patterns',
+              'gtfs_route_stops', 'gtfs_line_localities']
+    n = {t: count(con, t) for t in tables}
+    bad = []
+    # gtfs_line_alias may legitimately be empty, but the table must exist: the API joins it.
+    try:
+        n['gtfs_line_alias'] = count(con, 'gtfs_line_alias')
+    except duckdb.CatalogException:
+        n['gtfs_line_alias'] = 0
+        bad.append('gtfs_line_alias does not exist')
     # ponytail: these floors are estimates, not measured on the real feed (first run
     # should log the actual counts above; tighten them from those). route_stops is
     # roughly patterns x stops, well over 100k for GB.
     floors = {'gtfs_stop_times': 30_000_000, 'gtfs_trips': 800_000, 'gtfs_agency': 300,
-              'gtfs_stops': 150_000, 'gtfs_route_stops': 100_000, 'gtfs_line_localities': 0}
-    bad = [f'{t} has {n[t]:,} rows, need > {floor:,}' for t, floor in floors.items() if n[t] <= floor]
+              'gtfs_stops': 150_000, 'gtfs_route_patterns': 0, 'gtfs_route_stops': 100_000,
+              'gtfs_line_localities': 0}
+    bad += [f'{t} has {n[t]:,} rows, need > {floor:,}' for t, floor in floors.items() if n[t] <= floor]
     for t, old in previous_counts().items():
         if old and n[t] < old * 0.7:
             bad.append(f'{t} shrank {old:,} -> {n[t]:,} (more than 30%)')
+
+    def one(sql):
+        return con.execute(sql).fetchone()[0]
+
     # A patterns.sql bug (e.g. stop_id type mismatch) shows as NULL keys or broken seq.
-    nulls = con.execute('SELECT count(*) FROM gtfs_route_stops WHERE operator IS NULL OR line IS NULL '
-                        'OR direction IS NULL OR atco_code IS NULL').fetchone()[0]
-    if nulls:
-        bad.append(f'gtfs_route_stops has {nulls:,} rows with a NULL key column')
-    badseq = con.execute('SELECT count(*) FROM (SELECT 1 FROM gtfs_route_stops GROUP BY operator, line, '
-                         'direction HAVING min(seq) != 1 OR max(seq) != count(*) '
-                         'OR count(DISTINCT seq) != count(*))').fetchone()[0]
+    for t, cols in (('gtfs_route_patterns', f'{PAT}, is_primary, first_atco, last_atco, n_trips, is_circular'),
+                    ('gtfs_route_stops', f'{PAT}, atco_code')):
+        where = ' OR '.join(f'{c.strip()} IS NULL' for c in cols.split(','))
+        nulls = one(f'SELECT count(*) FROM {t} WHERE {where}')
+        if nulls:
+            bad.append(f'{t} has {nulls:,} rows with a NULL key column')
+    # The API and build_alias pin live buses on first/last stop; is_circular drives the API's
+    # decision to ignore the direction label, so it must agree with them.
+    badcirc = one('SELECT count(*) FROM gtfs_route_patterns WHERE is_circular != (first_atco = last_atco)')
+    if badcirc:
+        bad.append(f'{badcirc:,} gtfs_route_patterns rows where is_circular != (first_atco = last_atco)')
+    # Each key: pattern_id is exactly 1..k and pattern 1 is the one primary. Aggregating
+    # 50k-odd pattern rows is instant; the row-level checks below are single passes.
+    badpat = one(f'SELECT count(*) FROM (SELECT 1 FROM gtfs_route_patterns GROUP BY {KEY} '
+                 'HAVING min(pattern_id) != 1 OR max(pattern_id) != count(*) '
+                 'OR count(DISTINCT pattern_id) != count(*) '
+                 'OR count(*) FILTER (WHERE is_primary) != 1 '
+                 'OR count(*) FILTER (WHERE is_primary AND pattern_id = 1) != 1)')
+    if badpat:
+        bad.append(f'{badpat:,} (operator, line, direction) keys have non-dense pattern_id '
+                   'or not exactly one primary')
+    # seq per PATTERN: the v1 per-key check would fail on any key with two patterns.
+    badseq = one(f'SELECT count(*) FROM (SELECT 1 FROM gtfs_route_stops GROUP BY {PAT} '
+                 'HAVING min(seq) != 1 OR max(seq) != count(*) OR count(DISTINCT seq) != count(*))')
     if badseq:
-        bad.append(f'{badseq:,} (operator, line, direction) groups have a non-dense seq')
+        bad.append(f'{badseq:,} (operator, line, direction, pattern_id) groups have a non-dense seq')
+    # Both directions of the link; ANTI JOIN over the distinct pattern keys, not all rows.
+    orphan_stops = one(f'SELECT count(*) FROM (SELECT DISTINCT {PAT} FROM gtfs_route_stops) s '
+                       f'ANTI JOIN gtfs_route_patterns p USING ({PAT})')
+    orphan_pats = one(f'SELECT count(*) FROM gtfs_route_patterns p '
+                      f'ANTI JOIN (SELECT DISTINCT {PAT} FROM gtfs_route_stops) s USING ({PAT})')
+    if orphan_stops or orphan_pats:
+        bad.append(f'pattern link broken: {orphan_stops:,} route_stops patterns missing from '
+                   f'gtfs_route_patterns, {orphan_pats:,} patterns with no route_stops')
     if bad:
         raise RuntimeError('verification failed: ' + '; '.join(bad))
     return n
+
+
+def alias_fallback(con, previous_db):
+    """Degrade path: carry the served DB's alias table over, else an empty one. This
+    stage must never fail a refresh, and an old alias beats none while QuestDB is down."""
+    con.execute('DROP TABLE IF EXISTS gtfs_line_alias')
+    if previous_db and Path(previous_db).exists():
+        try:
+            con.execute(f"ATTACH '{previous_db}' AS prev (READ_ONLY)")
+            try:
+                # Named columns: the old table's order/shape must not leak into the served schema.
+                con.execute('CREATE TABLE gtfs_line_alias(live_operator VARCHAR, live_line VARCHAR, '
+                            'gtfs_operator VARCHAR, gtfs_line VARCHAR, n_buses BIGINT, share DOUBLE)')
+                con.execute('INSERT INTO gtfs_line_alias SELECT live_operator, live_line, gtfs_operator, '
+                            'gtfs_line, n_buses, share FROM prev.gtfs_line_alias')
+                log(f'alias: carried over {count(con, "gtfs_line_alias"):,} rows from {previous_db}')
+                return
+            finally:
+                con.execute('DETACH prev')
+        except duckdb.Error as exc:
+            log(f'alias: nothing to carry over from {previous_db}: {exc!r}')
+    con.execute('DROP TABLE IF EXISTS gtfs_line_alias')
+    con.execute('CREATE TABLE gtfs_line_alias(live_operator VARCHAR, live_line VARCHAR, '
+                'gtfs_operator VARCHAR, gtfs_line VARCHAR, n_buses BIGINT, share DOUBLE)')
+    log('alias: created an empty gtfs_line_alias')
+
+
+def alias_stage(con):
+    previous = str(DB_PATH) if DB_PATH.exists() else None
+    try:
+        sys.path.insert(0, str(HERE))
+        from build_alias import build_alias   # imported here: a broken file must not fail the refresh
+        n = build_alias(con, QUESTDB_HTTP, previous)
+        log(f'alias: {n:,} rows')
+    except Exception:
+        log('ALIAS STAGE FAILED, falling back to the previous alias table (refresh continues):\n'
+            + traceback.format_exc())
+        alias_fallback(con, previous)
 
 
 def write_meta(con, n):
@@ -183,10 +274,11 @@ def write_meta(con, n):
         start, end = row if row else (None, None)
     con.execute('CREATE TABLE gtfs_meta(loaded_at TIMESTAMP, source_url VARCHAR, '
                 'feed_start_date VARCHAR, feed_end_date VARCHAR, n_stop_times BIGINT, '
-                'n_trips BIGINT, n_route_stops BIGINT)')
-    con.execute('INSERT INTO gtfs_meta VALUES (?, ?, ?, ?, ?, ?, ?)',
+                'n_trips BIGINT, n_route_stops BIGINT, n_patterns BIGINT, n_alias BIGINT)')
+    con.execute('INSERT INTO gtfs_meta VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
                 [datetime.now(UTC).replace(tzinfo=None), SOURCE_URL, start, end,
-                 n['gtfs_stop_times'], n['gtfs_trips'], n['gtfs_route_stops']])
+                 n['gtfs_stop_times'], n['gtfs_trips'], n['gtfs_route_stops'],
+                 n['gtfs_route_patterns'], n['gtfs_line_alias']])
 
 
 def check_paths():
@@ -234,11 +326,14 @@ def refresh(staging):
                     f"SET temp_directory='{WORK / 'spill'}'")
         build_staging(con)
         stage('running gtfs/patterns.sql')
-        patterns, trips, share = con.execute((HERE / 'patterns.sql').read_text()).fetchone()
-        log(f'pattern stats: {patterns:,} distinct patterns over {trips:,} live trips; '
-            f'primaries cover {share:.1%} of trips')
-        for t in ['gtfs_route_stops', 'gtfs_line_localities']:
+        patterns, kept, kept_share, primary_share = con.execute(
+            (HERE / 'patterns.sql').read_text()).fetchone()
+        log(f'pattern stats: {patterns:,} distinct patterns, {kept:,} kept; kept patterns cover '
+            f'{kept_share:.1%} of trips, primaries alone {primary_share:.1%}')
+        for t in ['gtfs_route_patterns', 'gtfs_route_stops', 'gtfs_line_localities']:
             log(f'{t}: {count(con, t):,} rows')
+        stage('learning gtfs_line_alias from the live feed (never fatal)')
+        alias_stage(con)
         stage('verifying')
         n = verify(con)
         write_meta(con, n)

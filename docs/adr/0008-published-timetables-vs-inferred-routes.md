@@ -1,6 +1,6 @@
 # ADR 0008: Published timetables (BODS GTFS) replace inferred route shape; London stays inferred
 
-**Status:** Accepted 2026-09-20. Phase 1 (delete `line_stops`/`line_localities`, adopt GTFS route shape) and Phase 2 (add a timetable-pinned ETA rung) are both scoped here; neither has been executed yet. `memtest86+` came back clean on 2026-09-20, so the build gate that previously held this is lifted -- see "Before any of this is built."
+**Status:** Accepted 2026-09-20. Phase 1 (delete `line_stops`/`line_localities`, adopt GTFS route shape) and Phase 2 (add a timetable-pinned ETA rung) are both scoped here. *Amended 2026-09-20:* the Phase 1 GTFS build now exists and has been run against the real feed (see "Amendment 2026-09-20"), but nothing has been deleted and the API still reads `line_stops`; Phase 2 has not been started. `memtest86+` came back clean on 2026-09-20, so the build gate that previously held this is lifted -- see "Before any of this is built."
 **Date:** 2026-09-20
 **Related:** [ADR-0001](0001-line-stops-memory-and-batching.md), [ADR-0002](0002-line-stops-final-assembly.md), [docs/ROADMAP.md](../ROADMAP.md), `dbt/models/marts/line_stops.sql`, `dbt/models/marts/line_localities.sql`, `dbt/models/intermediate/int_pings_matched_to_stops.sql`, `dbt/build.sh`, `backend/app.py`
 
@@ -257,6 +257,12 @@ add a rung that some vehicles reach and most do not.
 
 ### Phase 1: GTFS replaces inferred route shape
 
+*Amended 2026-09-20:* the decision below stands, but its Phase 1 design was
+refined by the first build. The GTFS tables keep every route pattern rather
+than one per (operator, line, direction), and a learned alias table sits
+beside them. The deletion described here has not happened; see the amendment
+for the gate. The original text follows unchanged.
+
 `line_stops` and `line_localities` are deleted and rebuilt from the BODS
 GTFS database rather than from inferred pings. Verified by grepping every
 `ref()` in the project, deleting those two marts cascades to, with no other
@@ -335,9 +341,16 @@ decision has not yet produced.
   of being reconstructed from noisy position pings, and stops being wrong
   by up to 18,818x on reused line numbers -- that failure mode is retired
   outright, because it was a property of inference, not of the data.
-- The nightly build loses its largest, most fragile cluster: 89 models (97
-  today, 8 left standing), 7 of the 13 tests, and the specific model (`int_pings_matched_to_stops`) that just
-  OOM'd production. The memory-batching machinery from ADR-0001 and
+- The nightly build loses its largest and most fragile cluster *by model count
+  and by memory behaviour*: 89 models (97 today, 8 left standing), 7 of the 13
+  tests, and the specific model (`int_pings_matched_to_stops`) that just
+  OOM'd production. **Amended 2026-09-20: this is a reliability gain, not a
+  speed gain.** Measured from `dbt/build.log` for the last passing run
+  (2026-09-19), the 86 `line_stops` models cost 200 s in total and
+  `int_pings_matched_to_stops` 458 s, against a first `dbt run` of 3,131 s
+  dominated by `int_pings_segmented_to_journeys` (2,649 s), which this ADR does
+  not touch. Deleting the 89 models saves roughly 11 minutes of a nightly that
+  takes about 66. See ADR-0009 for where the time actually goes. The memory-batching machinery from ADR-0001 and
   ADR-0002 becomes unnecessary for this purpose (it does not vanish from
   the codebase's history, but nothing downstream depends on it after this
   ADR).
@@ -446,6 +459,199 @@ usable memory, not installed capacity -- 31Gi visible to the kernel out of
 32GB physically installed is the normal small reservation for the kernel
 itself and firmware-reserved regions, not evidence of a hardware fault by
 itself.)
+
+## Amendment 2026-09-20: what the first build measured
+
+The sections above record the decision as it stood when it was written. This
+section records what happened when Phase 1's GTFS build was first written and
+run against the real feed, and what changed as a result. The original text
+has not been rewritten; where a sentence above is now misleading it carries
+an "Amended" marker pointing here. Every figure below comes from the
+measurement reports of 2026-09-20 (the single-pattern comparison against
+`line_stops`, the all-patterns comparison, and the live-pinning report) or
+from the integration run's own log.
+
+### (a) Single-pattern Phase 1 covered 80.6% of trips, and hid number reuse
+
+The first design kept one "primary" pattern per (operator, line, direction).
+Measured: 51,446 distinct patterns over 1,528,546 trips, and the primaries
+covered 80.6% of trips. One trip in five ran a pattern that the served table
+did not contain. Worse, the loss was not random. Operators that reuse a line
+number for unrelated services in different towns collapse to whichever
+variant is most frequent: SCEM line 1 has 42 live buses spread over 16
+distinct patterns, of which only 19% are on the primary, so a primary-only
+table would give roughly 81% of them the wrong town's stop list. SYRK 1 has
+19 live buses on 4 distinct patterns, 3 of them on a circular pattern. This
+is a finding that changes the Phase 1 design, not a tuning detail: the ADR
+promised to retire the reused-line-number failure of inference, and a single
+pattern per key would merely have reproduced it in smaller form.
+
+### (b) Decision: keep every pattern, with a pruning rule
+
+The owner decided to keep every pattern rather than one. A pattern is kept
+if it is the primary for its key or has `n_trips >= 2`; single-trip
+one-offs that are not the primary are pruned to bound the table. Each
+pattern carries `pattern_id`, `first_atco`, `last_atco` and `is_circular`.
+The integrated run kept 42,009 of 51,446 patterns (22,702 primary and 19,307
+non-primary); the kept patterns cover 99.4% of trips, against 80.6% for the
+primaries alone. `gtfs_route_stops` grew to 1,499,050 rows (1.88x the 798,737
+of the primary-only build, whose primary rows are unchanged) and
+`gtfs_route_patterns` holds 42,009 rows. The pruning has a cost that is
+unproven rather than measured to be small: the live-pinning report found 119
+unpinned buses whose refs match a raw trip but no kept pattern, and could not
+tell one-offs from trips on expired services, so the pruning rule's true cost
+is not established.
+
+### (c) A learned alias table, and why a static one was rejected
+
+Live operators and GTFS do not always agree on a line's label. The new
+`gtfs_line_alias` table maps a live (operator, line) to the GTFS (operator,
+line) that it corresponds to. It is learned, not written by hand: from 24
+hours of live pings, the `origin_ref`/`dest_ref` pair of each (operator,
+line) is matched to the first and last stops of GTFS patterns. A mapping is
+kept only if at least 3 buses support it (`n_buses >= 3`) and one target
+takes at least 60% of them (`share >= 0.6`); ambiguous mappings are dropped.
+If QuestDB is unreachable at build time, the previous database's alias rows
+are carried over rather than losing the table. The integrated run learned
+631 rows. Carry-over was exercised separately with QuestDB pointed at a dead
+port: it returned the 631 rows with the previous database, and returned 0
+with an empty table when there was no previous database; neither raised. The
+failure-leaves-the-old-file-intact promise of the refresh script was not
+exercised, because no run failed.
+
+A static rule table was rejected because the mapping cannot be derived from
+GTFS alone. trentbarton's brand labels (`if`, `swi`, `vil`) appear on the live
+side and nothing in the timetable says that `if` is GTFS `IF`, `swi` is `SW`
+and `vil` is `V1`; only the observed endpoints reveal it. The learner did
+recover all three, plus case and naming variants (KBUS `sky`, TBTN `one`).
+It also has limits. It cannot learn NCTR's `NT1`/`NT7`/`NT88` because NCTR
+pings carry no `origin_ref` and use non-NaPTAN destination codes; a
+strip-`NT` rule would cover 159 of 161 NCTR buses and 59 of 62 NCTR keys, and
+is not built. And its quality is mixed: 604 of the 631 rows (96%) are TfL,
+and several non-TfL rows look wrong (HUYT `2481`>`248`, median 2.5 km off;
+MAGH `101`>`Beatles Explorer`; TBTN `ra`>`RA`, maximum 3.9 km; BRTB `sky`>`SN`
+and `cot`>`COT`; UNIB `341`>`641`; BNSM `181`>`182`; WHIP `U2`>`U1`). The
+aliases were learned from a window that contains the same buses they were
+then tested on, so their pin rate is optimistic and not a held-out result.
+
+The TfL rows deserve a separate warning. Every one of the top 25 aliases by
+support is TFLO and looks wrong by label (TFLO 158 to ARVA 38). They are
+nevertheless geographically consistent: 76.8% of aliased TFLO buses lie
+within 120 m of a stop of the aliased route, against 78.2% for buses with a
+direct match. Either the live TFLO `line` field is not the public route
+number, or the refs are; the data cannot say which. Since London stays on the
+regression by decision, the API must not apply TFLO aliases without a
+further decision.
+
+*Correction, later the same day.* The cause was a rule in this ADR's own
+alias design: "if the live operator has no same-operator pattern anywhere,
+allow any operator". That is unsound exactly when the live operator does not
+exist in GTFS at all, because two unrelated routes that happen to share
+termini then get relabelled as each other. It is now restricted: a
+cross-operator match is allowed only if the live operator is an
+`agency_noc` in `gtfs_agency`. Re-run against a copy of the served database
+and the live QuestDB, the learner yields 27 aliases and none for TFLO (TBTN 10,
+BRTB 6, KBUS 2, HUYT 2, and singles); most are case or brand fixes
+(`one`>`1`, `61`>`6.1`, `ra`>`RA`, `igo`>`IGO`). The figures in the two
+paragraphs above (631 rows, 604 TfL) describe the first build; the served
+database from that build still holds them until its next refresh, and nothing
+reads the table yet. The remaining non-TfL rows that looked wrong (`sky`>`SN`
+at 78% share, `181`>`182`, `2481`>`248`) are same-operator near-label matches
+that a shared terminus supports and that only a held-out check can judge. (This measurement also shows that GTFS does hold London
+operators' routes, such as ARVA, ELBG and GAHL. The statement above that TfL
+does not publish to BODS is about the TFLO operator, which has no `agency_noc` = TFLO row in
+`gtfs_agency` (queried: 0 rows), and remains true of it.)
+
+### (d) Clockwise and anticlockwise are never labelled in GTFS
+
+GTFS has `direction_id` 0 and 1, never "clockwise" or "anticlockwise". Live
+circular services report those words in the direction field, so a direction
+match against GTFS cannot work for them. Circular patterns are marked
+`is_circular`, and the API must resolve a circular bus by pattern match on
+its refs, ignoring the direction label. Measured on 172 pinnable live
+clockwise/anticlockwise buses, only 36% (62) pin to an `is_circular`
+pattern, 41% pin to non-circular patterns (loops with distinct first and
+last stops) and 23% are unpinned, so "circular-only" would be the wrong rule.
+
+### (e) Measured effect, including what did not improve
+
+Live vehicles (22,384 buses; 7,393 TFLO excluded, leaving 14,991): 14,249
+match directly, 166 through an alias and 576 not at all, so alias lifted
+coverage from 95.05% to 96.16%. Of 14,405 pinnable buses, matching first and
+last stop against every pattern gives 54.8% pinned to the primary, 20.1% to
+a non-primary, 18.4% to several patterns and 6.6% unpinned. A primary-only
+table would be wrong for 23.5% of pinnable buses (2,902 on a non-primary
+pattern and 486 ambiguous without the primary among the candidates), and
+between 23.5% and 38.6% once the 15.1% of ambiguous cases that do include
+the primary are counted as possibly wrong. Keeping every pattern recovers
+the 23.5%. It does not resolve the ambiguity: 2,473 of the 2,656 multiple-match
+buses match variants in the same direction with identical endpoints, and
+first and last stops alone cannot separate them. The 952 unpinned buses are
+dominated by National Express coach-station codes (338) and short-turn or
+part-route working; the existing 120 m nearest-stop fallback still gives 524
+(55.0%) of them a stop.
+
+Against `line_stops` (5,780 real-operator non-TfL keys): key coverage is
+94.2% direct (5,445) and 94.6% with the alias (5,469). Direction ignored,
+the Jaccard overlap of stop sets against the primary has median 0.429 and
+57.4% of keys below 0.5; against the union of all patterns the median is
+0.452 with 54.9% below 0.5. Containment of the `line_stops` stops in the union
+has median 0.806 against 0.778 for the primary; pooled, 74.9% of
+`line_stops` stops lie in the union against 66.8% in the primary, and 85,388
+stops (25.1%) are in no GTFS pattern for their line. Locality pairs: 78.0%
+of the old pairs are found in the new table (71.6% before).
+
+What did not improve, stated plainly. Order agreement is unchanged: the
+best-pattern Spearman median is 0.975 (0.976 before) and 10.2% of keys are
+below 0.5 (10.3% before); the best pattern rescues only 51 of 695
+low-correlation keys, because the cause is `line_stops` merging reused line
+numbers, not missing GTFS patterns. GTFS gives the shorter path in 92.6% of
+disagreeing keys, unchanged. Direction-aware Jaccard against the primary is
+identical (median 0.325, 8,090 of 8,877 keys below 0.5) and is slightly worse
+against the union (8,120 below 0.5). Key coverage moved only from 94.2% to
+94.6%; 311 pairs stay unresolved, 142 of which exist in GTFS under a
+different operator. NCTR is still 62 of 62 missing. The 20 busiest keys stay
+middling (median Jaccard 0.64 against the union). Direction labels still
+disagree: 201 `line_stops` direction keys have no matching GTFS direction and
+737 of 8,919 keys match a pattern in the opposite direction better. Lookup
+latency did not improve: route lookup p50 2.79 ms, p95 4.22 ms (2.64 ms and
+3.61 ms with one pattern), warm cache. The disk cost of `gtfs_route_stops`
+rose from about 26 MB to about 43 MB.
+
+The integrated build itself: 246 s wall clock, peak process-tree RSS of 4,779
+MB, lowest host available memory 13,865 MB, 1,054 MB database file.
+
+### (f) API work that remains before `line_stops` can be deleted
+
+`backend/app.py` still reads `line_stops`, and the GTFS tables do not yet
+offer everything it reads. The gaps recorded by the first comparison are:
+`day_type`; the pooled `*` fallback rows; `n_obs`; the scheduled
+`median_secs_from_origin`, which is not the observed one (the median ratio of
+observed to scheduled is 0.85); and a global lookup by ATCO code. Beyond that
+gap list, the live-pinning work adds three items: choosing between same-endpoint
+variants needs a second signal such as position along the pattern (not
+built); circular buses must be resolved by pattern match; and the alias table
+must not be applied to TFLO without a decision. Nothing on this list has been
+done. Deleting `line_stops`, `line_localities` and the 87 dependent models
+waits on all of it.
+
+### (g) Does the coverage argument stand?
+
+Yes, with a narrower claim than the original wording. The argument was an
+asymmetry: route shape needs only (operator, line) and is strongly covered,
+while per-vehicle trip pinning is weak. The new numbers support the first
+half: 95.05% of non-TFLO live buses match a GTFS key directly and 96.16% with
+aliases, in line with the original 95.2%, and 94.6% of `line_stops` keys
+resolve. They do not disturb the second half, which was not re-measured
+(trip pinning by aimed departure is unproven in this build; what was measured
+is pattern pinning by endpoints). What changes is the strength of "route
+shape is solved". Having the key is not the same as having the right stop
+list: only 54.8% of pinnable buses pin uniquely to the primary, 18.4% are
+ambiguous, and the stop-set agreement with `line_stops` is low (median
+Jaccard 0.452 against the union). Those disagreements are consistent with
+`line_stops` being the wrong side (the original ADR's own reused-line-number
+evidence, and the 92.6% shorter-path result), but that is an inference, not a
+proof: no ground truth for the real stop list of a line was used.
 
 ## Roadmap
 

@@ -120,41 +120,40 @@ FROM (SELECT trip_id,
       FROM _live_st GROUP BY trip_id) s
 JOIN _live_trips lt USING (trip_id);
 
--- Trips per distinct pattern.
+-- Trips per distinct pattern, ranked within each (operator, line, direction).
+-- rank 1 = primary: most trips, ties broken on the fingerprint so a re-run on
+-- the same feed numbers the patterns identically. trip_share is taken over ALL
+-- the key's trips, before pruning.
 CREATE OR REPLACE TEMP TABLE _patterns AS
-SELECT operator, line, direction, fp, count(*) AS n_trips
-FROM _trip_sig
-GROUP BY operator, line, direction, fp;
+SELECT operator, line, direction, fp, n_trips,
+       row_number() OVER (PARTITION BY operator, line, direction
+                          ORDER BY n_trips DESC, fp)                    AS rn,
+       n_trips / sum(n_trips) OVER (PARTITION BY operator, line, direction) AS trip_share
+FROM (SELECT operator, line, direction, fp, count(*) AS n_trips
+      FROM _trip_sig
+      GROUP BY operator, line, direction, fp);
 
--- PRIMARY PATTERN: per (operator, line, direction) the single most common
--- ordered stop sequence; ties break on the fingerprint, so a re-run on the same
--- feed picks the same pattern.
---
--- Phase 1 emits only the primary. To judge whether alternates (short workings,
--- part-route variants) matter, _pattern_stats (below) measures the distinct
--- pattern count and the share of trips the primaries cover, and fetch.py logs
--- it. Measured on the real BODS
--- feed, 2026-09-20: 51,446 distinct patterns over 1,528,546 live trips; the
--- primaries cover 80.6% of trips (so about one trip in five runs a non-primary
--- pattern that Phase 1 does not emit).
-CREATE OR REPLACE TEMP TABLE _primary AS
-SELECT operator, line, direction, fp, n_trips
+-- PRUNING RULE (decided): keep a pattern if it is the primary OR ran >= 2 trips.
+-- One-off patterns are dropped. Because rank is by n_trips DESC, the survivors
+-- are always ranks 1..k with no gap, so rn is already the dense pattern_id.
+-- pattern_id is NOT stable across refreshes: never cache it across a db swap.
+CREATE OR REPLACE TEMP TABLE _kept AS
+SELECT operator, line, direction, fp, n_trips, rn AS pattern_id, trip_share
 FROM _patterns
-QUALIFY row_number() OVER (PARTITION BY operator, line, direction
-                           ORDER BY n_trips DESC, fp) = 1;
+WHERE rn = 1 OR n_trips >= 2;
 
--- Median scheduled offset per position along the primary pattern, over the
--- primary's own trips.
-CREATE OR REPLACE TEMP TABLE _primary_offsets AS
-SELECT p.operator, p.line, p.direction, l.pos,
-       any_value(p.n_trips) AS n_trips,
+-- Median scheduled offset per position along each kept pattern, over that
+-- pattern's own trips.
+CREATE OR REPLACE TEMP TABLE _kept_offsets AS
+SELECT k.operator, k.line, k.direction, k.pattern_id, l.pos,
+       any_value(k.n_trips) AS n_trips,
        any_value(x.stop_id) AS stop_id,
        median(l.arr - ts.first_dep) AS sched_secs_from_origin
-FROM _primary p
+FROM _kept k
 JOIN _trip_sig ts USING (operator, line, direction, fp)
 JOIN _live_st l ON l.trip_id = ts.trip_id
 JOIN _stop_ix x ON x.ix = l.ix
-GROUP BY p.operator, p.line, p.direction, l.pos;
+GROUP BY k.operator, k.line, k.direction, k.pattern_id, l.pos;
 
 -- NaPTAN locality, one row per stop (guards against a duplicated ATCOCode
 -- fanning out the join). Same coalesce order as stg_naptan__stops.sql:
@@ -190,15 +189,42 @@ SELECT
     -- occurrences because the position, not the stop, is the key.
     cast(o.pos AS INTEGER)                               AS seq,
     cast(o.sched_secs_from_origin AS DOUBLE)             AS sched_secs_from_origin,
-    cast(o.n_trips AS BIGINT)                            AS n_trips
-FROM _primary_offsets o
+    cast(o.n_trips AS BIGINT)                            AS n_trips,
+    cast(o.pattern_id AS BIGINT)                         AS pattern_id,
+    o.pattern_id = 1                                     AS is_primary
+FROM _kept_offsets o
 LEFT JOIN (SELECT DISTINCT ON (cast(stop_id AS VARCHAR))
                   cast(stop_id AS VARCHAR) AS stop_id, stop_name, stop_lat, stop_lon
            FROM gtfs_stops ORDER BY cast(stop_id AS VARCHAR)) s ON s.stop_id = o.stop_id
 LEFT JOIN _naptan_loc n ON n.atco_code = o.stop_id
 -- Sorted so DuckDB zone maps prune a per-route lookup.
-ORDER BY o.operator, o.line, o.direction, o.pos;
+ORDER BY o.operator, o.line, o.direction, o.pattern_id, o.pos;
 
+-- One row per kept pattern. first/last stop let a live bus's origin_ref /
+-- dest_ref pin a pattern. GTFS never says clockwise/anticlockwise but the live
+-- feed does, so for a circular pattern (first = last) the API must ignore the
+-- direction label.
+DROP TABLE IF EXISTS gtfs_route_patterns;
+CREATE TABLE gtfs_route_patterns AS
+SELECT k.operator, k.line, k.direction,
+       cast(k.pattern_id AS BIGINT)        AS pattern_id,
+       k.pattern_id = 1                    AS is_primary,
+       cast(k.n_trips AS BIGINT)           AS n_trips,
+       cast(e.n_stops AS INTEGER)          AS n_stops,
+       e.first_atco, e.last_atco,
+       e.first_atco = e.last_atco          AS is_circular,
+       cast(k.trip_share AS DOUBLE)        AS trip_share
+FROM _kept k
+JOIN (SELECT operator, line, direction, pattern_id,
+             count(*)                        AS n_stops,
+             arg_min(atco_code, seq)         AS first_atco,
+             arg_max(atco_code, seq)         AS last_atco
+      FROM gtfs_route_stops
+      GROUP BY operator, line, direction, pattern_id) e
+  USING (operator, line, direction, pattern_id)
+ORDER BY k.operator, k.line, k.direction, k.pattern_id;
+
+-- Distinct-stop counts over ALL kept patterns' stops.
 DROP TABLE IF EXISTS gtfs_line_localities;
 CREATE TABLE gtfs_line_localities AS
 SELECT line,
@@ -211,13 +237,16 @@ GROUP BY line, gtfs_locality_norm(locality)
 ORDER BY line, locality_norm;
 
 -- Kept (TEMP, dies with the connection) so the final SELECT can return it.
+-- Measure with: SELECT * FROM _pattern_stats  (run before the DROPs below).
+-- Measured 2026-09-20 on the real BODS feed: 51,446 distinct patterns, 42,009
+-- kept (99.4% of trips; primaries alone cover 80.6%). gtfs_route_stops
+-- 1,499,050 rows, gtfs_route_patterns 42,009 rows, 8,185 keys with >1 pattern.
 CREATE OR REPLACE TEMP TABLE _pattern_stats AS
-SELECT count(*) AS distinct_patterns,
-       sum(n_trips) AS total_trips,
-       sum(n_trips) FILTER (WHERE rn = 1) / sum(n_trips) AS primary_share
-FROM (SELECT n_trips, row_number() OVER (PARTITION BY operator, line, direction
-                                         ORDER BY n_trips DESC, fp) AS rn
-      FROM _patterns);
+SELECT count(*)                                                         AS distinct_patterns,
+       count(*) FILTER (WHERE rn = 1 OR n_trips >= 2)                   AS kept_patterns,
+       sum(n_trips) FILTER (WHERE rn = 1 OR n_trips >= 2) / sum(n_trips) AS kept_trip_share,
+       sum(n_trips) FILTER (WHERE rn = 1) / sum(n_trips)                AS primary_trip_share
+FROM _patterns;
 
 DROP TABLE _live_services;
 DROP TABLE _live_trips;
@@ -225,9 +254,10 @@ DROP TABLE _live_st;
 DROP TABLE _trip_sig;
 DROP TABLE _stop_ix;
 DROP TABLE _patterns;
-DROP TABLE _primary;
-DROP TABLE _primary_offsets;
+DROP TABLE _kept;
+DROP TABLE _kept_offsets;
 DROP TABLE _naptan_loc;
 
--- Last statement: con.execute(sql_text).fetchall() yields this one row.
+-- Last statement: con.execute(sql_text).fetchall() yields this one row:
+-- (distinct_patterns, kept_patterns, kept_trip_share, primary_trip_share).
 SELECT * FROM _pattern_stats;
