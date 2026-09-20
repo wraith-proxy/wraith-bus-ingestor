@@ -548,9 +548,10 @@ The 84-model `line_stops` cluster costs 200 s and `int_pings_matched_to_stops`
 not the speed fix. Segmentation is the wall.
 
 Read-only investigation so far (nothing changed): the incremental model reads
-four calendar dates (27,504,425 rows) and rewrites three (16,439,642), because
-`interval '3 days'` on a date is inclusive, where the real need is about
-8.7 million rows plus a carry-in buffer; 65% of pings never survive to a
+five calendar dates (40,868,178 rows) and rewrites four (27,504,425) on a real
+nightly, because `interval '3 days'` on a date is inclusive and `max(this)` is
+the previous night's date, where the real need is to rewrite 8,718,037 rows and
+read 16,439,642 with a one-day buffer; 65% of pings never survive to a
 training journey; and a key-based journey identity was tested and rejected
 (44% of pings sit in long-lived keys that still need splitting).
 

@@ -12,7 +12,7 @@ That reframes ADR-0008. It was presented, by the assistant that wrote it, as the
 
 Two findings, both measured, shape everything else:
 
-1. The incremental model reads **four** calendar dates and rewrites **three**, because `interval '3 days'` on a `DATE` column is inclusive. The comments say three and two. The real need is about one and a bit.
+1. The incremental model reads **five** calendar dates (40.9 million rows) and rewrites **four** (27.5 million) on a real nightly, because `interval '3 days'` on a `DATE` column is inclusive and because `max(ping_local_date)` at run start is the *previous* night's date. The comments say three days read and two rewritten. The real need is to rewrite two dates (8.7 million rows) and read them plus a one-day buffer (16.4 million).
 2. A naive key-based journey identity, which looked like a way to delete the window machinery, was tested and **does not work**: 44% of pings sit in long-lived keys that still need splitting.
 
 ## Context: the measured profile of the nightly
@@ -43,9 +43,9 @@ All of the following was measured on 2026-09-20 against the persisted build data
 
 ### The incremental window is larger than the code says
 
-The model reads `ping_local_date >= (select max(ping_local_date) from {{ this }}) - interval '3 days'` and rewrites `>= ... - interval '2 days'`. On a `DATE` column that comparison is inclusive: with the maximum date 2026-09-20 it reads 09-17, 09-18, 09-19 and 09-20. Measured on the persisted table: **27,504,425 rows over four calendar dates read, 16,439,642 rows over three dates rewritten**. The file header and the comment say three days read and two written.
+The model reads `ping_local_date >= (select max(ping_local_date) from {{ this }}) - interval '3 days'` and rewrites `>= ... - interval '2 days'`. On a `DATE` column that comparison is inclusive, and `max(...)` is evaluated when the run *starts*, which is the previous night's date. On the 2026-09-20 03:00 run the maximum was 2026-09-19, so it read 09-16 to 09-20 and rewrote 09-17 to 09-20. Measured on the persisted table: **40,868,178 rows over five calendar dates read, 27,504,425 rows over four dates rewritten**. The file header and the comment say three days read and two written. (An earlier version of this ADR quoted 27.5 million as the *read* and 16.4 million as the rewrite; that took the maximum after the run instead of before it, and understated the over-read.)
 
-What a nightly actually needs is to rewrite yesterday (closed) and today (partial at 03:00), about 8.7 million rows on the numbers above, plus a carry-in buffer. The buffer must give `lag()` its context (three or four pings back) and, more importantly, must preserve `journey_key`. That key is `bus_id || '#' || epoch_ms(start ping_ts)`, taken from a running `max()` over the bus's pings, so it is only stable if the journey's start ping lies inside what was read. A surviving journey lasts at most five hours (the duration filter in `int_journeys_shaped_and_directed`), so the theoretical buffer is about five hours and twenty minutes; the model's own comment fixes it at a whole day. Whether a shorter buffer is empirically identical is exactly what the plan measures.
+What a nightly actually needs is to rewrite the previous night's date (which was only partial when it last ran) and today's (partial at 03:00), `ping_local_date >= max(this)`: 8,718,037 rows on the same numbers, read with a carry-in buffer of 16,439,642 rows at one day (`>= max - 1 day`). The buffer must give `lag()` its context (three or four pings back) and, more importantly, must preserve `journey_key`. That key is `bus_id || '#' || epoch_ms(start ping_ts)`, taken from a running `max()` over the bus's pings, so it is only stable if the journey's start ping lies inside what was read. A surviving journey lasts at most five hours (the duration filter in `int_journeys_shaped_and_directed`), so the theoretical buffer is about five hours and twenty minutes; the model's own comment fixes it at a whole day. Whether a shorter buffer is empirically identical is exactly what the plan measures.
 
 ### A key-based journey identity does not remove the window machinery
 
@@ -98,7 +98,7 @@ If WF-S finds a variant that is bit-identical, downstream-neutral and fits at 4 
 
 The order is: WF-S, then WF-S2, then ADR-0008's Phase 1. The alternative order (delete first) was rejected because it spends the most work on the change that helps the goal least. It is not wasted, since it stays needed for reliability, but it is not first.
 
-An honest estimate of the upside, marked as hypothesis and to be replaced by WF-S's measurement: rows through the windows fall from about 27.5 million to about 10-11 million, and the sort width narrows; if the cost scales with either, `int_pings_segmented_to_journeys` falls from about 44 minutes toward the ten-minute range. With ADR-0008's deletions the nightly would then be on the order of 20-25 minutes. None of this is measured.
+An honest estimate of the upside, marked as hypothesis and to be replaced by WF-S's measurement: rows through the windows fall from about 40.9 million to about 16.4 million with a one-day buffer, and lower still with an hour-sized one, and the sort width narrows; if the cost scales with either, `int_pings_segmented_to_journeys` falls from about 44 minutes toward the ten-minute range. With ADR-0008's deletions the nightly would then be on the order of 20-25 minutes. None of this is measured.
 
 ## Ceilings and what would change the plan
 
