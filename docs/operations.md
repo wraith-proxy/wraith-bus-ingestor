@@ -97,6 +97,50 @@ REPLAY=1 ./build.sh         # disable the incremental models' retention post-hoo
                             # (set by ops/incident.py — see below)
 ```
 
+### The segmentation window (amended 2026-09-20)
+
+`int_pings_segmented_to_journeys` reads `ping_local_date >= max(this) - 2 days`
+and rewrites `>= max(this) - 1 day`. On a `DATE` both are inclusive and `max` is
+the previous night's date, so a run reads the three dates around it and rewrites
+the newest two, about 27.5 million and 16.4 million rows (it was 40.9 and 27.5
+million before 2026-09-20, five dates and four). Two consequences to know. Late
+data for a date older than that is not re-segmented nightly: when it is suspected
+(a backfill, or a restored day) run `FULL_REFRESH=1 ./build.sh` as above, the
+slow path that recomputes every date in the window. And the rewrite reaches one
+date further back than "yesterday" on purpose: in British Summer Time a 03:00 run
+sees data only about an hour past the end of the previous local date, so that
+date is rewritten again the next night with a full day behind it (ADR-0009
+explains the 18.2% truncation this avoids).
+
+### The deterministic-key migration, and what `build.sh` does if it meets old data
+
+`int_pings_segmented_to_journeys` keys vehicles by `(operator, bus_id)` and its
+`journey_key` is `<operator>|<bus_id>#<epoch_ms>` since 2026-09-20 (ADR-0009). The
+one-off migration was run by hand, supervised, on the night of 2026-09-20: a real
+extract, a forced `FULL_REFRESH`, tests, contract gate and publish (measured
+timings are in ADR-0009). It should never need to run again, but the guard stays as
+a safety net: before the first dbt run, `build.sh` checks the build database and,
+if `int_pings_segmented_to_journeys` holds any `journey_key` not matching
+`'%|%#%'`, prints "==> legacy journey_key shape detected: forcing FULL_REFRESH=1
+(one-off migration)" and rebuilds from cold. A missing file or table, an
+already-migrated warehouse, or a preset `FULL_REFRESH=1` leave it alone, and a
+warehouse it cannot read (locked, corrupt) prints "!! journey_key migration check
+skipped" and does not force.
+
+If you ever need it deliberately (restoring an old warehouse, or rolling the change
+back), expect a cold rebuild of the whole window: about an hour on this host, of
+which segmentation alone was 44 minutes for 71.9 million rows. Published marts keep
+serving if it fails. Rolling the change back is a `git revert` of the model and
+extract commits plus one `FULL_REFRESH=1` run, because the old model must not read
+new-shape keys and has no detector.
+
+**Dry runs.** `SKIP_EXTRACT=1 ./build.sh` reuses the parquet already in `dbt/data/`.
+That is fine once the new extract has run (the files then carry `recorded_at` and
+operator-keyed rows). Against parquet written by the OLD extract it still builds
+(staging types the missing column `NULL`), but the two source tests in
+`_bods__sources.yml` that pin the column set and the uniqueness key will report the
+old shape.
+
 ### Test results are recorded, pass or fail
 
 Straight after `dbt test`, `build.sh` runs `publish_run_results.py`, which
@@ -167,6 +211,29 @@ fail a build. `ops/verify_build.sh` does the same stopping itself for its
 manual Run 1. Changing the unit file needs `sudo cp` to `/etc/systemd/system/`
 and `daemon-reload`.
 
+### A failed nightly now alerts within ~10 minutes
+
+`wraith-bus-build.service` runs `ops/record_build_failure.sh` as an `ExecStopPost`.
+If the unit did not end in `success` (an OOM in `dbt run`, an extract failure, a
+kill), it writes a `failed` row to `dbt_build_runs`, and the existing Grafana rule
+"nightly build missing or failed" (`last(result) != 'success'`) notifies ntfy.
+Before this, a run that died before dbt published its results recorded nothing:
+on 2026-09-20 the 03:00 build failed with a DuckDB OOM and everything looked fine,
+because the API kept serving the previous good marts and the rule only fires 26h
+after the last success. The next successful build writes its own `success` row,
+which resolves the alert. A hard crash of the host itself cannot record anything;
+the 26h rule is still the backstop for that.
+
+### GOTCHA: `memory_limit` is a coin flip at the edge, and RSS runs above it
+
+DuckDB's `memory_limit` (`dbt/profiles.yml`) bounds only its own buffer manager.
+On this stack the process RSS ran ~4.7GB **above** it (8.69GB RSS at a 4GB limit),
+so the limit and the systemd `MemoryMax` (13000M) must be sized together, not
+separately. 4GB passed `int_pings_matched_to_stops` twice on 2026-09-19 (under
+`ops/verify_build.sh`) and failed it at 03:00 the next morning, so "it passed"
+twice was not proof. It is 6GB since 2026-09-20 (~11GB peak RSS, under the cap);
+8GB would need `MemoryMax` raised first. Extra host RAM does not raise this limit.
+
 ### GOTCHA: the API holds every mart row in Python memory, and the marts outgrew its limit
 
 `backend/app.py` loads `eta_models`, `localities`, `line_localities` and
@@ -221,6 +288,18 @@ not a second copy of the working set. `extract.py` now prunes parquet older
 than the window, but only after a successful extract, so a failed run can
 never be the thing that deletes the last good data. The parquet is derived
 data and is regenerable from QuestDB, so it is pruned rather than archived.
+
+## Reviewing alias proposals
+
+The GTFS refresh (`gtfs/fetch.py`, weekly, via `wraith-gtfs-refresh.service`) learns candidate line aliases from the live feed, but applies **only those accepted by hand** in `gtfs/alias_review.csv`; see [ADR-0008](adr/0008-published-timetables-vs-inferred-routes.md) (h)(ii). A learned pair that is not in the file is dropped and logged as a proposal:
+
+```
+build_alias: WARNING 3 unreviewed learned aliases NOT applied: XXXX/12->XXXX/12A, ...; review them in gtfs/alias_review.csv
+```
+
+That line is written with `print` by `build_alias.py`, which goes to standard output, and `fetch.py`'s file log (`gtfs/refresh.log`) holds only its own `logging` messages. So look for the WARNING in the journal (`journalctl -u wraith-gtfs-refresh.service | grep unreviewed`) or in the terminal of a manual run, and check `gtfs/refresh.log` for the resulting `alias: N rows` line. (This split was found while writing this section from the code; it has not been observed on a real run.) The warning lists at most twenty pairs.
+
+To decide one, add a row to `gtfs/alias_review.csv` with the columns `live_operator,live_line,gtfs_operator,gtfs_line,decision,reason,reviewed_on`, where `decision` is `accept` or `reject` and `reason` records the evidence. A `reject` row beats an `accept` for the same pair, and a rejected pair is never warned about again. Rubric in two lines: accept a same-operator pair that differs only by case, punctuation, a brand or code name or a number written as a word, and whose live buses sit within 120 m of the target's stops for at least 80% of them; reject cross-operator pairs unless the label is identical and both NOCs are the same company (same `agency_name` or sister companies), labels that differ by a digit or letter, a share under 0.9, and anything the geography contradicts. The next refresh applies the file; nothing needs restarting. A missing or unreadable CSV applies no learned aliases (it fails closed) and logs a warning, while the NCTR `NT` rule rows are still built.
 
 ## Archiving, not deleting
 

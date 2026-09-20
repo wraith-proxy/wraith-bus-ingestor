@@ -49,7 +49,7 @@ RUN_HOME="$(getent passwd "$RUN_USER" | cut -d: -f6)"
 SYSTEMD_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 BUILD_STOP=(ghost-osrm ghost-backend ghost-tiles ghost-grafana)
 OPTIONAL_STOP=(ollama immich_machine_learning immich_server immich_postgres immich_redis)
-MEMORY_LIMIT_KB=$((4 * 1024 * 1024))   # profiles.yml's DuckDB memory_limit, for the summary
+MEMORY_LIMIT_KB=$((6 * 1024 * 1024))   # profiles.yml's DuckDB memory_limit, for the summary
 
 CHECK=0; DRY=0; DETACH=0
 for arg in "$@"; do

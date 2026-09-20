@@ -207,7 +207,7 @@ line_shape as (
     -- for historical data, still does) treat a Sheffield cross-city route and
     -- a Wilmslow-Hale route as one shape. operator is coalesced to a sentinel
     -- rather than left NULL because SQL joins never match NULL to NULL --
-    -- see int_pings_segmented_to_journeys' prev_operator for the same trick. Every row
+    -- see the coalesce(operator, '~none~') partition in int_pings_segmented_to_journeys for the same trick. Every row
     -- before 2026-09-12 has operator_key = '~none~' for everything, so this
     -- is a no-op on historical data: it only starts disambiguating once the
     -- feed actually supplies an operator.

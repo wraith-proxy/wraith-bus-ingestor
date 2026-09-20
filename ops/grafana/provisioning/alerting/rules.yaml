@@ -95,10 +95,12 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: No successful dbt build in the last 26 hours.
+          summary: The nightly dbt build failed, or has not succeeded in 26 hours.
           description: >-
             Either the nightly dbt job did not run or its most recent run did
-            not succeed. After the September repo split the nightly job pointed
+            not succeed. A failed run now records itself the moment it ends
+            (ops/record_build_failure.sh, an ExecStopPost hook), so this fires
+            within ~10 minutes of a failure rather than 26 hours later. After the September repo split the nightly job pointed
             at a deleted directory and failed silently for weeks -- nobody
             noticed because a build that never runs produces no output to read.
             That is exactly the class of failure this rule catches.

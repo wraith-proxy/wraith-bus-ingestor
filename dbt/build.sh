@@ -136,6 +136,43 @@ fi
 # exists, so deleting this every run would make "incremental" a no-op.
 rm -f "$STAGED" "$STAGED.wal"
 
+# One-off migration guard (2026-09-20). int_pings_segmented_to_journeys changed
+# the shape of journey_key from '<bus_id>#<epoch_ms>' to
+# '<operator>|<bus_id>#<epoch_ms>', because bus_id is not a vehicle identity
+# (see that model's header). An incremental run rewrites only the newest three
+# dates, so a warehouse built by the old model would carry BOTH shapes, and so
+# would every downstream table keyed off journey_key, until the old dates aged
+# out of retention. Rather than rely on someone remembering FULL_REFRESH=1, look
+# for an old-shape key and force one full rebuild. After that rebuild no old-shape
+# key exists, so this never fires again; an already-migrated warehouse, a
+# missing file and a missing table all leave FULL_REFRESH alone.
+# The check opens the warehouse READ-ONLY in its own short-lived process, which
+# has exited before dbt starts, so it cannot leave a lock behind. If it cannot
+# read the file (locked, corrupt) it says so and does not force: a wrong "no"
+# costs one mixed night, a wrong "yes" would wipe a good warehouse.
+if [[ "$FULL_REFRESH" != "1" && -f "$BUILD" ]]; then
+    legacy=$("$PY" - "$BUILD" <<'PYEOF' || true
+import sys
+import duckdb
+try:
+    con = duckdb.connect(sys.argv[1], read_only=True)
+    try:
+        hit = con.execute(
+            "select 1 from int_pings_segmented_to_journeys "
+            "where journey_key not like '%|%#%' limit 1").fetchone()
+    finally:
+        con.close()
+    print("legacy" if hit else "")
+except Exception as exc:
+    print("!! journey_key migration check skipped: %s" % str(exc).splitlines()[0], file=sys.stderr)
+PYEOF
+)
+    if [[ "$legacy" == "legacy" ]]; then
+        echo "==> legacy journey_key shape detected: forcing FULL_REFRESH=1 (one-off migration)"
+        FULL_REFRESH=1
+    fi
+fi
+
 RUN_FLAGS=("${DBT_VARS[@]}")
 if [[ "$FULL_REFRESH" == "1" ]]; then
     echo "==> FULL_REFRESH=1: wiping $BUILD and forcing a from-scratch rebuild"

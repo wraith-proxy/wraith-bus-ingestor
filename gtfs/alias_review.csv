@@ -1,0 +1,29 @@
+live_operator,live_line,gtfs_operator,gtfs_line,decision,reason,reviewed_on
+BNSM,181,BNSM,182,reject,"Labels differ by a digit that could name a different route (181 vs 182); 5 buses share 1.0 but geography is only 4/5 within 120 m (median 29 m, 24h window), so shared termini do not prove identity.",2026-09-20
+BORD,B1,PERY,B1,accept,"Identical label; BORD and PERY are both the agency 'Borders Buses' (one company under two NOCs); share 1.0 (4 buses); geography 3/3 within 120 m, median 24 m. Accepted on re-review 2026-09-20 under the same-company rule for identical-label cross-operator aliases.",2026-09-20
+BRTB,cal,BRTB,CC,reject,"Brand-to-code pair with share 1.0 (6 buses) but only 4/6 buses within 120 m of CC stops (median 43 m), below the 80% geography bar.",2026-09-20
+BRTB,cot,BRTB,COT,accept,"Case-only difference, same operator, share 1.0 (3 buses); geography 2/3 within 120 m (median 77 m) is thin but does not contradict.",2026-09-20
+BRTB,igo,BRTB,IGO,accept,"Case-only difference, same operator, share 1.0 (17 buses); 13/14 live buses within 120 m of IGO stops (median 19 m).",2026-09-20
+BRTB,key,BRTB,KC,accept,"Brand-to-code pair, same operator, share 1.0 (5 buses); 4/5 buses (80%) within 120 m of KC stops (median 55 m).",2026-09-20
+BRTB,mln,BRTB,RM,accept,"Brand-to-code pair, same operator, share 1.0 (11 buses); 9/9 live buses within 120 m of RM stops (median 33 m).",2026-09-20
+BRTB,sky,BRTB,SN,reject,"Share is 0.82 (14 buses), below 0.9, with runner-up SNX at 0.29 (buses pinned to both by shared termini); SNX stops fit poorly (27% within 120 m, median 223 m) but the share bar still fails.",2026-09-20
+FCYM,4,NADT,4A,reject,"Different companies (FCYM 'First South & West Wales', NADT 'Adventure Travel') and the labels differ by a letter (4 vs 4A) that could name a different route; geography 6/7 within 120 m over 24h does not outweigh that. Rejected.",2026-09-20
+HUYT,1591,HUYT,159,reject,Labels differ by a digit (1591 vs 159) that could name a different route; geography only 2/3 within 120 m (median 25 m) and 6 buses share the termini.,2026-09-20
+HUYT,2481,HUYT,248,reject,"Labels differ by a digit (2481 vs 248) that could name a different route; 4/5 within 120 m (median 26 m, 24h window) is not proof, two routes sharing termini are different routes.",2026-09-20
+KBUS,sky,KBUS,SKY,accept,"Case-only difference, same operator, share 1.0 (17 buses); 15/16 live buses within 120 m of SKY stops (median 37 m).",2026-09-20
+KBUS,sp,KBUS,SP,accept,"Case-only difference, same operator, share 1.0 (7 buses); 6/7 live buses within 120 m of SP stops (median 26 m).",2026-09-20
+MAGH,101,MAGH,Beatles Explorer,reject,"Numeric label to a named tour route with share 1.0 but only 3 buses; just 1/3 within 120 m of its stops (median 628 m), so geography contradicts it.",2026-09-20
+TBTN,60,TBTN,6.0,reject,"Punctuation-only difference, share 1.0 (4 buses), but runner-up 6.4 is also a candidate (0.5 of buses) with equal 3/4 geography, and 75% within 120 m (24h window, median 70 m) is below the 80% bar.",2026-09-20
+TBTN,61,TBTN,6.1,accept,"Punctuation-only difference (missing dot), same operator, share 1.0 (10 buses); 7/7 live buses within 120 m of 6.1 stops (median 30 m).",2026-09-20
+TBTN,64,TBTN,6.4,accept,"Punctuation-only difference (missing dot), same operator, share 1.0 (3 buses); 3/3 buses within 120 m of 6.4 stops (median 20 m, 24h window); rival 6.0 fits worse at 2/3.",2026-09-20
+TBTN,cmt,TBTN,CMT,accept,"Case-only difference, same operator, share 1.0 (3 buses); 3/3 live buses within 120 m of CMT stops (median 29 m).",2026-09-20
+TBTN,if,TBTN,IF,accept,"Case-only difference, same operator, share 1.0 (9 buses); 8/9 live buses within 120 m of IF stops (median 44 m).",2026-09-20
+TBTN,mic,TBTN,TM,accept,"Brand-to-code pair, same operator, share 1.0 (9 buses); 8/8 live buses within 120 m of TM stops (median 12 m).",2026-09-20
+TBTN,one,TBTN,1,accept,"Spelled-out number to digit (brand-to-code), same operator, share 1.0 (16 buses); 14/15 live buses within 120 m of route 1 stops (median 39 m).",2026-09-20
+TBTN,ra,TBTN,RA,reject,"Case-only difference and share 1.0 (11 buses), but geography contradicts it: only 4/9 live buses within 120 m of RA stops (median 150 m).",2026-09-20
+TBTN,swi,TBTN,SW,reject,"Not case-only; fails the 80% geography bar on a 24h re-check: 3/5 buses within 120 m of SW stops (0.6, median 60 m). The earlier 4/5 came from a 30-minute window. Re-review with more buses.",2026-09-20
+TBTN,two,TBTN,TWO,accept,"Case-only difference (spelled-out number), same operator, share 1.0 (13 buses); 10/10 live buses within 120 m of TWO stops (median 10 m).",2026-09-20
+TBTN,vil,TBTN,V1,accept,"Brand-to-code pair, same operator, share 1.0 (5 buses); 4/5 buses (80%) within 120 m of V1 stops (median 18 m).",2026-09-20
+WHIP,U2,WHIP,U1,reject,"Labels differ by a digit (U2 vs U1) that could name a different route; only 4/7 buses within 120 m of U1 stops (median 51 m, 24h window), geography contradicts.",2026-09-20
+WNGS,HHL,NXHH,HHL,reject,"Identical label but different companies (WNGS 'Diamond Bus South East', NXHH 'Hotel Hoppa') and geography only 2/3 within 120 m (median 61 m) on 8 buses of evidence: fails the 80% bar and the same-company rule. Rejected on re-review 2026-09-20.",2026-09-20
+MDCL,66,DIAM,66,accept,Identical label; MDCL is 'Diamond Bus East Midlands' and DIAM is 'Diamond Bus' (sister companies); the 3 live buses run the exact same termini as DIAM 66 (4200F165870 to 3800C902404) and the 2 currently live are 19 m and 44 m from its stops (2/2 within 120 m); MDCL has 31 lines in GTFS but no 66. Proposed by the learner and accepted 2026-09-20 under the same-company rule for identical-label cross-operator aliases.,2026-09-20

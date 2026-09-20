@@ -1,0 +1,36 @@
+[Unit]
+Description=wraith-bus-ingestor weekly GTFS timetable refresh
+Wants=network-online.target
+After=network-online.target
+# Ordering: if a refresh is running, the 02:00 precleanup and 03:00 build wait for it
+# instead of running concurrently (precleanup swaps off; build is capped at 13000M).
+Before=wraith-bus-precleanup.service wraith-bus-build.service
+
+[Service]
+Type=oneshot
+User=thomaspeoples
+Group=thomaspeoples
+WorkingDirectory=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/gtfs
+# wraith-bus-build.service uses no Nice/IOSchedulingClass and no EnvironmentFile
+# (its paths are absolute, settings come from defaults in the scripts), so there is
+# no idiom to copy. Nice=10 only: this shares the host with QuestDB and the live
+# ingestor, which should win any CPU contention. IO stays default -- an idle IO
+# class could starve a 5GB CSV load. fetch.py has defaults for every path.
+Nice=10
+# Deliberately does NOT stop or start any container: the DuckDB limit is 4GB and
+# stays well inside the cap below, so QuestDB and the ingestor keep running.
+ExecStart=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/.venv/bin/python /home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/gtfs/fetch.py
+# fetch.py logs to gtfs/refresh.log itself; stdout also lands in the journal.
+TimeoutStartSec=2h
+# fetch.py records its own 'error' row for Python exceptions and SIGTERM, but not
+# for an OOM-kill or SIGKILL. This covers those, like record_build_failure.sh does
+# for the build. `-` so it can never fail the unit; $$ is systemd's escape for $.
+# A Python-caught failure therefore yields two error rows, which is harmless.
+ExecStopPost=-/bin/sh -c '[ "$$SERVICE_RESULT" = success ] || { curl -sf --max-time 15 -G http://localhost:9001/exec --data-urlencode "query=CREATE TABLE IF NOT EXISTS gtfs_refresh_runs (run_at TIMESTAMP, status SYMBOL, n_stop_times LONG, n_trips LONG, n_route_stops LONG, duration_s DOUBLE, message VARCHAR) TIMESTAMP(run_at) PARTITION BY YEAR" >/dev/null; curl -sf --max-time 15 -G http://localhost:9001/exec --data-urlencode "query=INSERT INTO gtfs_refresh_runs VALUES(now(), '"'"'error'"'"', 0, 0, 0, 0.0, '"'"'unit ended: $$SERVICE_RESULT'"'"')" >/dev/null; }'
+
+# DuckDB memory_limit is 4GB but process RSS runs well above it on this workload
+# (the repo's own notes: roughly 4.7GB above), so 8G is the honest ceiling. It is
+# far below the 13000M nightly build cap. MemorySwapMax=0 as in the build unit:
+# fail fast rather than thrash.
+MemoryMax=8G
+MemorySwapMax=0

@@ -382,7 +382,8 @@ EMPTY_MARTS = {
 _marts_lock = threading.Lock()
 _marts_state = {'data': None, 'mtime': None, 'checked': 0.0}
 
-# Last real ETA we managed to compute per bus_id, as a fallback of last resort
+# Last real ETA we managed to compute per vehicle ((operator, bus_id): bus_id alone
+# is not unique across operators), as a fallback of last resort
 # once the regression, geometric progress and stop-sequence progress have all
 # come up empty. A GIL-protected dict is good enough here: worst case under a
 # race is one bus briefly serving last tick's ETA, same as a slightly-stale
@@ -627,20 +628,39 @@ def select_columns():
     return BASE_COLUMNS + [c for c in EXTRA_COLUMNS if c in have]
 
 
-def live_buses(bus_id=None):
+def live_buses(bus_id=None, operator=None):
+    """Newest row per VEHICLE inside the freshness window.
+
+    A vehicle is (bus_id, operator), not bus_id: operators mint their own
+    references, so '154' is a different physical bus for SWWD in Hampshire, TFCN
+    in Cornwall and GPLM near Luton. Partitioning by bus_id alone collapsed those
+    namesakes into one and hid about 3% of the live fleet (474 of 16,580 vehicles
+    on 2026-09-20). Measured on the live table the two-column form costs the same
+    (~0.1 s), so there is no reason to keep the wrong key.
+
+    operator narrows a single-bus lookup to one namesake. It is validated by the
+    caller against BUS_ID_RE, like bus_id, because it is interpolated into SQL.
+    """
     cols = ', '.join(select_columns())
     where = f"timestamp > dateadd('m', -{FRESHNESS_MINUTES}, now())"
     if bus_id:
         where = f"bus_id = '{bus_id}' AND {where}"
+    if operator:
+        where = f"operator = '{operator}' AND {where}"
+    # operator is created lazily by the ingestor's ILP writes like the other
+    # enriched columns; without it the only key available is bus_id.
+    partition = 'bus_id, operator' if 'operator' in available_columns() else 'bus_id'
     return qdb_rows(
         f"SELECT {cols} FROM bus_positions WHERE {where} "
-        "LATEST ON timestamp PARTITION BY bus_id")
+        f"LATEST ON timestamp PARTITION BY {partition}")
 
 
-def bus_history(bus_id):
+def bus_history(bus_id, operator=None):
+    where = f"bus_id = '{bus_id}' AND timestamp > dateadd('m', -{HISTORY_MINUTES}, now())"
+    if operator:
+        where = f"operator = '{operator}' AND {where}"
     return qdb_rows(
-        f"SELECT lat, lon, timestamp FROM bus_positions "
-        f"WHERE bus_id = '{bus_id}' AND timestamp > dateadd('m', -{HISTORY_MINUTES}, now()) "
+        f"SELECT lat, lon, timestamp FROM bus_positions WHERE {where} "
         "ORDER BY timestamp DESC LIMIT 500")
 
 
@@ -949,18 +969,21 @@ def predict(row, marts, now_s):
     # fall back to the bare timetable (no delay applied, since we have none),
     # then to whatever ETA we last actually computed for this vehicle. Both
     # are worse than a fresh number but better than a blank cell on the map.
+    # Keyed by (operator, bus_id): bus_id alone is shared by unrelated vehicles of
+    # different operators, which would hand one bus another's last ETA.
     bus_id = row.get('bus_id')
+    vehicle = (operator, bus_id)
     if eta_iso is None and aimed is not None:
         predicted = aimed
         eta_iso = iso_from_epoch_s(predicted)
         eta_source = 'timetable_raw'
     if eta_iso is None and bus_id is not None:
-        cached = _last_eta.get(bus_id)
+        cached = _last_eta.get(vehicle)
         if cached is not None:
             predicted, eta_iso = cached
             eta_source = 'last_known'
     elif eta_iso is not None and bus_id is not None:
-        _last_eta[bus_id] = (predicted, eta_iso)
+        _last_eta[vehicle] = (predicted, eta_iso)
 
     return {
         'remaining_km': remaining_km,
@@ -1061,18 +1084,26 @@ def buses():
 
 @app.route('/bus/<bus_id>', methods=['GET'])
 def bus_detail(bus_id):
+    """One vehicle. bus_id alone is not unique across operators, so an optional
+    ?operator=<NOC> selects one namesake. Old clients send only bus_id and keep
+    working: with namesakes and no operator the FRESHEST one is returned
+    (deterministic, unlike the arbitrary first row this used to hand back) and
+    the payload lists who else answers to that id in `same_bus_id`."""
     if not BUS_ID_RE.match(bus_id or ''):
         return jsonify({"error": "invalid bus_id"}), 400
+    operator = request.args.get('operator') or None
+    if operator is not None and not BUS_ID_RE.match(operator):
+        return jsonify({"error": "invalid operator"}), 400
 
     try:
-        rows = live_buses(bus_id)
+        rows = live_buses(bus_id, operator)
     except Exception as exc:
         log_once('qdb-bus', f'questdb unavailable: {exc}')
         return jsonify({"error": "upstream unavailable"}), 503
     if not rows:
         return jsonify({"error": "bus not live"}), 404
 
-    row = rows[0]
+    row = max(rows, key=lambda r: r.get('timestamp') or '')
     marts = get_marts()
     now_s = time.time()
     props, model, predicted = bus_properties(row, marts, now_s)
@@ -1093,12 +1124,17 @@ def bus_detail(bus_id):
         'last_stop': None,
         'next_stop': None,
     })
+    if len(rows) > 1 and operator is None:
+        # Namesakes: other vehicles that answer to this bus_id. Lets a client that
+        # only knows bus_id see the ambiguity and re-ask with ?operator=.
+        props['same_bus_id'] = [{'operator': r.get('operator'), 'line': r.get('line')}
+                                for r in rows if r is not row]
 
     stops = stops_for(marts, row.get('operator'), row.get('line'), row.get('direction'),
                       day_type(local_dt(now_s)))
     if stops:
         try:
-            pings = bus_history(bus_id)
+            pings = bus_history(bus_id, row.get('operator'))
         except Exception as exc:
             log_once('qdb-history', f'questdb history unavailable: {exc}')
             pings = []

@@ -106,16 +106,33 @@ sources:
               - castable_as:
                   arguments:
                     type: BIGINT
+          - name: recorded_at
+            description: >
+              The feed's own per-record observation time, epoch MILLIS as a LONG
+              (extract.py carries it since 2026-09-20). Often stale -- a dead
+              record keeps its original RecordedAtTime -- so it is only a sort
+              tiebreak in int_pings_segmented_to_journeys, never a time to trust.
+              NULL in any file written before extract.py carried it.
+            tests:
+              - castable_as:
+                  arguments:
+                    type: BIGINT
         tests:
           - columns_match_set:
               arguments:
-                column_list: ["timestamp", "bus_id", "line", "lat", "lon", "bearing", "direction", "operator", "journey_ref", "origin_ref", "origin_name", "dest_ref", "dest_name", "origin_aimed_dep", "dest_aimed_arr"]
+                column_list: ["timestamp", "bus_id", "line", "lat", "lon", "bearing", "direction", "operator", "journey_ref", "origin_ref", "origin_name", "dest_ref", "dest_name", "origin_aimed_dep", "dest_aimed_arr", "recorded_at"]
           # Regression guard for the exact bug extract.py's own main() comments
           # warn about: a stale whole-day file left alongside the new chunked
           # files double-counts every row in that day.
+          # The key is (timestamp, bus_id, operator, line) since 2026-09-20: the
+          # extract's SAMPLE BY now groups by operator too, so vehicles of
+          # different operators that share a bus_id and a line in one bucket are
+          # separate rows (37,231 of them in the first full extract) instead of
+          # being merged into one. (timestamp, bus_id, line) alone is therefore
+          # no longer unique, by design.
           - dbt_expectations.expect_compound_columns_to_be_unique:
               arguments:
-                column_list: ["timestamp", "bus_id", "line"]
+                column_list: ["timestamp", "bus_id", "operator", "line"]
           # A near-empty glob (extraction silently produced almost nothing)
           # should fail loudly here rather than surface later as suspiciously
           # thin marts. 500k is well under even the thinnest real day observed

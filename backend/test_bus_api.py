@@ -1171,6 +1171,77 @@ def test_search_matches_line_number_directly():
         app.live_buses = real_live_buses
 
 
+def test_last_eta_is_per_vehicle_not_per_bus_id():
+    """Operators mint their own vehicle refs, so two unrelated buses can share a
+    bus_id. One bus's last-known ETA must never be served to the other."""
+    now = 1789200000.0
+    marts = dict(app.EMPTY_MARTS)
+    swwd = {'line': '37', 'direction': 'outbound', 'lat': 51.0, 'lon': -1.6,
+            'bus_id': 'TEST-SHARED-154', 'operator': 'SWWD', 'dest_aimed_arr': (now + 300) * 1000}
+    app.predict(swwd, marts, now)          # seeds SWWD's own cache entry
+
+    tfcn = {'line': '11', 'direction': 'inbound', 'lat': 50.3, 'lon': -4.1,
+            'bus_id': 'TEST-SHARED-154', 'operator': 'TFCN'}
+    frag, _m, _p = app.predict(tfcn, marts, now + 60)
+    assert frag['eta_iso'] is None         # nothing of TFCN's own to fall back on
+
+    frag, _m, _p = app.predict(dict(swwd, dest_aimed_arr=None), marts, now + 60)
+    assert frag['eta_source'] == 'last_known'   # SWWD still gets its own
+
+
+def test_live_buses_keys_on_operator_and_bus_id():
+    """A vehicle is (bus_id, operator). Partitioning the live tail by bus_id
+    alone merged namesakes and hid ~3% of the fleet."""
+    real_rows, real_cols = app.qdb_rows, app.available_columns
+    seen = []
+    try:
+        app.qdb_rows = lambda sql: seen.append(sql) or []
+        app.available_columns = lambda: {'bus_id', 'line', 'lat', 'lon', 'bearing', 'timestamp', 'operator'}
+        app.live_buses()
+        assert seen[-1].endswith('PARTITION BY bus_id, operator')
+        app.live_buses('154', 'SWWD')
+        assert "bus_id = '154'" in seen[-1] and "operator = 'SWWD'" in seen[-1]
+        # A table that has not grown an operator column yet can only key on bus_id.
+        app.available_columns = lambda: {'bus_id', 'line', 'lat', 'lon', 'bearing', 'timestamp'}
+        app.live_buses()
+        assert seen[-1].endswith('PARTITION BY bus_id')
+    finally:
+        app.qdb_rows, app.available_columns = real_rows, real_cols
+
+
+def test_bus_detail_disambiguates_namesakes():
+    """/bus/<bus_id> keeps working for clients that only know bus_id: with
+    namesakes it returns the FRESHEST (deterministic) and lists the others;
+    ?operator= selects one; a hostile operator is rejected before any SQL."""
+    real = app.live_buses
+    calls = []
+    rows = [
+        {'bus_id': '154', 'operator': 'SWWD', 'line': '37', 'lat': 51.0, 'lon': -1.6,
+         'timestamp': '2026-09-20T10:00:00.000000Z'},
+        {'bus_id': '154', 'operator': 'TFCN', 'line': '11', 'lat': 50.3, 'lon': -4.1,
+         'timestamp': '2026-09-20T10:01:00.000000Z'},
+    ]
+    try:
+        app.live_buses = lambda bus_id=None, operator=None: (
+            calls.append((bus_id, operator)) or [dict(r) for r in rows if operator in (None, r['operator'])])
+        client = app.app.test_client()
+
+        r = client.get('/bus/154')
+        body = r.get_json()
+        assert r.status_code == 200
+        assert body['operator'] == 'TFCN'
+        assert body['same_bus_id'] == [{'operator': 'SWWD', 'line': '37'}]
+
+        r = client.get('/bus/154', query_string={'operator': 'SWWD'})
+        body = r.get_json()
+        assert body['operator'] == 'SWWD' and 'same_bus_id' not in body
+        assert calls[-1] == ('154', 'SWWD')
+
+        assert client.get('/bus/154', query_string={'operator': "x'; drop table t"}).status_code == 400
+    finally:
+        app.live_buses = real
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_') and callable(v)]
     for fn in tests:

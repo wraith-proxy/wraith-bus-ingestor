@@ -25,9 +25,11 @@ description:
     retained as a time series.
   usage: >-
     Two consumers with different needs. The API reads only the newest row per
-    vehicle within a five-minute window. dbt extracts a rolling 21-day window
-    downsampled to one row per vehicle per three minutes; it never reads the
-    full table, which is approaching a billion rows.
+    vehicle within a five-minute window. dbt extracts a rolling 8-day window
+    (EXTRACT_DAYS), downsampled to one row per vehicle and line per three-minute
+    bucket, grouped by (bus_id, operator, line) so that vehicles of different
+    operators sharing a bus_id are never merged, and carrying recorded_at; it
+    never reads the full table, which is approaching a billion rows.
   limitations: >-
     THE FEED REPUBLISHES DEAD RECORDS. A vehicle that has finished for the day
     keeps appearing with its last known position and its original RecordedAtTime,
@@ -38,7 +40,11 @@ description:
     completed journey while starting the next one, so the aimed times on a row may
     belong to a working the bus finished an hour ago. Vehicle references are not
     globally unique -- the same short `bus_id` is reused by unrelated operators in
-    different towns.
+    different towns. A vehicle is identified by (operator, bus_id), never by
+    bus_id alone: on 2026-09-16, 6.2% of a day's rows shared a (bus_id, timestamp)
+    with a different vehicle, and 5.1% of bus_ids were used by more than one
+    operator. Consumers that key or partition by bus_id alone silently merge
+    those vehicles.
 
 servers:
   - server: questdb-prod
@@ -104,7 +110,8 @@ schema:
           Operator's vehicle reference, spaces and commas replaced with
           underscores. NOT globally unique: short numeric references such as
           '3104' are reused by unrelated operators, so a bus_id alone can denote
-          several physical vehicles in different towns.
+          several physical vehicles in different towns. With `operator` it
+          identifies one vehicle.
         examples: ['WU24_ZMZ', 'A2BV-24', '7516']
       - id: pos_timestamp
         name: timestamp
@@ -160,7 +167,11 @@ schema:
         name: operator
         logicalType: string
         physicalType: SYMBOL
-        description: OperatorRef, a National Operator Code. Null before 2026-09-12.
+        description: >-
+          OperatorRef, a National Operator Code. Null before 2026-09-12 (and for
+          part of that day). Together with bus_id it identifies a vehicle, so
+          consumers treat a null operator as its own stream rather than as a
+          wildcard.
         examples: ['BEVC', 'ANEA', 'A2BV']
       - id: pos_direction
         name: direction

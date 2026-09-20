@@ -56,11 +56,27 @@ def restart_questdb():
 
 
 # Columns we take verbatim, and columns we take the last value of within a bucket.
-KEYS = ["timestamp", "bus_id", "line"]
+#
+# operator is a KEY, not a last() value, and that is deliberate (2026-09-20).
+# QuestDB's SAMPLE BY groups by every non-aggregated column, so what is listed
+# here IS the bucket's identity. With operator missing, two vehicles of
+# DIFFERENT operators that happen to share a bus_id AND a line number in the
+# same 3-minute bucket collapsed into one row (last() won) -- 28,927 rows lost
+# over five days (0.052%), every one a cross-operator collision, and line '1' is
+# very common. Vehicle refs are minted by each operator, so a vehicle is
+# (operator, bus_id), never bus_id alone; see int_pings_segmented_to_journeys.
+#
+# recorded_at is the feed's own per-record observation time (epoch millis). It is
+# carried ONLY so the segmentation model can order the two rows a vehicle
+# produces when it is on two lines inside one bucket (196,748 such buckets in
+# five days, recorded_at differs in all of them). It is often stale (a dead
+# record keeps its original RecordedAtTime), so it is a tiebreak, never a time
+# to trust: consumers of freshness use it, see contracts/bus-positions.odcs.yaml.
+KEYS = ["timestamp", "bus_id", "operator", "line"]
 WANTED = [
-    "lat", "lon", "bearing", "direction", "operator", "journey_ref",
+    "lat", "lon", "bearing", "direction", "journey_ref",
     "origin_ref", "origin_name", "dest_ref", "dest_name",
-    "origin_aimed_dep", "dest_aimed_arr",
+    "origin_aimed_dep", "dest_aimed_arr", "recorded_at",
 ]
 # Pin every column's type. Left to auto-detect, a day whose schedule columns are
 # entirely empty types them VARCHAR while a day that has values types them
@@ -74,7 +90,7 @@ TYPES = {
     "direction": "VARCHAR", "operator": "VARCHAR", "journey_ref": "VARCHAR",
     "origin_ref": "VARCHAR", "origin_name": "VARCHAR",
     "dest_ref": "VARCHAR", "dest_name": "VARCHAR",
-    "origin_aimed_dep": "BIGINT", "dest_aimed_arr": "BIGINT",
+    "origin_aimed_dep": "BIGINT", "dest_aimed_arr": "BIGINT", "recorded_at": "BIGINT",
 }
 
 
