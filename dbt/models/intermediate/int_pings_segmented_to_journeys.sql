@@ -60,19 +60,37 @@
   ping_ts)` needs real history at the edge of whatever window gets
   reprocessed, or a bus mid-journey when local midnight ticks over looks like
   it has no previous ping and gets wrongly flagged as a journey start. So the
-  `pings` CTE reads 3 days of history on an incremental run (2 days to
-  rewrite + 1 day of buffer purely for lag() context), every window function
-  below runs over that full 3-day read, and only the final `filtered` step
-  keeps the 2 days that actually get (re)written. The buffer size is fixed at
+  `pings` CTE reads 3 calendar dates on an incremental run (2 dates to
+  rewrite + 1 date of buffer purely for lag() context), every window function
+  below runs over that full read, and only the final `filtered` step keeps
+  the 2 dates that actually get (re)written. The buffer size is fixed at
   1 day, not a tuning knob -- it comes from the 20-minute gap / 9-minute
   standing break conditions above, which need nowhere near a full day of
-  context to resolve correctly.
+  context to resolve correctly, and from journey_key (below), which is only
+  stable if a journey's start ping is inside what was read: surviving
+  journeys last at most 5 hours (int_journeys_shaped_and_directed).
+
+  AMENDED 2026-09-20 -- the window arithmetic used to be off by two dates.
+  It read `max(ping_local_date) - interval '3 days'` and rewrote
+  `... - interval '2 days'`, which the paragraph above describes as 3 and 2
+  days but which was really 5 and 4 calendar dates, for two reasons that
+  compound: `>=` on a DATE is inclusive (so "- 3 days" is four dates back),
+  and `max(ping_local_date)` is evaluated when the run STARTS, which is the
+  PREVIOUS night's date (that run only saw 03:00's worth of it), not today.
+  A real nightly therefore read 40,868,178 rows and rewrote 27,504,425
+  (measured on the persisted table for the 2026-09-20 03:00 run), where the
+  intent needed 16,439,642 read and 8,718,037 rewritten. Now: read
+  `>= max - 1 day` (the previous night's date, whose data is now complete, plus
+  today's, plus one buffer date) and rewrite `>= max` (exactly those two dates).
+  Consequence to know: a date OLDER than max(this) is no longer recomputed
+  nightly, so late-arriving data for it is not healed; use FULL_REFRESH=1 or
+  ops/incident.py replay for that.
 
   `delete+insert` with `unique_key='ping_local_date'` is dbt's standard
   "partition replace" pattern even though the key repeats across many rows:
   it deletes every existing row whose ping_local_date appears anywhere in the
   new batch, then inserts the whole batch -- exactly "replace the last 2
-  days" semantics, with no need for a genuinely unique per-row key.
+  dates" semantics, with no need for a genuinely unique per-row key.
 
   The post-hook prunes anything older than the retention window so this table
   doesn't grow past what extract.py actually still has behind it.
@@ -98,7 +116,7 @@ with pings as (
         dest_aimed_arr_ts
     from {{ ref('stg_bods__vehicle_pings') }}
     {% if is_incremental() %}
-    where ping_local_date >= (select max(ping_local_date) from {{ this }}) - interval '3 days'
+    where ping_local_date >= (select max(ping_local_date) from {{ this }}) - interval '1 day'
     {% endif %}
 
 ),
@@ -294,7 +312,7 @@ filtered as (
     {% if is_incremental() %}
     -- Only the last 2 days are ever (re)written; the 1-day buffer read above
     -- was for lag() context only and never lands here.
-    where ping_local_date >= (select max(ping_local_date) from {{ this }}) - interval '2 days'
+    where ping_local_date >= (select max(ping_local_date) from {{ this }})
     {% endif %}
 
 )
