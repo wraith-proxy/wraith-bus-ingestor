@@ -30,6 +30,18 @@ nav:
       - "0004 - api container has no deploy automation": adr/0004-api-container-has-no-deploy-automation.md
   - Python API: api.md
   - dbt Docs: dbt/index.html
+  - Learn dbt:
+      - Start here: learn-dbt/index.md
+      - The Rules: learn-dbt/the-rules.md
+      - "1. Take off": learn-dbt/1-take-off.md
+      - "2. A model is a SELECT": learn-dbt/2-a-model-is-a-select.md
+      - "3. ref() and the graph": learn-dbt/3-ref-and-the-graph.md
+      - "4. Tests": learn-dbt/4-tests.md
+      - "5. view, table, incremental": learn-dbt/5-materializations.md
+      - "6. Jinja and macros": learn-dbt/6-jinja-and-macros.md
+      - "7. The map of everything": learn-dbt/7-docs-and-lineage.md
+      - Landing: learn-dbt/landing.md
+      - Cheat sheet: learn-dbt/cheatsheet.md
 
 plugins:
   - search
