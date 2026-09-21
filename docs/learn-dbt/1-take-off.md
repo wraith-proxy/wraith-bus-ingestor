@@ -1,0 +1,116 @@
+# Stop 1: Take off
+
+Before dbt can do anything you need somewhere safe to fly. We make a **sandbox**:
+a private copy of the project, with its own database file and a small slice of
+the real data (three files of bus positions, plus the national list of bus
+stops).
+
+## Build it
+
+From the root of the repo:
+
+```bash
+ops/dbt_sandbox.sh
+```
+
+You should see something like:
+
+```text
+sandbox created at /home/you/dbt-sandbox
+  3 parquet files + naptan_stops.csv, 231M total
+
+next:   source /home/you/dbt-sandbox/sandbox.env
+```
+
+Now step into it:
+
+```bash
+source ~/dbt-sandbox/sandbox.env
+```
+
+That one line does two things: it puts the right `dbt` on your path, and it tells
+dbt to use the settings in the sandbox. You are now standing inside
+`~/dbt-sandbox`. Check dbt is alive:
+
+```bash
+dbt --version
+```
+
+You will see a version number and the word `duckdb`. **DuckDB** is the database
+this project uses: a whole database in a single file, no server to set up.
+
+!!! note "Anything goes wrong, or you have made a mess?"
+    Run `ops/dbt_sandbox.sh` again. It deletes the sandbox and makes a fresh one.
+
+## What is in the box?
+
+```bash
+ls
+```
+
+| Thing | What it is |
+|---|---|
+| `models/` | Your SQL files. **This is where most of the action is.** |
+| `macros/` | Reusable snippets of SQL |
+| `tests/` | Checks that must pass |
+| `data/` | The small slice of real data |
+| `dbt_project.yml` | The project's settings |
+| `profiles.yml` | Where the database file lives and how much memory it may use |
+
+## Your first run
+
+Two of the project's models are tiny. Ask dbt to build just those:
+
+```bash
+dbt run --select stg_naptan__stops localities
+```
+
+Read what it prints. The important lines look like this:
+
+```text
+1 of 2 OK created sql view model main.stg_naptan__stops ...... [OK in 0.60s]
+2 of 2 OK created sql table model main.localities ............ [OK in 0.95s]
+Done. PASS=2 WARN=0 ERROR=0 SKIP=0 NO-OP=0 REUSED=0 TOTAL=2
+```
+
+You just turned two SQL files into a *view* and a *table* in a database. Now look
+at what you made:
+
+```bash
+dbt show --select localities --limit 5
+```
+
+```text
+| locality_norm       | locality            |     lat |     lon | n_stops |
+| ------------------- | ------------------- | ------- | ------- | ------- |
+| BRISTOL CITY CENTRE | Bristol City Centre | 51.454… | -2.597… |      21 |
+...
+```
+
+Each row is a place in Britain that has bus stops, with a rough centre point and
+how many stops it has. The exact rows change from day to day.
+
+`dbt show` is your window into the database. It also runs any SQL you like:
+
+```bash
+dbt show --inline "select locality, n_stops from {{ ref('localities') }} order by n_stops desc" --limit 5
+```
+
+(Ignore the `{{ ref(...) }}` bit for now. It is stop 3.)
+
+!!! tip "Opinion"
+    Do **everything** in the sandbox until you know what you are doing. There is no
+    prize for using the real thing early, and a real chance of breaking tonight's
+    build.
+
+## Check yourself
+
+??? question "What does `--select` do?"
+    It tells dbt *which* models to run. Without it, `dbt run` builds all of them.
+    You will use `--select` constantly.
+
+??? question "The sandbox has its own database file. Why does that matter?"
+    Because the real nightly build uses a different file. Anything you do in the
+    sandbox is completely separate from it, so you cannot break tonight's build.
+
+Next: [Stop 2, A model is just a SELECT](2-a-model-is-a-select.md).
