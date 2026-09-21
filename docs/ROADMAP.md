@@ -429,15 +429,18 @@ because TfL publishes no aimed arrival.
 **Not done / unproven:**
 - The tiebreak's production accuracy was not re-measured (77.8% is the offline
   figure on one snapshot; the 3 m margin was tuned on that snapshot).
-- The first real nightly on the reduced build is the 03:00 of 2026-09-22. A supervised
-  dry run took 4 m 07 s without extraction; the wall-clock estimate is about 16
-  minutes, unmeasured ([ADR-0009](adr/0009-fast-nightly-build.md)).
-- **The weekly GTFS refresh timer is not installed** (`ops/systemd/wraith-gtfs-refresh.*`,
-  needs sudo), so the timetable ages. The served alias table is still the first
-  build's 631 rows (604 TfL, none of which the API can match); the reviewed table
-  goes live at the first refresh.
-- The API's steady `/buses` is about 2.6 s, against 0.6 s before; the tiebreak and
-  prefetch are unoptimised. `docker-compose.yml` still gives the API `mem_limit: 6g`.
+- The nightly on the reduced build: a forced run of the real unit on 2026-09-21 took
+  15 m 33 s and succeeded (22 m 37 s before), see
+  [ADR-0009](adr/0009-fast-nightly-build.md). It was one daytime run; the first
+  *scheduled* 03:00 on the reduced build (2026-09-22) is still to be watched.
+- The weekly GTFS refresh timer is installed and enabled (2026-09-21; next run Monday
+  2026-09-28 01:00) but **has never run end to end**, so the first run is unproven.
+  The served alias table is still the first build's 631 rows (604 TfL, none of which
+  the API can match); the reviewed table goes live at that first refresh.
+- `/buses` now builds in about 1.15 s (2.6 s before the 2026-09-21 optimisation, 0.6 s
+  originally) and one build serves every request inside a 5 s window. The tiebreak
+  scoring is still pure Python. `docker-compose.yml` still gives the API `mem_limit: 6g`
+  though it now sits near 0.5 GiB.
 - The build warehouse was compacted 2026-09-21 (8.9 GB to 3.5 GB, orphaned tables
   gone) and `profiles.yml` `memory_limit` re-tuned to 4 GB (see ADR-0009); the naptan
   staging model still computes `lat_cell`/`lon_cell` that nothing uses.

@@ -46,8 +46,10 @@ services:
       dockerfile: backend/Dockerfile
     container_name: ${API_CONTAINER}
     restart: unless-stopped
-    # 6g, was 1.5g. The API loads every mart row into Python dicts (line_stops
-    # alone is ~2.6M rows) and the whole-GB bounding box (2026-09-12) grew the
+    # 6g, was 1.5g. HISTORY: the API used to load every mart row into Python dicts
+    # (line_stops alone was ~2.6M rows; since ADR-0008 it holds ~0.5 GiB and reads
+    # GTFS per query, so this limit is now generous and has not been re-tuned) and
+    # the whole-GB bounding box (2026-09-12) grew the
     # marts far past what 1.5g was sized for: on 2026-09-19 the first request
     # after a publish took it from 93MB to the limit in ~6s and it was
     # OOM-killed in a restart loop, leaving predictions dead. Measured: 2.46GiB
