@@ -1272,7 +1272,7 @@ def route():
     unexamined otherwise."""
     line = request.args.get('line', '')
     direction = request.args.get('direction') or None
-    day = request.args.get('day_type') or None
+    day = request.args.get('day_type') or None   # validated, then ignored
     operator = request.args.get('operator') or None
     if not LINE_RE.match(line):
         return jsonify({"error": "invalid line"}), 400
@@ -1285,8 +1285,6 @@ def route():
 
     marts = get_marts()
     now_s = time.time()
-    if day is None:
-        day = day_type(local_dt(now_s))
 
     stops, resolved_operator, resolved_direction, resolved_day, source = route_stops_for_line(
         operator, line, direction)

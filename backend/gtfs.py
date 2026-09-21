@@ -217,17 +217,6 @@ def candidates(operator, line, origin_ref, dest_ref):
     return _cands.get(key, [])
 
 
-def _resolve(operator, line):
-    """Like the batch resolution, for one (operator, line): (None, None) if the
-    timetable knows neither the line nor an alias for it."""
-    if _query('SELECT 1 FROM gtfs_route_patterns WHERE operator = ? AND line = ? LIMIT 1',
-              [operator, line]):
-        return operator, line
-    rows = _query('SELECT gtfs_operator, gtfs_line FROM gtfs_line_alias '
-                  'WHERE live_operator = ? AND live_line = ? LIMIT 1', [operator, line])
-    return rows[0] if rows else (None, None)
-
-
 def _pattern_stops(operator, line, direction, pattern_id):
     rows = _query(
         'SELECT atco_code, stop_name, locality, lat, lon, seq, sched_secs_from_origin '
