@@ -33,7 +33,12 @@ def test_route_for_prefers_pinned_pattern_then_line_then_line_stops():
         marts = _marts()
         now = time.time()
         stops, source = app.route_for(marts, _row(), now)
-        assert source == 'gtfs_pattern' and [s['atco'] for s in stops] == ['A', 'M1', 'C']
+        # Two patterns share these endpoints and there is no trail: prior, flagged.
+        assert source == 'gtfs_pattern_unresolved'
+        assert [s['atco'] for s in stops] == ['A', 'M1', 'C']
+        one = _row(operator='OP2', origin_ref='X', dest_ref='Y')
+        stops, source = app.route_for(marts, one, now)
+        assert source == 'gtfs_pattern' and len(stops) == 2         # one candidate: no doubt
         # Endpoints the timetable has no pattern for: the line's primary pattern.
         stops, source = app.route_for(marts, _row(dest_ref='ZZ'), now)
         assert source == 'gtfs_line' and stops[0]['atco'] == 'A'
@@ -137,7 +142,7 @@ def test_bus_detail_names_next_stop_from_the_timetable():
         app.bus_history = lambda *a, **k: pings
         try:
             body = app.app.test_client().get('/bus/b1').get_json()
-            assert body['route_source'] == 'gtfs_pattern'
+            assert body['route_source'] == 'gtfs_pattern_unresolved'
             assert body['last_stop']['atco'] == 'A' and body['next_stop']['atco'] == 'M1'
         finally:
             app.live_buses, app.get_marts, app.bus_history = real

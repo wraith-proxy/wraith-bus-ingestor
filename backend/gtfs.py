@@ -37,9 +37,12 @@ _state = {'mtime': None, 'checked': 0.0}
 _stops = {}                  # atco -> stop dict, or None for a known miss
 _cands = {}                  # (operator, line, origin, dest) -> [pattern dicts]
 _lines = {}                  # (operator, line, direction) -> route dict | None
+generation = 0               # bumps when the file changes; pattern ids die with it
 
 
 def _clear():
+    global generation
+    generation += 1
     _stops.clear()
     _cands.clear()
     _lines.clear()

@@ -22,6 +22,7 @@ try:  # stdlib, but the zone DATA is a separate package on slim images
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
+import tiebreak
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
@@ -1023,13 +1024,84 @@ def stops_for(marts, operator, line, direction, day):
     return merged
 
 
-def prefetch_timetable(rows):
+def prefetch_timetable(rows, sync_seed=False):
     """Load, in two queries, every stop position and route pattern this poll
     will ask for. Left to the per-bus lookups it would be thousands of queries
-    on the first poll after a GTFS refresh."""
+    on the first poll after a GTFS refresh. Then feed each ambiguous bus's
+    latest ping to the pattern tiebreak (sync_seed: backfill a new trail before
+    returning, for a single-bus request, instead of in the background)."""
     gtfs.prime([r.get(k) for r in rows for k in ('origin_ref', 'dest_ref')])
     gtfs.prime_routes({(r.get('operator'), r.get('line'), r.get('origin_ref'),
                         r.get('dest_ref')) for r in rows})
+    observe_trails(rows, sync_seed)
+
+
+SEED_MINUTES = 90        # how far back a new trail is backfilled (ADR-0008 (h)(i))
+SEED_PINGS = 30          # ...from at most this many evenly spaced pings, to bound CPU
+SEED_CHUNK = 200         # bus ids per QuestDB query, to keep the URL short
+
+
+def journey_key(row):
+    return (row.get('journey_ref'), row.get('origin_ref'), row.get('origin_aimed_dep'))
+
+
+def observe_trails(rows, sync_seed=False):
+    """Score the latest ping of every bus with more than one candidate pattern,
+    and queue the ones without a trail for backfilling."""
+    gen = gtfs.generation
+    unseeded = []
+    for r in rows:
+        bus_id = r.get('bus_id')
+        cands = gtfs.candidates(r.get('operator'), r.get('line'),
+                                r.get('origin_ref'), r.get('dest_ref'))
+        if bus_id is None or len(cands) < 2:
+            continue
+        vehicle, journey = (r.get('operator'), bus_id), journey_key(r)
+        tiebreak.observe(vehicle, journey, gen, cands, r.get('lat'), r.get('lon'),
+                         r.get('timestamp'))
+        if tiebreak.needs_seed(vehicle, journey, gen):
+            unseeded.append((vehicle, journey, cands))
+    tiebreak.prune()
+    if not unseeded:
+        return
+    if sync_seed:
+        seed_trails(unseeded, gen)
+    else:
+        threading.Thread(target=seed_trails, args=(unseeded, gen), daemon=True).start()
+
+
+def seed_trails(items, gen):
+    """Backfill trails from the last SEED_MINUTES of QuestDB pings, so an API
+    restart or a newly seen vehicle does not start with no evidence. Failure
+    just leaves the prior in charge."""
+    try:
+        cols = available_columns()
+        if 'journey_ref' not in cols or 'origin_aimed_dep' not in cols:
+            return
+        by_vehicle = {(v[0], v[1]): (j, c) for v, j, c in items
+                      if BUS_ID_RE.match(str(v[1]))}
+        ids = sorted({bus_id for _op, bus_id in by_vehicle})
+        for i in range(0, len(ids), SEED_CHUNK):
+            quoted = ','.join(f"'{b}'" for b in ids[i:i + SEED_CHUNK])
+            pings = qdb_rows(
+                'SELECT bus_id, operator, lat, lon, timestamp, journey_ref, origin_aimed_dep '
+                f"FROM bus_positions WHERE bus_id IN ({quoted}) "
+                f"AND timestamp > dateadd('m', -{SEED_MINUTES}, now()) ORDER BY timestamp")
+            trail = {}
+            for p in pings:
+                key = (p.get('operator'), p.get('bus_id'))
+                item = by_vehicle.get(key)
+                if item and (p.get('journey_ref'), p.get('origin_aimed_dep')) == (
+                        item[0][0], item[0][2]):
+                    trail.setdefault(key, []).append(p)
+            for key, seen in trail.items():
+                journey, cands = by_vehicle[key]
+                step = max(1, len(seen) // SEED_PINGS)
+                for p in seen[::step]:
+                    tiebreak.observe(key, journey, gen, cands, p.get('lat'), p.get('lon'),
+                                     p.get('timestamp'), seeding=True)
+    except Exception as exc:
+        log_once('seed-trails', f'cannot backfill pattern trails: {exc}')
 
 
 def stop_lookup(marts, atco):
@@ -1045,7 +1117,8 @@ def route_for(marts, row, now_s):
     """(stop sequence, how it was found) for the route this bus is working.
 
     1. A timetable pattern that runs exactly origin -> destination. When several
-       do, the most-run one (the tiebreak on position comes later, ADR-0008 (h)).
+       do, the trail tiebreak (tiebreak.py) picks one if the evidence is clear;
+       otherwise the most-run one, reported as 'gtfs_pattern_unresolved'.
     2. The line's primary pattern, which is enough to name a next stop but is
        not pinned to this journey.
     3. line_stops, while it still exists (London has no timetable).
@@ -1053,8 +1126,11 @@ def route_for(marts, row, now_s):
     destination; progress_delay checks."""
     operator, line = row.get('operator'), row.get('line')
     cands = gtfs.candidates(operator, line, row.get('origin_ref'), row.get('dest_ref'))
-    if cands and cands[0]['stops']:
-        return cands[0]['stops'], 'gtfs_pattern'
+    if cands:
+        best, resolved = tiebreak.choose((operator, row.get('bus_id')), journey_key(row),
+                                         gtfs.generation, cands)
+        if best['stops']:
+            return best['stops'], 'gtfs_pattern' if resolved else 'gtfs_pattern_unresolved'
     found = gtfs.line_route(operator, line, row.get('direction'))
     if found:
         return found['stops'], 'gtfs_line'
@@ -1156,7 +1232,7 @@ def bus_detail(bus_id):
         props['same_bus_id'] = [{'operator': r.get('operator'), 'line': r.get('line')}
                                 for r in rows if r is not row]
 
-    prefetch_timetable([row])
+    prefetch_timetable([row], sync_seed=True)
     stops, route_source = route_for(marts, row, now_s)
     props['route_source'] = route_source if stops else None
     if stops:
