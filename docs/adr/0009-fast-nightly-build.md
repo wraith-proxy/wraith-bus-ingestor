@@ -349,6 +349,52 @@ By hand, following ADR-0004: `docker compose build api`, then `docker compose up
 
 `git revert` of `477ea0e` and `61543a2` (and `e2f905c` if the old window is wanted), then one `FULL_REFRESH=1 ./build.sh`, because the old model must not read new-shape keys and has no detector. The published marts file was replaced in place by the publish step, so there is no backup of the previous marts; a rollback rebuilds them.
 
+## Amendment: the line_stops cluster is gone (2026-09-21)
+
+[ADR-0008](0008-published-timetables-vs-inferred-routes.md) Phase 1 deleted
+`int_pings_matched_to_stops` (158 s in the 03:00 run of 2026-09-21), the 84-model
+`line_stops` cluster and its two marts, so the build is now 8 models in one `dbt run`.
+
+**A supervised dry run, on a scratch copy of the project and of the persistent
+warehouse, with `SKIP_EXTRACT=1`:** 4 m 07 s end to end. `dbt run` 122 s
+(segmentation 78 s, `int_journeys_shaped_and_directed` 25 s, the training set 12 s,
+`eta_models` 6 s, everything else under 2 s), `dbt test` 100.6 s (88 tests, all pass),
+three marts published, the contract gate passed. The three surviving marts are
+identical to the ones the real 03:00 run published from the same input
+(`eta_models` 129,135 rows equal at 6 dp; `localities` and `line_punctuality`
+equal).
+
+**What that does and does not show.** It shows the reduced build is correct and how
+long the database work takes. It does **not** show tonight's wall clock: the run
+skipped the 11-minute extract, re-processed the same window instead of a new night,
+ran with the site's containers up rather than stopped, and segmentation took 78 s
+here against 140.9 s in the service (the difference is still unexplained). Taking
+the 22 m 37 s of the last real run and removing what was deleted gives an estimate of
+about 16 minutes, most of it extraction. **That is an estimate; the first real
+measurement is the 03:00 run of 2026-09-22.** Watch it rather than assume it.
+
+**Deliberate changes to the nightly that this involved:**
+
+* `build.sh` no longer splits the run, drops the page cache between runs, or runs a
+  `--threads 1` phase; the reason for all three was the cluster.
+* The contract gate now names the two contracts the build produces
+  (`bus-positions`, `bus-marts`) instead of validating every contract, and the
+  ontology check skips, instead of failing, bindings to a contract not validated in
+  that run. Otherwise a fault in the weekly-refreshed GTFS file could block a marts
+  publish.
+* `profiles.yml` still says `memory_limit: 6GB`, sized for the cluster; it has not
+  been re-tuned and is not known to be the right number now.
+
+**Left as it is:** `wraith_bus_ingestor_build.duckdb` (9.3 GB) still contains the
+orphaned `int_line_stops_*` tables. dbt does not drop them and DuckDB does not shrink
+a file on `DROP`. They do no harm; reclaiming the space means a copy into a fresh
+file, or a `FULL_REFRESH`.
+
+**Rollback.** The previous API image is tagged `wraith-bus-ingestor-api:pre-gtfs`.
+Reverting the dbt side is a `git revert` of the deletion commit; the next nightly
+then rebuilds `line_stops`, and only then would the old API image work against the
+served marts.
+
 ## Roadmap
 
 Recorded in [docs/ROADMAP.md](../ROADMAP.md) as 1.14.0 (window fix and deterministic key deployed 2026-09-20, see "Amendment: what was deployed").

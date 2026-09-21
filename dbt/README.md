@@ -76,10 +76,10 @@ materialised intermediates are ~95% of the scratch warehouse, and the API
 reads none of them. DuckDB does not shrink a file on `DROP`, so copying into a
 fresh database is what actually reclaims the space.
 
-**The scratch warehouse now persists between runs.** Two of the four
-intermediate models (`int_pings_segmented_to_journeys`,
-`int_pings_matched_to_stops`) are incremental, reprocessing only the last
-couple of days each run instead of the full retention window -- and dbt's
+**The scratch warehouse now persists between runs.** One of the three
+intermediate models (`int_pings_segmented_to_journeys`) is incremental,
+reprocessing only the last couple of days each run instead of the full
+retention window -- and dbt's
 `is_incremental()` only takes that fast path when the target table already
 exists. `FULL_REFRESH=1 ./build.sh` is the deliberate escape hatch back to a
 from-scratch build, for a schema change or suspected drift.
@@ -142,7 +142,6 @@ Four models, and this is where all the difficulty lives:
 | `int_pings_segmented_to_journeys` | cuts each vehicle's endless ping stream into individual journeys |
 | `int_journeys_shaped_and_directed` | one row per journey; drops implausible ones; decides direction |
 | `int_pings_measured_to_journey_end` | the training set: for each ping, how far and how long is left |
-| `int_pings_matched_to_stops` | snaps every ping to the nearest bus stop within 120 m |
 
 `int_journeys_shaped_and_directed` is also where **direction** is decided, by
 one of two rules. Linear routes are split on the journey's first-to-last
@@ -156,26 +155,28 @@ of `straight_km / path_km` across its journeys is below 0.35.
 
 Intermediate models are not for the API to read. They exist so that no single
 model has to be understood all at once, and so that expensive work is done
-once and reused. `int_pings_segmented_to_journeys` and
-`int_pings_matched_to_stops` are the two most expensive steps in the project
-(recomputing window functions over the full retention window would otherwise
-dominate every rebuild), so both are **incremental** rather than a full
-`table` rebuild every run -- see their own model headers for the read/write
-window and why the journey key is derived the way it is.
+once and reused. `int_pings_segmented_to_journeys` is the most expensive step
+in the project (recomputing window functions over the full retention window
+would otherwise dominate every rebuild), so it is **incremental** rather than
+a full `table` rebuild every run -- see its model header for the read/write
+window and why the journey key is derived the way it is. (A second incremental
+model, `int_pings_matched_to_stops`, and the stop-sequence cluster built on it
+were deleted in ADR-0008: routes now come from the published GTFS timetable.)
 `int_journeys_shaped_and_directed` stays a full `table` rebuild deliberately:
 its per-line reference bearing is a stable aggregate across the *whole*
 retention window and must not be limited to a lookback slice.
 
 ### `models/marts/` — what Flask reads, tables
 
-Five tables whose names and columns are frozen in `CONTRACT.md` and
+Three tables whose names and columns are frozen in `CONTRACT.md` and
 `contracts/bus-marts.odcs.yaml`. They are plain, wide and boring on purpose:
 all the judgement happened upstream, and a mart is just the shape the
 application wants. They are real tables, not views, because a long-lived
 Flask process reads them over a read-only handle. Following the structure
-guide, they are named as plain entities (`eta_models`, `line_stops`,
-`localities`, `line_localities`, `line_punctuality`) rather than prefixed
-`mart_*`.
+guide, they are named as plain entities (`eta_models`, `localities`,
+`line_punctuality`) rather than prefixed `mart_*`. (`line_stops` and
+`line_localities` were removed in `bus-marts` 3.0.0; their job moved to the
+GTFS timetable, see `contracts/gtfs-timetable.odcs.yaml`.)
 
 ---
 
@@ -215,8 +216,9 @@ bucket circular routes badly. It also retires itself: the feed's real
 direction always wins where it exists, so the heuristic fades out as
 post-patch data accumulates.
 
-**The stop sequence is not a next-stop oracle, and I measured how far off it
-is.** Walk the stops of one `(operator, line, direction)` in `seq` order, sum
+**Historical -- `line_stops` was removed by ADR-0008; kept because the finding
+is why.** **The stop sequence is not a next-stop oracle, and I measured how far
+off it was.** Walk the stops of one `(operator, line, direction)` in `seq` order, sum
 the distance, divide by the route's real length — a correct sequence scores
 ~1. `line_stops` scores **6–9x** on a geographically coherent line and
 **200–480x** on a line whose number is reused across towns (pooled, `'*'`
@@ -234,10 +236,10 @@ nothing more.
 independently, so `88` is a Sheffield cross-city route *and* a Wilmslow–Hale
 route *and* something in rural Lancashire. `operator` joined the grain of
 `line_stops`, `line_localities` and `eta_models` on 2026-09-12, the day it
-first became available in the feed, which fixes this for post-patch data: a
-real-operator row never merges unrelated routes, and the mart still falls
-back to the old pooled (`'*'`-operator) behaviour for every line it has no
-operator-tagged history for yet — which is most lines, for a while.
+first became available in the feed (`line_stops` and `line_localities`, now
+removed, had it too), which fixes this for post-patch data: a real-operator
+row never merges unrelated routes. `eta_models` still falls back to the pooled
+(`'*'`-operator) grain for every line it has no operator-tagged history for.
 
 **The clock is not UTC.** Every ping is *stored* in UTC, but every temporal
 *bucket* has to be local. The UK runs UTC+1 from late March to late October, so
@@ -278,9 +280,11 @@ not a claim about the odometer.
 
 ---
 
-## The grid trick (`int_pings_matched_to_stops`)
+## The grid trick (`int_pings_matched_to_stops`, removed in ADR-0008)
 
-Worth its own section, because it is the one piece of genuine algorithm here.
+*The model this describes was deleted on 2026-09-21, when routes moved to the
+GTFS timetable. The technique is kept because it is reusable.* Worth its own
+section, because it is the one piece of genuine algorithm here.
 
 We need the nearest bus stop to each ping, within 120 m, across mainland Great
 Britain: tens of millions of pings and ~344 thousand stops. The obvious query —

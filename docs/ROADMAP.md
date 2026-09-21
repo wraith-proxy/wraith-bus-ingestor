@@ -403,117 +403,49 @@ later (Grafana's group interval).
   and the image is `questdb/questdb:latest`. A release that changes either
   shows up as an `error` run (nothing is dropped unverified), not corruption.
 
-## 1.12.0 -- GTFS replaces line_stops and line_localities (Phase 1)
+## 1.12.0 -- GTFS replaces line_stops and line_localities (Phase 1) -- delivered 2026-09-21
 
-Planned, in progress; not landed. Decision and measurements in
-[ADR-0008](adr/0008-published-timetables-vs-inferred-routes.md), including its
-2026-09-20 amendment. BODS's GTFS feed for the whole of GB becomes the source
-of route shape and stop sequence, replacing the two marts (`line_stops`,
-`line_localities`) that currently infer both from live pings. `shapes.txt`
-(2.57GB of the 7.8GB uncompressed feed) is skipped entirely -- OSRM already
-produces route geometry, so there is nothing for it to add.
+Decision, measurements and the delivery record are in
+[ADR-0008](adr/0008-published-timetables-vs-inferred-routes.md) ("Amendment 2026-09-21").
+BODS's GTFS feed for the whole of GB is now the source of route shape, stop
+sequence and line-to-locality search; the two marts that inferred them from live
+pings, and the 87 models behind them, are deleted (89 of 97 models; 8 remain).
+`shapes.txt` is skipped: OSRM already produces route geometry.
 
-**State, honestly:** the build exists and has been run against real data.
-`gtfs/fetch.py`, `gtfs/patterns.sql` and `gtfs/build_alias.py` produced a
-served database on `/mnt/archive` in 246 s (peak process-tree RSS 4,779 MB,
-1,054 MB file) with tables `gtfs_route_patterns` (42,009 rows),
-`gtfs_route_stops` (1,499,050), `gtfs_line_localities` (126,807),
-`gtfs_line_alias` (631 in the served file from the first build; the rebuilt table, live at its next refresh, is expected to hold 14 reviewed learned rows plus 94 NCTR rule rows, none TfL; a run before one review flip gave 15 plus 94) and `gtfs_meta`, beside the raw `gtfs_*` tables. It is
-NOT landed: `line_stops`, `line_localities` and the 89 models are all still
-present, and `backend/app.py` still reads `line_stops`. Nothing has been
-deleted.
+**State:** built, tested, deployed. `backend/gtfs.py` reads
+`/mnt/archive/wraith-bus-ingestor-gtfs/gtfs.duckdb` (mounted read-only at `/gtfs`),
+per query, with nothing loaded into memory; `backend/tiebreak.py` chooses between
+patterns that share endpoints (a whole-journey trail distance, 3 m lead, prior
+fallback flagged unresolved). Stop positions come from NaPTAN, which covers London,
+so London keeps its regression ETA and distance delay. The API's resident memory fell
+from about 3.3 GiB to 0.5 GiB. `bus-marts` is 3.0.0; `gtfs-timetable.odcs.yaml` is
+new; `build.sh` is one `dbt run`.
 
-The first build changed the design. A single primary pattern per key covered
-only 80.6% of trips and hid same-operator number reuse (SCEM 1, SYRK 1), so
-every pattern is kept (the primary, or any with `n_trips >= 2`), carrying
-`pattern_id`, `first_atco`, `last_atco` and `is_circular`; the kept patterns
-cover 99.4% of trips. A learned alias table (`gtfs_line_alias`, built by
-`gtfs/build_alias.py` from 24 hours of live `origin_ref`/`dest_ref`, gated at
-`n_buses >= 3` and `share >= 0.6`, carried over when QuestDB is down) maps live
-labels to GTFS ones, because brand labels such as trentbarton `if`/`swi`
-cannot be derived from GTFS alone. GTFS never labels clockwise or
-anticlockwise, so circular buses must be resolved by pattern match, not by
-direction.
+**Measured live (non-TfL, 14,304 buses):** 73.8% pinned to a pattern, 13.5%
+unresolved (prior, flagged), 9.2% line-level only, 3.5% no route. London: no route,
+last/next stop, `/route` overlay or line list in search; it never had a schedule delay
+because TfL publishes no aimed arrival.
 
-When deleted, this removes 87 dbt models with no other consumers once the two
-marts are gone -- `int_stop_identity`, `int_first_visit_per_journey`,
-`int_pings_matched_to_stops`, and all 84 `int_line_stops_*` batch/grain
-models -- which with the two marts themselves is 89 of the project's 97,
-leaving 8 standing. Plus the 7 of 13 tests that went with them
-(`assert_ping_stop_match_within_radius`,
-`assert_stop_identity_names_are_single_valued`,
-`assert_line_stops_batch_coverage`, `assert_line_stops_grain_is_unique`,
-`assert_line_stops_has_day_type_fallback`,
-`assert_line_stops_has_operator_fallback`, `assert_line_stops_seq_is_dense`).
-Removing `int_pings_matched_to_stops` also removes the model that OOM'd the
-2026-09-20 03:00 nightly (see "Known issues" below), and this phase retires
-the entire subject of [ADR-0001](adr/0001-line-stops-memory-and-batching.md) and
-[ADR-0002](adr/0002-line-stops-final-assembly.md) -- inferring stop sequence from live
-positions is no longer how this app gets it. Eight models survive with no
-change: `stg_bods__vehicle_pings`, `stg_naptan__stops`,
-`int_pings_segmented_to_journeys`, `int_journeys_shaped_and_directed`,
-`int_pings_measured_to_journey_end`, `eta_models`, `localities`,
-`line_punctuality`.
+**Not done / unproven:**
+- The tiebreak's production accuracy was not re-measured (77.8% is the offline
+  figure on one snapshot; the 3 m margin was tuned on that snapshot).
+- The first real nightly on the reduced build is the 03:00 of 2026-09-22. A supervised
+  dry run took 4 m 07 s without extraction; the wall-clock estimate is about 16
+  minutes, unmeasured ([ADR-0009](adr/0009-fast-nightly-build.md)).
+- **The weekly GTFS refresh timer is not installed** (`ops/systemd/wraith-gtfs-refresh.*`,
+  needs sudo), so the timetable ages. The served alias table is still the first
+  build's 631 rows (604 TfL, none of which the API can match); the reviewed table
+  goes live at the first refresh.
+- The API's steady `/buses` is about 2.6 s, against 0.6 s before; the tiebreak and
+  prefetch are unoptimised. `docker-compose.yml` still gives the API `mem_limit: 6g`.
+- `wraith_bus_ingestor_build.duckdb` keeps the orphaned `int_line_stops_*` tables (9.3
+  GB file); `profiles.yml` `memory_limit` is still the cluster-era 6 GB; the naptan
+  staging model still computes `lat_cell`/`lon_cell` that nothing uses.
+- The Android app should send `?operator=` (1.9.0's identity fix) and should not rely
+  on the `/route` `day_type` field, which is now always null.
+- The cgroup v2 page-cache interaction is real for the 1.1 GB GTFS file read through
+  `ghost-backend`; RSS is small but page cache is charged to the container's 6g.
 
-Coverage: of the non-TfL live fleet, 95.05% match a GTFS (operator, line)
-directly and 96.16% with the alias table (95.2% was the earlier route-level
-figure). Route-level coverage is not the same as a correct stop list: of
-14,405 pinnable buses, 54.8% pin uniquely to the primary, 20.1% to a
-non-primary pattern, 18.4% to several and 6.6% to none. Against `line_stops`,
-order agreement did not improve (Spearman median 0.975) and stop-set overlap
-is low (median Jaccard 0.452 against the union); 85,388 of 340,534
-`line_stops` stops (25.1%) are in no GTFS pattern for their line.
-London/TfL is not covered (see "Known issues" below) and stays on the
-regression path; that regression is accepted, not solved, by this phase.
-
-The GTFS database is refreshed weekly, Monday 01:00, onto `/mnt/archive` (the
-SATA archive, 844G free at last measurement) -- not the root SSD, and not
-loaded into `ghost-backend`'s Python process the way the existing marts are.
-
-**Remaining:**
-- The gate for deleting `line_stops`, `line_localities` and the 87 dependent
-  models is the API rewire, all of it: `backend/app.py` must serve from the
-  GTFS tables what it reads from `line_stops` today, namely `day_type`, the
-  pooled `*` fallback, `n_obs`, an observed (not scheduled)
-  `median_secs_from_origin` (observed to scheduled median ratio 0.85), and a
-  global lookup by ATCO code. It must also choose between same-endpoint
-  pattern variants with a second signal such as position along the pattern
-  (specified, unbuilt: [ADR-0008](adr/0008-published-timetables-vs-inferred-routes.md)
-  (h)(i) recommends a whole-journey trail distance with a 3 m margin and a
-  highest-`trip_share` fallback flagged as unresolved, 77.8% against a 72.4%
-  prior on 1,257 truth buses; 18.4% of pinnable buses are ambiguous on
-  endpoints alone), resolve circular buses by pattern match rather than
-  direction label. The TFLO alias question is settled by policy: the first
-  build's table was 604 TFLO of 631 rows, and learned aliases are now only
-  applied if hand-accepted in `gtfs/alias_review.csv`, which holds no TFLO row.
-- Measured conditions to re-check before deletion: coverage and pin rates on
-  a held-out window (the alias pin rate is optimistic, learned from the same
-  buses; the alias table is now reviewed, so the same caution applies to the accepted rows); the 952 unpinned buses' fallback (45% get no stop from the 120 m
-  nearest-stop fallback); the effect of the pruning rule, whose cost on
-  expired-service one-offs is unproven; and a watched first `ops/verify_build.sh`
-  run after deletion.
-- Alias state (amended 2026-09-20): learned aliases are proposals and only the
-  hand-accepted ones apply (28 reviewed, 16 accepted, 12 rejected, including
-  the wrong-looking HUYT `2481`, TBTN `ra` and BRTB `sky`). An NCTR `NT` prefix
-  rule is built (94 rows; 211 of 215 live NCTR buses resolve, the other four
-  being `NT18`/`NT18A` with no GTFS line). Still open: the changes are in the
-  working tree, uncommitted, and the refresh has not been run end to end since,
-  so the served table is still the first build's 631 rows; the review's
-  geography windows were inconsistent and samples small; the build log gives
-  only the total row count, not learned versus rule.
-- Not exercised: the refresh script's promise that a failed run leaves the
-  old served file intact, because no run has failed.
-- Not decided: whether `ghost-backend` opens the GTFS DuckDB file read-only
-  and queries it directly, or a slimmed extract is published alongside the
-  marts the way the other served data is. Either way it must not be loaded
-  wholesale into Python -- that is exactly the pattern that pushed the
-  container to its 6g limit before ([ADR-0006](adr/0006-bus-positions-schema-optimisation.md)-adjacent memory pressure, `docs/operations.md`).
-- The cgroup v2 page-cache interaction: `MemoryMax` counts page cache
-  against the container, so a ~1GB GTFS database read through
-  `ghost-backend` charges its OS-level cache to that container's 6g
-  ceiling the same way `build.sh` already has to work around it between
-  its two dbt runs. Whatever query path is chosen has to account for this,
-  not just for RSS.
 
 ## 1.13.0 -- timetable-backed ETA rung (Phase 2)
 
@@ -588,8 +520,7 @@ than in dbt. Details: [ADR-0009](adr/0009-fast-nightly-build.md).
 sort payload and fewer window passes (much of the segmentation cost is disk-bound:
 iowait 46 to 76% on the DRAM-less root SSD), is now a smaller prize and should only
 be picked up if the nightly is still too slow; ADR-0008's Phase 1 (the API rewire
-and the deletion of the 89 models) is still open and is now mainly a reliability
-change. Also open: why `eta_models` varies from 6 s to 433 s across runs.
+and the deletion of the 89 models) was delivered 2026-09-21 (see 1.12.0). Also open: why `eta_models` varies from 6 s to 433 s across runs.
 
 ## Known issues -- raised, not yet actioned
 
@@ -630,7 +561,11 @@ timetable-pinned ETA rung cannot reach it either. The owner decided,
 2026-09-20, to keep London in the live fleet on the existing regression
 path rather than exclude it (see 1.13.0 above and the bounding-box entry
 above) -- this is an accepted, deliberate regression relative to the rest
-of GB, not a gap awaiting a fix. TfL's own Unified API is a plausible way
+of GB, not a gap awaiting a fix. Since Phase 1 (2026-09-21) that regression is
+concrete: London buses keep their position, regression ETA and live listing (the
+destination position comes from NaPTAN, which covers London) but have no route
+overlay, last or next stop, or line list in place search, and never had a schedule
+delay (TfL sends no aimed arrival). TfL's own Unified API is a plausible way
 to close it: a second ingest, with its own schema and its own refresh
 cadence, that would bring London to parity with the rest of the country.
 The cost is real and is why this stays unscheduled -- it would be a second

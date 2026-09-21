@@ -1,6 +1,6 @@
 # ADR 0008: Published timetables (BODS GTFS) replace inferred route shape; London stays inferred
 
-**Status:** Accepted 2026-09-20. Phase 1 (delete `line_stops`/`line_localities`, adopt GTFS route shape) and Phase 2 (add a timetable-pinned ETA rung) are both scoped here. *Amended again 2026-09-20 (see "(h) The API rewire specification"): the alias policy is now an allowlist and the NCTR rule is built; the position-based tiebreak is specified from a measurement but not built.* *Amended 2026-09-20:* the Phase 1 GTFS build now exists and has been run against the real feed (see "Amendment 2026-09-20"), but nothing has been deleted and the API still reads `line_stops`; Phase 2 has not been started. `memtest86+` came back clean on 2026-09-20, so the build gate that previously held this is lifted -- see "Before any of this is built."
+**Status:** Accepted 2026-09-20. **Phase 1 delivered 2026-09-21 -- see "Amendment 2026-09-21: Phase 1 delivered" at the end; the amendments before it describe the state as it was, when nothing had been deleted.** Phase 1 (delete `line_stops`/`line_localities`, adopt GTFS route shape) and Phase 2 (add a timetable-pinned ETA rung) are both scoped here. *Amended again 2026-09-20 (see "(h) The API rewire specification"): the alias policy is now an allowlist and the NCTR rule is built; the position-based tiebreak is specified from a measurement but not built.* *Amended 2026-09-20:* the Phase 1 GTFS build now exists and has been run against the real feed (see "Amendment 2026-09-20"), but nothing has been deleted and the API still reads `line_stops`; Phase 2 has not been started. `memtest86+` came back clean on 2026-09-20, so the build gate that previously held this is lifted -- see "Before any of this is built."
 **Date:** 2026-09-20
 **Related:** [ADR-0001](0001-line-stops-memory-and-batching.md), [ADR-0002](0002-line-stops-final-assembly.md), [docs/ROADMAP.md](../ROADMAP.md), `dbt/models/marts/line_stops.sql`, `dbt/models/marts/line_localities.sql`, `dbt/models/intermediate/int_pings_matched_to_stops.sql`, `dbt/build.sh`, `backend/app.py`
 
@@ -709,6 +709,78 @@ With about 1,257 truth buses the sampling error is roughly plus or minus 2.5 poi
 **Measured coverage.** 94 rule rows. Of 215 live NCTR buses (last 30 minutes, latest position per bus) all carry an `NT` label and 211 resolve through the rule, **98.1%**. The four that do not are buses 251, 282 and 288 on `NT18` and bus 252 on `NT18A`; GTFS has no NCTR line 18 or 18A, so no row can exist. The earlier estimate was 159 of 161 buses (98.8%); the fleet in the sample is larger now (215), so the two are different snapshots and not a like-for-like change.
 
 **Ceiling.** One operator and one prefix are hard-coded. A second operator with a systematic prefix needs a line in `PREFIX_RULES`. It is deliberately not generalised: guessing prefixes for other operators is exactly the unreviewed, wrong-by-construction behaviour the allowlist exists to stop.
+
+## Amendment 2026-09-21: Phase 1 delivered
+
+Everything in (f) and (h) that was open is now built, deployed and measured, with
+one correction to what this ADR said London would lose. Phase 2 (a timetable-pinned
+ETA rung) is still not started.
+
+### What was deleted
+
+`line_stops`, `line_localities`, the 84 `int_line_stops_*` models,
+`int_stop_identity`, `int_first_visit_per_journey` and `int_pings_matched_to_stops`:
+89 of the 97 models, leaving 8. Also 8 tests, 3 one-off scripts, and the second half
+of `dbt/build.sh`: the serialised `--threads 1` cluster run and the page-cache drop
+between the two runs existed only for that cluster, so the nightly is now one
+`dbt run`. `bus-marts.odcs.yaml` went to 3.0.0 (three tables); a new
+`gtfs-timetable.odcs.yaml` describes what the API now reads; the ontology's `Stop`,
+`LineStop` and `Line` were rebound to it. The nightly does **not** validate the GTFS
+contract, so a fault in the weekly file cannot block a marts publish.
+
+### What the API does now (`backend/gtfs.py`, `backend/tiebreak.py`)
+
+* **Stop positions** come from NaPTAN in the GTFS database, national and including
+  London. This is the correction: the destination position drives the regression ETA
+  and the distance-based delay for every bus, not just route drawing, so London keeps
+  both. `dest_aimed_arr` is absent from the whole TfL feed (0 of 62,461 rows in ten
+  minutes), so London never had a schedule-adherence delay to lose.
+* **Routes**: a bus is pinned to the pattern that runs its exact origin and
+  destination; failing that, to its line's primary pattern; failing that, nothing.
+* **The tiebreak of (h)(i) is built as specified**: running mean distance to each
+  candidate's stop-to-stop polyline over the journey, 250 m cap per ping, a 3 m lead
+  required, mean above 60 m treated as uninformative, otherwise the most-run pattern
+  flagged `gtfs_pattern_unresolved`. Two deviations, both to bound CPU: a trail is
+  backfilled from at most 30 evenly spaced pings, not every ping, and it is
+  backfilled in a background thread (22.6 s for 2,334 vehicles in the container).
+* Nothing is loaded into memory. Each poll makes two batched queries; the API's
+  resident memory went from about 3.3 GiB to 0.5 GiB. The database is opened per
+  query and never held, and every cache is dropped when the file's mtime moves,
+  because `pattern_id` is not stable across refreshes.
+
+### What London loses
+
+Route overlay (`/route`), last stop and next stop (`/bus/<id>`), the stop-sequence
+delay fallback and the line list in place search. It keeps its position, its
+regression ETA (5,144 of 5,185 buses had one) and its live-bus list. The fix is the
+TfL Unified API item on the ROADMAP.
+
+### Measured (2026-09-21, live feed, 21,294 vehicles)
+
+Non-TfL (14,304 buses): **73.8% pinned to a pattern** (unique, or resolved by the
+trail), **13.5% unresolved** (prior used, flagged), 9.2% given only the line's
+primary pattern, 3.5% with no route. Of the 2,334 vehicles with two or more
+candidates, about 17.5% cleared the 3 m margin, against 19.7% in the ADR's
+measurement. **The accuracy of the tiebreak in production has not been measured**:
+no truth set was rebuilt, so the 77.8% is still the offline figure, on one snapshot.
+
+### Two defects found only by running it, and fixed
+
+* A `line_stops` fallback made `/buses` 60 times slower (36 s against 0.6 s) because
+  a merge over the whole index ran per bus; caught by profiling before deploy.
+* Per-key GTFS queries cost about 50 ms each on a cold cache; a cold poll needs over
+  a thousand keys. The first request after a restart took 85 s, then 3.9 s once
+  batched. DuckDB also binds a Python list parameter with a failed import lookup per
+  element (6 s for a poll's keys); the batched code passes one delimited string.
+* Steady-state `/buses` is now about 2.6 s (0.6 s before). Most of that is the
+  tiebreak scoring plus the prefetch; it has not been optimised.
+
+### Still open
+
+The weekly refresh timer is **not installed**, so the timetable will age; the feed
+runs to 2027-12-07 so nothing breaks soon. The `gtfs_line_alias` table served today
+is the first build's. The nightly's effect is recorded in
+[ADR-0009](0009-fast-nightly-build.md); the Android app should send `?operator=`.
 
 ## Roadmap
 

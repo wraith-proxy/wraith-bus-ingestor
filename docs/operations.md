@@ -19,7 +19,7 @@ journalctl -u wraith-bus-build.service
 A run does four things in order: extract the last `EXTRACT_DAYS` (default
 22) of `bus_positions` out of QuestDB into `data/*.parquet`, `dbt run`
 every model into a scratch warehouse, `dbt test` the result, and — only if
-the tests pass — publish the five marts into `wraith_bus_ingestor.duckdb`, the file
+the tests pass — publish the three marts into `wraith_bus_ingestor.duckdb`, the file
 the API reads. A failed test run leaves the previous night's marts serving
 rather than replacing them with something known to be wrong.
 
@@ -59,23 +59,35 @@ Instead:
 
 1. `dbt run` builds into **`wraith_bus_ingestor_build.duckdb`**, a persistent
    scratch warehouse (see below for why it persists).
-2. Once `dbt test` passes, the five marts are copied into a fresh
+2. Once `dbt test` passes, the three marts are copied into a fresh
    **`wraith_bus_ingestor_staged.duckdb`**.
 3. `wraith_bus_ingestor_staged.duckdb` is `mv`'d over **`wraith_bus_ingestor.duckdb`** — atomic
    within a filesystem, so the API sees either the whole old file or the
    whole new one, never a lock or a partial write.
 
+### The API needs two read-only mounts
+
+`ghost-backend` reads `dbt/` (the marts, at `/models`) **and** the GTFS timetable
+directory (`/mnt/archive/wraith-bus-ingestor-gtfs`, at `/gtfs`, or `$GTFS_DIR`). If the
+GTFS mount or file is missing the API still answers, but with no stop positions: every
+bus loses its regression ETA and delay, and `/route` returns no stops. Check with
+`docker exec ghost-backend ls /gtfs`. Deploy is unchanged from ADR-0004: `docker compose
+build api`, `up -d --force-recreate --no-deps api`, then `docker exec ghost-web nginx -s
+reload`. The pre-GTFS image is tagged `wraith-bus-ingestor-api:pre-gtfs`. The first
+`/buses` after a restart or a GTFS refresh takes about 4 s; steady state about 2.6 s.
+The weekly GTFS refresh timer is not installed, so nothing refreshes the file yet.
+
 ### Why the scratch warehouse persists across runs
 
-`wraith_bus_ingestor_build.duckdb` used to be wiped before every run. Two of the
-models — `int_pings_segmented_to_journeys` and `int_pings_matched_to_stops` — are incremental,
+`wraith_bus_ingestor_build.duckdb` used to be wiped before every run. One of the
+models — `int_pings_segmented_to_journeys` — is incremental,
 and dbt's `is_incremental()` only takes the fast path when the target
 table **already exists**. Wiping the file every run silently turned
 "incremental" into "full rebuild every time", which is exactly what
 happened until 2026-09-13 and is why fixing a single stale test used to
 cost a 20–30 minute rebuild. The file now survives between runs by
-default; a normal night reprocesses only the trailing ~2 days for those
-two models.
+default; a normal night reprocesses only the trailing ~2 days for that
+model.
 
 ### Forcing a from-scratch rebuild: `FULL_REFRESH=1`
 
@@ -229,16 +241,20 @@ the 26h rule is still the backstop for that.
 DuckDB's `memory_limit` (`dbt/profiles.yml`) bounds only its own buffer manager.
 On this stack the process RSS ran ~4.7GB **above** it (8.69GB RSS at a 4GB limit),
 so the limit and the systemd `MemoryMax` (13000M) must be sized together, not
-separately. 4GB passed `int_pings_matched_to_stops` twice on 2026-09-19 (under
-`ops/verify_build.sh`) and failed it at 03:00 the next morning, so "it passed"
-twice was not proof. It is 6GB since 2026-09-20 (~11GB peak RSS, under the cap);
+separately. 4GB passed `int_pings_matched_to_stops` (deleted in ADR-0008) twice
+on 2026-09-19 (under `ops/verify_build.sh`) and failed it at 03:00 the next
+morning, so "it passed" twice was not proof. It is 6GB since 2026-09-20 (~11GB peak RSS, under the cap);
 8GB would need `MemoryMax` raised first. Extra host RAM does not raise this limit.
 
 ### GOTCHA: the API holds every mart row in Python memory, and the marts outgrew its limit
 
-`backend/app.py` loads `eta_models`, `localities`, `line_localities` and
+*Historical: this is what `line_stops` cost. Since ADR-0008 the API loads only
+`eta_models` and `localities` and reads the GTFS timetable per query, so its
+real footprint is far below the 6g limit; the limit has not been re-tuned.*
+
+`backend/app.py` loaded `eta_models`, `localities`, `line_localities` and
 `line_stops` (~2.6M rows) into Python dicts on the first request after a
-publish. Since the whole-GB bounding box (2026-09-12) that needs 2.46GiB steady
+publish. Since the whole-GB bounding box (2026-09-12) that needed 2.46GiB steady
 after a fresh load and **4.29GiB peak on an in-place reload** (old and new
 copies coexist), settling at 3.44GiB. Its container limit was 1.5g, so on
 2026-09-19 the first request after a good publish took it from 93MB to the limit
@@ -466,9 +482,9 @@ Two details in there matter more than they look:
 ### What `REPLAY=1` does to retention
 
 `incident.py` always sets `REPLAY=1`, which makes `build.sh` pass
-`--vars '{replay: true}'`. Both incremental models
-(`int_pings_segmented_to_journeys` and `int_pings_matched_to_stops`)
-collapse their retention `post_hook` to an empty list when that var is
+`--vars '{replay: true}'`. The incremental model
+(`int_pings_segmented_to_journeys`)
+collapses its retention `post_hook` to an empty list when that var is
 true.
 
 Without it, a replay quietly undoes itself. Those hooks prune each model to
