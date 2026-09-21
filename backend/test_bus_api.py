@@ -9,6 +9,16 @@ from datetime import UTC, datetime
 
 import app
 
+import gtfs
+
+
+def _inject_stops(stops):
+    """Stand in for NaPTAN: the positions predict() will find for these ATCO
+    codes. Freezes the reader's mtime check so nothing reloads or clears them."""
+    gtfs._state.update(mtime=None, checked=float('inf'))
+    gtfs._clear()
+    gtfs._stops.update(stops)
+
 
 def test_haversine():
     # Same point.
@@ -139,47 +149,6 @@ def test_model_fallback_chain():
         by_op, '', '88', 'inbound', 'weekday', 'am_peak')['tag'] == 'pooled_exact'
 
 
-def test_stops_for_day_and_direction_fallback():
-    """stops_for prefers the bus's own operator, then '*', then the live
-    day_type, then '*', then the opposite direction, then every stop on the
-    line."""
-    def stop(atco, lat):
-        return {'atco': atco, 'name': atco, 'locality': 'L',
-                                  'lat': lat, 'lon': -2.2, 'seq': 1}
-    wk = [stop('WK', 53.40)]
-    star = [stop('STAR', 53.41)]
-    outb = [stop('OUT', 53.42)]
-    marts = dict(app.EMPTY_MARTS)
-
-    # Exact day wins over the '*' set. No operator on the bus, so operator is
-    # irrelevant here -- both rows are pooled ('*') operator.
-    marts['stops'] = {('*', '88', 'inbound', 'weekday'): wk, ('*', '88', 'inbound', '*'): star}
-    assert app.stops_for(marts, None, '88', 'inbound', 'weekday') == wk
-    # A day the marts never fitted falls to '*', not to nothing.
-    assert app.stops_for(marts, None, '88', 'inbound', 'sun') == star
-    # Old-shape marts carry only '*': every day resolves there.
-    marts['stops'] = {('*', '88', 'inbound', '*'): star}
-    for day in ('weekday', 'sat', 'sun'):
-        assert app.stops_for(marts, None, '88', 'inbound', day) == star, day
-    # Direction miss -> the opposite direction, preferring its exact day.
-    marts['stops'] = {('*', '88', 'outbound', 'weekday'): outb}
-    assert app.stops_for(marts, None, '88', 'inbound', 'weekday') == outb
-    # Neither direction vocabulary matches -> every stop on the line.
-    marts['stops'] = {('*', '88', 'up', 'weekday'): wk, ('*', '88', 'down', 'sat'): outb}
-    assert len(app.stops_for(marts, None, '88', 'inbound', 'weekday')) == 2
-    # Nothing for the line at all.
-    assert app.stops_for(marts, None, '999', 'inbound', 'weekday') == []
-
-    # Operator preference: a bus's own operator sequence wins over the pooled
-    # one when both exist, and a different/unknown operator falls back to
-    # pooled rather than matching nothing.
-    marts['stops'] = {('BEVC', '88', 'inbound', 'weekday'): wk,
-                       ('*', '88', 'inbound', 'weekday'): star}
-    assert app.stops_for(marts, 'BEVC', '88', 'inbound', 'weekday') == wk
-    assert app.stops_for(marts, 'ANEA', '88', 'inbound', 'weekday') == star
-    assert app.stops_for(marts, None, '88', 'inbound', 'weekday') == star
-
-
 def test_marts_age_and_staleness():
     assert app.marts_age_hours({'built_at': None}) is None
     assert app.marts_age_hours({'built_at': 'rubbish'}) is None
@@ -293,8 +262,8 @@ def test_predict_guards():
     marts['eta'] = {('*', '*', '*', '*', '*'): {'slope_s_per_km': 120.0, 'intercept_s': 60.0,
                                                 'r2': 0.4, 'n_obs': 99}}
     # Destination stop 200 km away -> beyond MAX_REMAINING_KM.
-    marts['stop_by_atco'] = {'FAR': {'atco': 'FAR', 'name': 'Far', 'locality': 'X',
-                                     'lat': 55.3, 'lon': -2.2, 'seq': 1}}
+    _inject_stops({'FAR': {'atco': 'FAR', 'name': 'Far', 'locality': 'X',
+                                     'lat': 55.3, 'lon': -2.2, 'seq': 1}})
     now = 1_757_600_000.0
     row = {'line': '88', 'direction': 'inbound', 'lat': 53.4, 'lon': -2.2,
            'dest_ref': 'FAR', 'dest_aimed_arr': int(now * 1000)}
@@ -308,14 +277,14 @@ def test_predict_guards():
     assert frag['eta_iso'] is not None and frag['eta_source'] == 'timetable_raw'
 
     # 50 km out at 120 s/km = 6000 s + 60 s -> over the 4 hour rail? No: 6060 s.
-    marts['stop_by_atco'] = {'NEAR': {'atco': 'NEAR', 'name': 'Near', 'locality': 'X',
-                                      'lat': 53.85, 'lon': -2.2, 'seq': 1}}
+    _inject_stops({'NEAR': {'atco': 'NEAR', 'name': 'Near', 'locality': 'X',
+                                      'lat': 53.85, 'lon': -2.2, 'seq': 1}})
     row['dest_ref'] = 'NEAR'
     # Give it an origin too, so schedule adherence -- not the regression -- can
     # produce the delay. Still sitting at the origin with half the journey's
     # scheduled time already spent, so: late. (Not the WHOLE scheduled time:
     # that now trips the implausible-delay rail, which is its own test.)
-    marts['stop_by_atco']['ORIG'] = {'atco': 'ORIG', 'name': 'Orig', 'locality': 'X',
+    gtfs._stops['ORIG'] = {'atco': 'ORIG', 'name': 'Orig', 'locality': 'X',
                                      'lat': 53.4, 'lon': -2.2, 'seq': 0}
     row['origin_ref'] = 'ORIG'
     row['origin_aimed_dep'] = int((now - 1200) * 1000)
@@ -338,6 +307,7 @@ def test_predict_guards():
     # No marts at all -> no model, no regression, no delay -- but row still
     # carries a live dest_aimed_arr, so the bare-timetable fallback still
     # gives an ETA. Only a row with genuinely nothing (see below) gets None.
+    _inject_stops({})                      # and no NaPTAN positions either
     frag, model, pred = app.predict(row, dict(app.EMPTY_MARTS), now)
     assert frag['remaining_km'] is None and frag['delay_s'] is None
     assert frag['delay_source'] is None and frag['status'] == 'unknown'
@@ -515,12 +485,12 @@ def test_arrived_vehicles_stop_accruing_delay():
     scheduled 09:45-10:30 reading 35 minutes late while stood on the stand."""
     now = 1789200000.0
     marts = dict(app.EMPTY_MARTS)
-    marts['stop_by_atco'] = {
+    _inject_stops({
         'O': {'atco': 'O', 'name': 'Origin', 'locality': 'X', 'lat': 53.40,
               'lon': -2.20, 'seq': 1, 'secs_from_origin': 0.0},
         'D': {'atco': 'D', 'name': 'Dest', 'locality': 'Y', 'lat': 53.60,
               'lon': -2.20, 'seq': 9, 'secs_from_origin': 1200.0},
-    }
+    })
     # Scheduled 09:45-10:30-ish: departed 45 min ago, due 10 min ago.
     base = {'origin_ref': 'O', 'dest_ref': 'D',
             'origin_aimed_dep': (now - 2700) * 1000,
@@ -551,8 +521,10 @@ def test_arrived_vehicles_stop_accruing_delay():
     # -- 10 live vehicles were being rated that way.
     stops, a, _mid, b = _route_stops()
     gm = dict(app.EMPTY_MARTS)
-    gm['stop_by_atco'] = {'A': a, 'B': b}
-    gm['stops'] = {('*', '88', 'outbound', 'weekday'): stops}
+    _inject_stops({'A': a, 'B': b})
+    real_route = gtfs.line_route
+    gtfs.line_route = lambda *args: {'stops': stops, 'operator': 'OP',
+                                      'direction': 'outbound', 'source': 'exact'}
     parked = {'line': '88', 'direction': 'outbound', 'lat': 53.5100, 'lon': -2.2000,
               'origin_ref': 'A', 'dest_ref': 'B',
               'origin_aimed_dep': (now - 2700) * 1000,
@@ -567,6 +539,7 @@ def test_arrived_vehicles_stop_accruing_delay():
                        origin_aimed_dep=(now - 600) * 1000,
                        dest_aimed_arr=(now + 600) * 1000)
     frag, _model, _pred = app.predict(running_bus, gm, now)
+    gtfs.line_route = real_route
     assert frag['delay_s'] is not None and frag['delay_source'] is not None
 
 
@@ -610,12 +583,12 @@ def test_implausible_delay_is_refused():
 
     # ...and the same end to end through the geometric method.
     marts = dict(app.EMPTY_MARTS)
-    marts['stop_by_atco'] = {
+    _inject_stops({
         'O': {'atco': 'O', 'name': 'Origin', 'locality': 'X', 'lat': 53.40,
               'lon': -2.20, 'seq': 1, 'secs_from_origin': 0.0},
         'D': {'atco': 'D', 'name': 'Dest', 'locality': 'Y', 'lat': 53.60,
               'lon': -2.20, 'seq': 9, 'secs_from_origin': 1200.0},
-    }
+    })
     stale = {'origin_ref': 'O', 'dest_ref': 'D', 'lat': 53.40, 'lon': -2.20,
              'origin_aimed_dep': (now - 6263) * 1000,
              'dest_aimed_arr': (now - 6263 + 5520) * 1000}
@@ -633,9 +606,9 @@ def test_detour_factor_applied():
                                            'day_type': '*', 'hour_band': '*',
                                       'slope_s_per_km': 100.0, 'intercept_s': 0.0,
                                       'r2': 0.5, 'n_obs': 1000, 'source': 'global'}}
-    marts['stop_by_atco'] = {'D': {'atco': 'D', 'name': 'Dest', 'locality': 'X',
+    _inject_stops({'D': {'atco': 'D', 'name': 'Dest', 'locality': 'X',
                                    'lat': 53.6, 'lon': -2.2, 'seq': 9,
-                                   'secs_from_origin': None}}
+                                   'secs_from_origin': None}})
     now = 1789200000.0
     row = {'line': '88', 'direction': 'outbound', 'lat': 53.5, 'lon': -2.2,
            'dest_ref': 'D', 'dest_aimed_arr': (now + 3600) * 1000}
@@ -670,12 +643,12 @@ def test_geometric_progress_delay():
     coverage path, since it needs only the origin and destination coordinates."""
     now = 1789200000.0
     marts = dict(app.EMPTY_MARTS)
-    marts['stop_by_atco'] = {
+    _inject_stops({
         'O': {'atco': 'O', 'name': 'Origin', 'locality': 'X', 'lat': 53.40, 'lon': -2.20,
               'seq': 1, 'secs_from_origin': 0.0},
         'D': {'atco': 'D', 'name': 'Dest', 'locality': 'Y', 'lat': 53.60, 'lon': -2.20,
               'seq': 9, 'secs_from_origin': 1200.0},
-    }
+    })
     base = {'origin_ref': 'O', 'dest_ref': 'D',
             'origin_aimed_dep': (now - 600) * 1000,
             'dest_aimed_arr': (now + 600) * 1000}   # 1200 s scheduled
@@ -716,7 +689,7 @@ def test_geometric_progress_delay():
     # identical one, which is how most city-centre circulars are published, and
     # even when the bus is far from both termini so the old total-distance
     # guard would have let it through.
-    marts['stop_by_atco']['D2'] = {'atco': 'D2', 'name': 'Near Origin', 'locality': 'X',
+    gtfs._stops['D2'] = {'atco': 'D2', 'name': 'Near Origin', 'locality': 'X',
                                    'lat': 53.4045, 'lon': -2.20, 'seq': 9,
                                    'secs_from_origin': 1200.0}
     assert app.haversine_km(53.40, -2.20, 53.4045, -2.20) < app.MIN_TERMINUS_SEPARATION_KM
@@ -737,9 +710,9 @@ def test_delay_never_comes_from_the_regression():
                                            'day_type': '*', 'hour_band': '*',
                                       'slope_s_per_km': 180.0, 'intercept_s': 750.0,
                                       'r2': 0.7, 'n_obs': 5000, 'source': 'global'}}
-    marts['stop_by_atco'] = {'D': {'atco': 'D', 'name': 'Dest', 'locality': 'Y',
+    _inject_stops({'D': {'atco': 'D', 'name': 'Dest', 'locality': 'Y',
                                    'lat': 53.60, 'lon': -2.20, 'seq': 9,
-                                   'secs_from_origin': None}}
+                                   'secs_from_origin': None}})
     # Destination known, but no origin_ref -> no adherence reading is possible.
     row = {'line': '88', 'direction': 'outbound', 'lat': 53.50, 'lon': -2.20,
            'dest_ref': 'D', 'dest_aimed_arr': (now + 600) * 1000,
@@ -851,14 +824,6 @@ def test_load_marts_tolerates_both_shapes():
                         "('*','88','outbound','weekday','am_peak',150,90,0.7,400),"
                         "('*','88','outbound','sat','*',160,80,0.6,300),"
                         "('*','*','*','*','*',170,70,0.5,9000)")
-            con.execute('CREATE TABLE line_stops(operator VARCHAR, line VARCHAR, '
-                        'direction VARCHAR, day_type VARCHAR, atco_code VARCHAR, '
-                        'stop_name VARCHAR, locality VARCHAR, lat DOUBLE, lon DOUBLE, '
-                        'seq INTEGER, median_secs_from_origin DOUBLE, n_obs BIGINT)')
-            con.execute("INSERT INTO line_stops VALUES "
-                        "('BEVC','88','outbound','weekday','A','Alpha_Street','Ashton',53.5,-2.2,1,0,40),"
-                        "('*','88','outbound','weekday','A','Alpha_Street','Ashton',53.5,-2.2,1,0,40),"
-                        "('*','88','outbound','*','A','Alpha_Street','Ashton',53.5,-2.2,1,0,90)")
         else:
             # Oldest shape: neither day_type nor operator.
             con.execute('CREATE TABLE eta_models(line VARCHAR, direction VARCHAR, '
@@ -867,12 +832,6 @@ def test_load_marts_tolerates_both_shapes():
             con.execute("INSERT INTO eta_models VALUES "
                         "('88','outbound','am_peak',150,90,0.7,400),"
                         "('*','*','*',170,70,0.5,9000)")
-            con.execute('CREATE TABLE line_stops(line VARCHAR, direction VARCHAR, '
-                        'atco_code VARCHAR, stop_name VARCHAR, locality VARCHAR, '
-                        'lat DOUBLE, lon DOUBLE, seq INTEGER, '
-                        'median_secs_from_origin DOUBLE, n_obs BIGINT)')
-            con.execute("INSERT INTO line_stops VALUES "
-                        "('88','outbound','A','Alpha_Street','Ashton',53.5,-2.2,1,0,40)")
         con.close()
 
     tmp = tempfile.mkdtemp()
@@ -891,9 +850,6 @@ def test_load_marts_tolerates_both_shapes():
         assert m['source'] == 'line+direction+day+hour_band' and m['n_obs'] == 400
         m = app.pick_model(marts['eta'], None, '88', 'outbound', 'sat', 'am_peak')
         assert m['source'] == 'line+direction+day' and m['n_obs'] == 300
-        assert ('*', '88', 'outbound', 'weekday') in marts['stops']
-        assert app.stops_for(marts, None, '88', 'outbound', 'sun')[0]['atco'] == 'A'
-        assert app.stops_for(marts, 'BEVC', '88', 'outbound', 'weekday')[0]['atco'] == 'A'
 
         # --- oldest shape (neither day_type nor operator) -----------------
         old_path = tmp + '/old.duckdb'
@@ -908,52 +864,10 @@ def test_load_marts_tolerates_both_shapes():
         for day in ('weekday', 'sat', 'sun'):
             m = app.pick_model(marts['eta'], 'BEVC', '88', 'outbound', day, 'am_peak')
             assert m is not None and m['source'] == 'line+direction+hour_band', (day, m)
-            assert app.stops_for(marts, 'BEVC', '88', 'outbound', day)[0]['atco'] == 'A', day
-            stop, _km = app.nearest_stop(
-                app.stops_for(marts, 'BEVC', '88', 'outbound', day), 53.5001, -2.2001)
-            assert stop is not None and stop['atco'] == 'A', day
-        # Stop names are still de-underscored on the old shape.
-        assert marts['stop_by_atco']['A']['name'] == 'Alpha Street'
+        # A marts file with no stop tables at all (they left with ADR-0008) loads.
+        assert marts['ok']
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-
-
-def test_route_stops_resolver_matches_stops_for():
-    """route_stops_for_line must resolve through the exact same key stops_for()
-    would, or the map could draw a different sequence than the one the delay
-    math is using -- the two would silently disagree about the route."""
-    stops, a, m, b = _route_stops()
-    marts = dict(app.EMPTY_MARTS)
-    marts['stops'] = {('*', '88', 'outbound', 'weekday'): stops}
-
-    stops, operator, direction, day, source = app.route_stops_for_line(
-        marts, None, '88', 'outbound', 'weekday')
-    assert stops == [a, m, b] and operator == '*' and direction == 'outbound' and day == 'weekday'
-    assert source == 'exact'
-    assert stops == app.stops_for(marts, None, '88', 'outbound', 'weekday')
-
-    # Day misses, falls back to the '*' row set the marts always emit... except
-    # this fixture only has 'weekday', so it should fall through to the merge.
-    stops2, _op, _d, _day, source2 = app.route_stops_for_line(marts, None, '88', 'outbound', 'sun')
-    assert source2 == 'line_merged_all_directions'
-    assert stops2 == [a, m, b]   # same three stops, just not via a day-specific key
-
-    # Opposite direction: the mart only knows 'outbound', request 'inbound'.
-    stops3, _op, direction3, _day, source3 = app.route_stops_for_line(
-        marts, None, '88', 'inbound', 'weekday')
-    assert direction3 == 'outbound'
-    assert source3 in ('opposite_direction', 'opposite_direction_day_agnostic')
-    assert stops3 == [a, m, b]
-
-    # A real operator the mart has never fitted still resolves through the
-    # pooled ('*') row, reported as 'pooled_operator' rather than 'exact'.
-    stops5, op5, _d, _day, source5 = app.route_stops_for_line(
-        marts, 'BEVC', '88', 'outbound', 'weekday')
-    assert stops5 == [a, m, b] and op5 == '*' and source5 == 'pooled_operator'
-
-    # Unknown line entirely.
-    stops4, _op, _d, _day, source4 = app.route_stops_for_line(marts, None, 'NOPE', None, 'weekday')
-    assert stops4 == [] and source4 == 'no_data'
 
 
 def test_route_endpoint_validates_input():
@@ -992,15 +906,18 @@ def test_route_endpoint_no_data_degrades_quietly():
 def test_route_truncation_and_merged_route_detection():
     """Both are measured directly against the module constants, so the test
     keeps holding even if the thresholds are retuned later."""
-    marts = dict(app.EMPTY_MARTS)
     # A long, straight, well-behaved route: N stops 1 km apart. Must NOT be
     # flagged as merged even though it is long enough to be truncated.
     n = app.MAX_ROUTE_STOPS + 20
     good = [{'atco': f'S{i}', 'name': f'Stop {i}', 'locality': 'X',
              'lat': 53.0 + i * 0.009, 'lon': -2.2, 'seq': i,
              'secs_from_origin': float(i * 60)} for i in range(n)]
-    marts['stops'] = {('*', 'LONG', 'outbound', 'weekday'): good}
-    stops, _op, _d, _day, _s = app.route_stops_for_line(marts, None, 'LONG', 'outbound', 'weekday')
+    routes = {'LONG': good}
+    real_route = gtfs.line_route
+    gtfs.line_route = lambda op, line, direction=None: (
+        {'stops': routes[line], 'operator': 'OP', 'direction': 'outbound', 'source': 'exact'}
+        if line in routes else None)
+    stops, _op, _d, _day, _s = app.route_stops_for_line(None, 'LONG', 'outbound')
     assert len(stops) == n   # resolver itself does not truncate
 
     usable = stops[:app.MAX_ROUTE_STOPS]
@@ -1013,9 +930,12 @@ def test_route_truncation_and_merged_route_detection():
     bad = list(good[:5])
     bad.append({'atco': 'FAR', 'name': 'Another Town Entirely', 'locality': 'Y',
                 'lat': 54.5, 'lon': -3.5, 'seq': 5, 'secs_from_origin': 300.0})
-    marts['stops'] = {('*', 'MERGED', 'outbound', 'weekday'): bad}
-    stops2, _op, _d, _day, _s = app.route_stops_for_line(
-        marts, None, 'MERGED', 'outbound', 'weekday')
+    routes['MERGED'] = bad
+    try:
+        stops2, _op, _d, _day, _s = app.route_stops_for_line(None, 'MERGED', 'outbound')
+        assert app.route_stops_for_line(None, 'NOPE', None)[4] == 'no_data'
+    finally:
+        gtfs.line_route = real_route
     flagged = any(
         app.haversine_km(a['lat'], a['lon'], b['lat'], b['lon']) > app.MERGED_ROUTE_HOP_KM
         for a, b in zip(stops2, stops2[1:]))

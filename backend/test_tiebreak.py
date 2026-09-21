@@ -119,12 +119,11 @@ def test_route_for_uses_the_trail_and_flags_the_prior():
     real = gtfs.candidates
     gtfs.candidates = lambda *a: [P1, P2]
     try:
-        marts = dict(app.EMPTY_MARTS)
-        stops, source = app.route_for(marts, _api_row(), time.time())
+        stops, source = app.route_for(_api_row())
         assert source == 'gtfs_pattern_unresolved' and stops is P1['stops']
         for i in range(4):
             app.observe_trails([_api_row(timestamp=f'2026-09-21T10:0{i}:00Z')], sync_seed=True)
-        stops, source = app.route_for(marts, _api_row(), time.time())
+        stops, source = app.route_for(_api_row())
         assert source == 'gtfs_pattern' and stops is P2['stops']
     finally:
         gtfs.candidates = real

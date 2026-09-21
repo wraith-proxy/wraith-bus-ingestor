@@ -13,8 +13,7 @@ import gtfs
 
 def _marts():
     marts = dict(app.EMPTY_MARTS)
-    marts.update({'stops': {}, 'stop_by_atco': {}, 'line_loc': {}, 'localities': [],
-                  'route_geom': {}})
+    marts.update({'localities': [], 'route_geom': {}})
     return marts
 
 
@@ -25,44 +24,33 @@ def _row(**kw):
     return row
 
 
-def test_route_for_prefers_pinned_pattern_then_line_then_line_stops():
+def test_route_for_prefers_pinned_pattern_then_line_then_nothing():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, 'gtfs.duckdb')
         _build(path)
         _point_at(path)
-        marts = _marts()
-        now = time.time()
-        stops, source = app.route_for(marts, _row(), now)
+        stops, source = app.route_for(_row())
         # Two patterns share these endpoints and there is no trail: prior, flagged.
         assert source == 'gtfs_pattern_unresolved'
         assert [s['atco'] for s in stops] == ['A', 'M1', 'C']
         one = _row(operator='OP2', origin_ref='X', dest_ref='Y')
-        stops, source = app.route_for(marts, one, now)
+        stops, source = app.route_for(one)
         assert source == 'gtfs_pattern' and len(stops) == 2         # one candidate: no doubt
         # Endpoints the timetable has no pattern for: the line's primary pattern.
-        stops, source = app.route_for(marts, _row(dest_ref='ZZ'), now)
+        stops, source = app.route_for(_row(dest_ref='ZZ'))
         assert source == 'gtfs_line' and stops[0]['atco'] == 'A'
-        # A line the timetable does not have (London): line_stops, while it exists.
-        marts['stops'] = {('*', 'L9', 'outbound', '*'): [{'atco': 'T', 'seq': 1}]}
-        stops, source = app.route_for(marts, _row(operator='TFLO', line='L9'), now)
-        assert source == 'line_stops' and stops == [{'atco': 'T', 'seq': 1}]
-        # ... and nothing at all once it is gone.
-        stops, source = app.route_for(_marts(), _row(operator='TFLO', line='L9'), now)
-        assert stops == [] and source == 'line_stops'
+        # A line the timetable does not have (London): no route, and no exception.
+        assert app.route_for(_row(operator='TFLO', line='L9')) == ([], 'none')
 
 
-def test_stop_lookup_uses_naptan_then_line_stops():
+def test_stop_lookup_reads_naptan():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, 'gtfs.duckdb')
         _build(path)
         _point_at(path)
-        marts = _marts()
-        marts['stop_by_atco'] = {'A': {'atco': 'A', 'lat': 1.0, 'lon': 1.0},
-                                 'OLD': {'atco': 'OLD', 'lat': 2.0, 'lon': 2.0}}
-        assert app.stop_lookup(marts, 'A')['lat'] == 53.6         # NaPTAN wins
-        assert app.stop_lookup(marts, 'OLD')['lat'] == 2.0        # only line_stops has it
-        assert app.stop_lookup(marts, 'NOPE') is None
-        assert app.stop_lookup(marts, None) is None
+        assert app.stop_lookup('A')['lat'] == 53.6         # the active NaPTAN row
+        assert app.stop_lookup('NOPE') is None
+        assert app.stop_lookup(None) is None
 
 
 def test_london_keeps_regression_eta_without_any_route():
@@ -109,7 +97,7 @@ def test_route_endpoint_reads_the_timetable_first():
             app.live_buses, app.get_marts, app.road_snapped_geometry = real, real_marts, real_road
 
 
-def test_search_unions_timetable_and_marts_lines():
+def test_search_finds_lines_through_the_timetable():
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, 'gtfs.duckdb')
         _build(path)
@@ -117,13 +105,12 @@ def test_search_unions_timetable_and_marts_lines():
         marts = _marts()
         marts['localities'] = [{'locality': 'Ashton', 'locality_norm': 'ASHTON',
                                 'lat': 53.5, 'lon': -2.2, 'n_stops': 3}]
-        marts['line_loc'] = {'ASHTON': {'L9'}}
         real, real_marts = app.live_buses, app.get_marts
         app.live_buses = lambda *a, **k: []
         app.get_marts = lambda: marts
         try:
             body = app.app.test_client().get('/search', query_string={'q': 'ashton'}).get_json()
-            assert body['lines'] == ['88', '9', 'L9']
+            assert body['lines'] == ['88', '9']
         finally:
             app.live_buses, app.get_marts = real, real_marts
 
@@ -151,30 +138,8 @@ def test_bus_detail_names_next_stop_from_the_timetable():
 def test_everything_degrades_when_the_timetable_is_missing():
     _point_at('/nonexistent/gtfs.duckdb')
     marts = _marts()
-    stops, source = app.route_for(marts, _row(), time.time())
-    assert stops == [] and source == 'line_stops'
-    assert app.stop_lookup(marts, 'A') is None
+    assert app.route_for(_row()) == ([], 'none')
+    assert app.stop_lookup('A') is None
     app.prefetch_timetable([_row(), _row(origin_ref=None)])        # must not raise
     frag, _model, _pred = app.predict(_row(), marts, time.time())
     assert frag['eta_iso'] is None and frag['status'] == 'unknown'
-
-
-def test_poll_path_never_takes_the_expensive_line_stops_merge():
-    """/buses calls route_for for thousands of buses. stops_for's merge scans the
-    whole index (10 ms a bus): only /bus/<id> may ask for it."""
-    _point_at('/nonexistent/gtfs.duckdb')
-    marts = _marts()
-    marts['stops'] = {('*', 'L9', 'inbound', '*'): [{'atco': 'T', 'seq': 1}]}
-    real = app.stops_for
-    app.stops_for = lambda *a: (_ for _ in ()).throw(AssertionError('merge on the poll path'))
-    try:
-        # Direction the index only has the opposite of: resolved by stops_index_key.
-        stops, _src = app.route_for(marts, _row(operator='TFLO', line='L9'), time.time())
-        assert stops == [{'atco': 'T', 'seq': 1}]
-        # Nothing matches without the merge: empty, quickly, no scan.
-        assert app.route_for(marts, _row(operator='TFLO', line='nope'), time.time())[0] == []
-    finally:
-        app.stops_for = real
-    stops, _src = app.route_for(marts, _row(operator='TFLO', line='L9'), time.time(),
-                                merge_line_stops=True)
-    assert stops == [{'atco': 'T', 'seq': 1}]
