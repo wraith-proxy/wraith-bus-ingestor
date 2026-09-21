@@ -125,3 +125,20 @@ def test_line_localities_and_cache_reset_on_new_file():
         gtfs._state['checked'] = 0.0
         gtfs._check()
         assert gtfs._stops == {} and gtfs._cands == {}
+
+
+def test_prime_routes_batches_and_survives_hostile_values():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'gtfs.duckdb')
+        _build(path)
+        _point_at(path)
+        weird = "x'; DROP TABLE gtfs_route_stops; --\x1e\x1f"
+        gtfs.prime_routes([('OP1', '88', 'A', 'C'), ('OP2', '88', 'X', 'Y'),
+                           ('OP1', weird, 'A', 'C'), ('OP1', '88', None, 'C')])
+        assert [p['pattern_id'] for p in gtfs._cands[('OP1', '88', 'A', 'C')]] == [1, 2]
+        assert len(gtfs._cands[('OP2', '88', 'X', 'Y')][0]['stops']) == 2
+        assert gtfs._cands[('OP1', weird, 'A', 'C')] == []
+        assert ('OP1', '88', None, 'C') not in gtfs._cands       # incomplete key skipped
+        gtfs.prime([weird, 'A'])
+        assert gtfs.stop('A') is not None and gtfs.stop(weird) is None
+        assert gtfs.candidates('OP1', '88', 'A', 'C')             # table still there

@@ -84,6 +84,18 @@ def _query(sql, params=()):
         con.close()
 
 
+def _clean(text):
+    """A field with the two separator control characters removed."""
+    return str(text).replace(chr(30), '').replace(chr(31), '')
+
+
+def _pack(items):
+    """Many strings as ONE bound parameter, for `unnest(string_split(?, chr(30)))`.
+    Binding a Python list makes DuckDB do a failed import lookup per element,
+    which cost 6 s for a poll's worth of keys."""
+    return chr(30).join(items)
+
+
 def _stop_dict(atco, name, locality, lat, lon, seq=None, secs=None):
     return {'atco': atco, 'name': name_fn(name), 'locality': locality,
             'lat': lat, 'lon': lon, 'seq': seq, 'secs_from_origin': secs}
@@ -98,7 +110,8 @@ def prime(atcos):
     rows = _query(
         'SELECT ATCOCode, CommonName, LocalityName, try_cast(Latitude AS DOUBLE), '
         'try_cast(Longitude AS DOUBLE) FROM naptan_stops '
-        'WHERE ATCOCode IN (SELECT unnest(?)) ORDER BY (Status = \'active\')', [want])
+        'WHERE ATCOCode IN (SELECT unnest(string_split(?, chr(30)))) '
+        'ORDER BY (Status = \'active\')', [_pack(_clean(a) for a in want)])
     for atco, name, loc, lat, lon in rows:      # active rows come last and win
         if lat is not None and lon is not None:
             _stops[atco] = _stop_dict(atco, name, loc, lat, lon)
@@ -116,10 +129,91 @@ def stop(atco):
     return _stops.get(atco)
 
 
+def _load_candidates(keys):
+    """Fill _cands for many (operator, line, origin_ref, dest_ref) keys with three
+    queries in one connection, not three per key: a cold poll has over a thousand
+    keys, and one query each would take longer than the request budget.
+
+    The live (operator, line) is taken as the timetable spells it if the
+    timetable has it, else through the reviewed alias table (which never shadows
+    a real match; checking exact first keeps it so)."""
+    if not available():
+        return
+    try:
+        con = duckdb.connect(GTFS_PATH, read_only=True)
+    except Exception:
+        return
+    found = {k: [] for k in keys}
+    try:
+        con.execute('CREATE TEMP TABLE k(op VARCHAR, ln VARCHAR, o VARCHAR, d VARCHAR)')
+        # One statement, one bound string: executemany is row-at-a-time (7 s for 9k
+        # keys) and so is binding a list parameter (a failed module lookup per
+        # element, 6 s). Split in SQL instead.
+        con.execute(
+            'INSERT INTO k SELECT split_part(t, chr(31), 1), split_part(t, chr(31), 2), '
+            'split_part(t, chr(31), 3), split_part(t, chr(31), 4) '
+            'FROM (SELECT unnest(string_split(?, chr(30))) AS t)',
+            [_pack(chr(31).join(_clean(f) for f in k) for k in keys)])
+        con.execute(
+            'CREATE TEMP TABLE kr AS SELECT k.*, '
+            'CASE WHEN e.operator IS NOT NULL THEN k.op ELSE a.gtfs_operator END AS rop, '
+            'CASE WHEN e.operator IS NOT NULL THEN k.ln ELSE a.gtfs_line END AS rln '
+            'FROM k LEFT JOIN (SELECT DISTINCT operator, line FROM gtfs_route_patterns) e '
+            'ON e.operator = k.op AND e.line = k.ln '
+            'LEFT JOIN gtfs_line_alias a ON a.live_operator = k.op AND a.live_line = k.ln')
+        pats = con.execute(
+            'SELECT kr.op, kr.ln, kr.o, kr.d, p.operator, p.line, p.direction, '
+            'p.pattern_id, p.trip_share, p.is_circular '
+            'FROM kr JOIN gtfs_route_patterns p ON p.operator = kr.rop AND p.line = kr.rln '
+            'AND p.first_atco = kr.o AND p.last_atco = kr.d '
+            'ORDER BY p.trip_share DESC, p.pattern_id').fetchall()
+        stops = {}
+        for r in con.execute(
+                'SELECT s.operator, s.line, s.direction, s.pattern_id, s.atco_code, '
+                's.stop_name, s.locality, s.lat, s.lon, s.seq, s.sched_secs_from_origin '
+                'FROM gtfs_route_stops s JOIN (SELECT DISTINCT p.operator, p.line, '
+                'p.direction, p.pattern_id FROM kr JOIN gtfs_route_patterns p '
+                'ON p.operator = kr.rop AND p.line = kr.rln AND p.first_atco = kr.o '
+                'AND p.last_atco = kr.d) u ON u.operator = s.operator AND u.line = s.line '
+                'AND u.direction = s.direction AND u.pattern_id = s.pattern_id '
+                'ORDER BY s.seq').fetchall():
+            stops.setdefault(r[:4], []).append(
+                _stop_dict(r[4], r[5], r[6], r[7], r[8], seq=r[9], secs=r[10]))
+    except Exception:
+        return                          # leave the keys uncached: retried next poll
+    finally:
+        con.close()
+    for op, ln, o, d, rop, rln, direction, pid, share, circ in pats:
+        found[(op, ln, o, d)].append({
+            'pattern_id': pid, 'direction': direction, 'trip_share': share,
+            'is_circular': bool(circ), 'stops': stops.get((rop, rln, direction, pid), [])})
+    _cands.update(found)
+
+
+def prime_routes(keys):
+    """Batch-load candidates for the (operator, line, origin_ref, dest_ref) keys
+    of one poll; keys already cached, or missing a field, are skipped."""
+    _check()
+    todo = sorted({k for k in keys if all(k) and k not in _cands})
+    if todo:
+        _load_candidates(todo)
+
+
+def candidates(operator, line, origin_ref, dest_ref):
+    """Every timetable pattern of this line that runs origin_ref -> dest_ref,
+    most-run first (trip_share desc, then lowest pattern_id, so the order is
+    total). [] when the line is not in the timetable or no pattern matches the
+    endpoints. Each: {pattern_id, direction, trip_share, is_circular, stops}."""
+    key = (operator, line, origin_ref, dest_ref)
+    if not all(key):
+        return []
+    prime_routes([key])
+    return _cands.get(key, [])
+
+
 def _resolve(operator, line):
-    """(operator, line) as the timetable spells it: exact if the timetable has
-    it, else through the reviewed alias table. The alias never shadows a real
-    match (build_alias.py guarantees it; checking exact first keeps it so)."""
+    """Like the batch resolution, for one (operator, line): (None, None) if the
+    timetable knows neither the line nor an alias for it."""
     if _query('SELECT 1 FROM gtfs_route_patterns WHERE operator = ? AND line = ? LIMIT 1',
               [operator, line]):
         return operator, line
@@ -134,32 +228,6 @@ def _pattern_stops(operator, line, direction, pattern_id):
         'FROM gtfs_route_stops WHERE operator = ? AND line = ? AND direction = ? '
         'AND pattern_id = ? ORDER BY seq', [operator, line, direction, pattern_id])
     return [_stop_dict(*r[:5], seq=r[5], secs=r[6]) for r in rows]
-
-
-def candidates(operator, line, origin_ref, dest_ref):
-    """Every timetable pattern of this line that runs origin_ref -> dest_ref,
-    most-run first (trip_share desc, then lowest pattern_id, so the order is
-    total). [] when the line is not in the timetable or no pattern matches the
-    endpoints. Each: {pattern_id, direction, trip_share, is_circular, stops}."""
-    if not (operator and line and origin_ref and dest_ref):
-        return []
-    _check()
-    key = (operator, line, origin_ref, dest_ref)
-    if key in _cands:
-        return _cands[key]
-    op, ln = _resolve(operator, line)
-    out = []
-    if op:
-        rows = _query(
-            'SELECT direction, pattern_id, trip_share, is_circular FROM gtfs_route_patterns '
-            'WHERE operator = ? AND line = ? AND first_atco = ? AND last_atco = ? '
-            'ORDER BY trip_share DESC, pattern_id', [op, ln, origin_ref, dest_ref])
-        for direction, pattern_id, share, circ in rows:
-            out.append({'pattern_id': pattern_id, 'direction': direction,
-                        'trip_share': share, 'is_circular': bool(circ),
-                        'stops': _pattern_stops(op, ln, direction, pattern_id)})
-    _cands[key] = out
-    return out
 
 
 def line_route(operator, line, direction=None):
