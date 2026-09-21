@@ -163,7 +163,7 @@ what `wraith-bus-build.service`'s `ExecStartPre`/`ExecStopPost` does to
 step now rather than relying on this being known. `ghost-web` itself
 typically isn't touched by any of these, so it stays `Up` pointing at
 dead IPs with no health check anywhere catching it. See
-[Operations § Container lifecycle](operations.md#gotcha-docker-compose-down--up-silently-breaks-the-public-site)
+[Operations § Container lifecycle](operations.md#gotcha-docker-compose-down-up-silently-breaks-the-public-site)
 for the concrete 2026-09-17/18 incident and the check to run after any
 stack-wide restart.
 

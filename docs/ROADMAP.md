@@ -442,8 +442,8 @@ because TfL publishes no aimed arrival.
   scoring is still pure Python. `docker-compose.yml` still gives the API `mem_limit: 6g`
   though it now sits near 0.5 GiB.
 - The build warehouse was compacted 2026-09-21 (8.9 GB to 3.5 GB, orphaned tables
-  gone) and `profiles.yml` `memory_limit` re-tuned to 4 GB (see ADR-0009); the naptan
-  staging model still computes `lat_cell`/`lon_cell` that nothing uses.
+  gone) and `profiles.yml` `memory_limit` re-tuned to 4 GB (see ADR-0009); the unused
+  `lat_cell`/`lon_cell` columns were dropped from the naptan staging model.
 - The Android app should send `?operator=` (1.9.0's identity fix) and should not rely
   on the `/route` `day_type` field, which is now always null.
 - The cgroup v2 page-cache interaction is real for the 1.1 GB GTFS file read through
