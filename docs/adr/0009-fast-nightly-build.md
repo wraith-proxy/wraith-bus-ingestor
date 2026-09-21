@@ -370,8 +370,19 @@ skipped the 11-minute extract, re-processed the same window instead of a new nig
 ran with the site's containers up rather than stopped, and segmentation took 78 s
 here against 140.9 s in the service (the difference is still unexplained). Taking
 the 22 m 37 s of the last real run and removing what was deleted gives an estimate of
-about 16 minutes, most of it extraction. **That is an estimate; the first real
-measurement is the 03:00 run of 2026-09-22.** Watch it rather than assume it.
+about 16 minutes, most of it extraction. **That was an estimate; it is now measured** (next paragraph). The 03:00 run of
+2026-09-22 is still the first *scheduled* one.
+
+**Forced run of the real unit, 2026-09-21 07:13:51 to 07:29:24 (`systemctl start
+wraith-bus-build.service`, real extraction, containers stopped and restarted by the
+unit): 15 m 33 s, success**, against 22 m 37 s for the 03:00 run that morning. Extract
+about 10.5 min; `dbt run` 117.7 s (segmentation 81.5 s, shaped 19.6 s, training set
+10 s, `eta_models` 6.2 s); `dbt test` 136 s, 88 pass; contract gate 62 passed, 0
+failed; three marts published; `/model-info` `ok`, 129,135 models. This ran on the
+compacted 3.5 GB warehouse with `memory_limit` 4 GB. Caveats: one run, in the daytime,
+so extraction and the rewrite window are not a night's; the 03:00 scheduled run is
+still to be watched. The first `/buses` after the containers restarted took 5.4 s
+(cold caches, 23k vehicles).
 
 **Deliberate changes to the nightly that this involved:**
 
