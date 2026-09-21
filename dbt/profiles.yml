@@ -22,6 +22,11 @@ wraith_bus_ingestor:
       # serving 504s. A slower rebuild is fine, a website that falls over is not.
       threads: 3
       settings:
+        # HISTORY, kept for the reasoning: everything below about line_stops and
+        # int_line_stops_* describes models ADR-0008 deleted (routes now come from
+        # the GTFS timetable). Today the largest consumer is
+        # int_pings_segmented_to_journeys; the 6 GB limit was set for the
+        # cluster and has not been re-tuned since it went.
         # Cut to 3 GB on 2026-09-12 after two host-level OOM events during
         # int_pings_segmented_to_journeys. Raised to 6 GB again on 2026-09-13
         # once a 16 GB swapfile was added: with swap as a backstop,

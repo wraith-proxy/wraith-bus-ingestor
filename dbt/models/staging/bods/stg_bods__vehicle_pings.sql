@@ -126,8 +126,8 @@ derived as (
         -- The feed's own DirectionRef, normalised, or NULL when we do not have
         -- one. Deliberately NOT coalesced to '*' here: nearly the whole
         -- training set predates 2026-09-12 and would collapse into a single
-        -- direction bucket, and line_stops would then interleave the
-        -- outbound and inbound stop orders into one meaningless sequence.
+        -- direction bucket, and outbound and inbound journeys would be
+        -- fitted as one.
         -- int_journeys_shaped_and_directed infers a direction per journey
         -- instead, and only eta_models ever uses '*', as the name of its
         -- fallback grain.

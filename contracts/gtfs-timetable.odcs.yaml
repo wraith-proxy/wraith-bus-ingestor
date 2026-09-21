@@ -1,0 +1,229 @@
+# Open Data Contract Standard v3.2.0
+# https://bitol-io.github.io/open-data-contract-standard/v3.2.0/
+#
+# PRODUCER: gtfs/fetch.py (weekly refresh; gtfs/patterns.sql and
+#           gtfs/build_alias.py over the BODS all-GB GTFS feed and NaPTAN)
+# CONSUMER: the Flask bus API (backend/gtfs.py), which opens the file read-only
+#           per query and never holds it open
+#
+# Replaces the line_stops and line_localities marts, removed from
+# bus-marts.odcs.yaml in 3.0.0 (ADR-0008). Only the tables and columns the API
+# reads are described; the file also holds the raw gtfs_* tables, which are the
+# producer's private business.
+#
+# Validate with:  contracts/validate.py --gtfs /mnt/archive/wraith-bus-ingestor-gtfs/gtfs.duckdb
+---
+apiVersion: v3.2.0
+kind: DataContract
+id: 3b8e5f2a-7c41-4d96-a0e3-1f6d92b4c805
+name: wraith_bus_ingestor_gtfs_timetable
+version: 1.0.0
+status: draft
+domain: transit
+tenant: ghost-stack
+tags: ['transit', 'bus', 'timetable', 'gtfs', 'duckdb']
+
+description:
+  purpose: >-
+    The published timetable, reshaped for lookups: which stops each line's
+    patterns call at and in what order, which lines serve which locality, and
+    the position of every NaPTAN stop. Lets the API name a bus's route and next
+    stop, and place its origin and destination, without inferring any of it.
+  usage: >-
+    Opened read-only by the API per query (never held); caches are dropped when
+    the file's mtime changes. Not loaded into memory: gtfs_route_stops alone is
+    1.5M rows.
+  limitations: >-
+    BODS GTFS has no TfL (operator TFLO): no London line appears in
+    gtfs_route_patterns, gtfs_route_stops or gtfs_line_localities. naptan_stops
+    does cover London, so stop positions still resolve there. Patterns describe
+    services that have not expired, not only those running today. `pattern_id`
+    is only unique within (operator, line, direction) and is NOT stable across
+    refreshes. Times are scheduled, not observed. Direction is 'outbound' or
+    'inbound' (GTFS direction_id 0/1); clockwise and anticlockwise are not
+    labelled.
+  refresh: >-
+    Weekly (ops/systemd/wraith-gtfs-refresh.timer, Monday 01:00 -- not yet
+    installed). The refresh builds a staging file and renames it over the
+    served one.
+
+servers:
+  - server: gtfs-served
+    type: duckdb
+    database: /mnt/archive/wraith-bus-ingestor-gtfs/gtfs.duckdb
+    schema: main
+    environment: prod
+    description: >-
+      Bind-mounted read-only into the API container at /gtfs (a directory mount,
+      so the rename that publishes a refresh is seen without a restart).
+
+schema:
+  # ---------------------------------------------------------------------------
+  - id: gtfs_naptan_stops_obj
+    name: naptan_stops
+    physicalName: naptan_stops
+    logicalType: object
+    physicalType: table
+    businessName: NaPTAN stops
+    description: >-
+      Every NaPTAN stop, national, including London. Only the columns the API
+      reads are declared. Latitude and longitude are VARCHAR, as NaPTAN
+      publishes them; the API casts.
+    dataGranularityDescription: One row per ATCOCode.
+    quality:
+      - id: naptan_stops_has_rows
+        metric: rowCount
+        mustBeGreaterThan: 100000
+        dimension: completeness
+        severity: error
+      - id: naptan_stops_grain_unique
+        metric: duplicateValues
+        mustBe: 0
+        dimension: uniqueness
+        severity: error
+        arguments:
+          properties: ['ATCOCode']
+    properties:
+      - {id: np_atco, name: ATCOCode, logicalType: string, physicalType: VARCHAR, required: true, primaryKey: true, primaryKeyPosition: 1}
+      - {id: np_name, name: CommonName, logicalType: string, physicalType: VARCHAR}
+      - {id: np_locality, name: LocalityName, logicalType: string, physicalType: VARCHAR}
+      - {id: np_lat, name: Latitude, logicalType: string, physicalType: VARCHAR}
+      - {id: np_lon, name: Longitude, logicalType: string, physicalType: VARCHAR}
+      - {id: np_status, name: Status, logicalType: string, physicalType: VARCHAR, description: "'active', 'inactive' or 'pending'."}
+
+  # ---------------------------------------------------------------------------
+  - id: gtfs_route_patterns_obj
+    name: gtfs_route_patterns
+    physicalName: gtfs_route_patterns
+    logicalType: object
+    physicalType: table
+    businessName: Route patterns
+    description: >-
+      Each distinct stop sequence a line runs, with the share of its trips that
+      run it. A bus is pinned to a pattern by (operator, line, first_atco,
+      last_atco); several can match, and the API breaks the tie (ADR-0008 (h)).
+    dataGranularityDescription: One row per (operator, line, direction, pattern_id).
+    quality:
+      - id: gtfs_route_patterns_has_rows
+        metric: rowCount
+        mustBeGreaterThan: 10000
+        dimension: completeness
+        severity: error
+      - id: gtfs_route_patterns_grain_unique
+        metric: duplicateValues
+        mustBe: 0
+        dimension: uniqueness
+        severity: error
+        arguments:
+          properties: ['operator', 'line', 'direction', 'pattern_id']
+    properties:
+      - {id: gp_operator, name: operator, logicalType: string, physicalType: VARCHAR, required: true, primaryKey: true, primaryKeyPosition: 1, description: Agency NOC.}
+      - {id: gp_line, name: line, logicalType: string, physicalType: VARCHAR, required: true, primaryKey: true, primaryKeyPosition: 2, description: GTFS route_short_name.}
+      - {id: gp_direction, name: direction, logicalType: string, physicalType: VARCHAR, required: true, primaryKey: true, primaryKeyPosition: 3}
+      - {id: gp_pattern, name: pattern_id, logicalType: integer, physicalType: BIGINT, required: true, primaryKey: true, primaryKeyPosition: 4}
+      - {id: gp_primary, name: is_primary, logicalType: boolean, physicalType: BOOLEAN, description: The most-run pattern of its (operator, line, direction).}
+      - {id: gp_trips, name: n_trips, logicalType: integer, physicalType: BIGINT}
+      - {id: gp_stops, name: n_stops, logicalType: integer, physicalType: INTEGER}
+      - {id: gp_first, name: first_atco, logicalType: string, physicalType: VARCHAR, required: true}
+      - {id: gp_last, name: last_atco, logicalType: string, physicalType: VARCHAR, required: true}
+      - {id: gp_circular, name: is_circular, logicalType: boolean, physicalType: BOOLEAN}
+      - {id: gp_share, name: trip_share, logicalType: number, physicalType: DOUBLE, description: "Fraction of the direction's trips that run this pattern; the tiebreak prior."}
+
+  # ---------------------------------------------------------------------------
+  - id: gtfs_route_stops_obj
+    name: gtfs_route_stops
+    physicalName: gtfs_route_stops
+    logicalType: object
+    physicalType: table
+    businessName: Stops of each pattern
+    description: The ordered stops of every pattern, with scheduled seconds from its first stop.
+    dataGranularityDescription: One row per (operator, line, direction, pattern_id, seq).
+    quality:
+      - id: gtfs_route_stops_has_rows
+        metric: rowCount
+        mustBeGreaterThan: 1000000
+        dimension: completeness
+        severity: error
+      - id: gtfs_route_stops_grain_unique
+        metric: duplicateValues
+        mustBe: 0
+        dimension: uniqueness
+        severity: error
+        arguments:
+          properties: ['operator', 'line', 'direction', 'pattern_id', 'seq']
+    properties:
+      - {id: gs_operator, name: operator, logicalType: string, physicalType: VARCHAR, required: true, primaryKey: true, primaryKeyPosition: 1}
+      - {id: gs_line, name: line, logicalType: string, physicalType: VARCHAR, required: true, primaryKey: true, primaryKeyPosition: 2}
+      - {id: gs_direction, name: direction, logicalType: string, physicalType: VARCHAR, required: true, primaryKey: true, primaryKeyPosition: 3}
+      - {id: gs_pattern, name: pattern_id, logicalType: integer, physicalType: BIGINT, required: true, primaryKey: true, primaryKeyPosition: 4}
+      - {id: gs_seq, name: seq, logicalType: integer, physicalType: INTEGER, required: true, primaryKey: true, primaryKeyPosition: 5}
+      - {id: gs_atco, name: atco_code, logicalType: string, physicalType: VARCHAR, required: true}
+      - {id: gs_name, name: stop_name, logicalType: string, physicalType: VARCHAR}
+      - {id: gs_locality, name: locality, logicalType: string, physicalType: VARCHAR}
+      - {id: gs_lat, name: lat, logicalType: number, physicalType: DOUBLE, required: true}
+      - {id: gs_lon, name: lon, logicalType: number, physicalType: DOUBLE, required: true}
+      - {id: gs_secs, name: sched_secs_from_origin, logicalType: number, physicalType: DOUBLE, description: Scheduled, not observed. Anchored on the first stop of the pattern.}
+
+  # ---------------------------------------------------------------------------
+  - id: gtfs_line_alias_obj
+    name: gtfs_line_alias
+    physicalName: gtfs_line_alias
+    logicalType: object
+    physicalType: table
+    businessName: Reviewed line aliases
+    description: >-
+      Live line labels the timetable spells differently. Learned rows are applied
+      only if hand-accepted in gtfs/alias_review.csv; rule rows (the NCTR 'NT'
+      prefix) are generated. An alias never shadows a real match.
+    dataGranularityDescription: One row per (live_operator, live_line).
+    quality:
+      - id: gtfs_line_alias_has_rows
+        metric: rowCount
+        mustBeGreaterThan: 50
+        dimension: completeness
+        severity: error
+      - id: gtfs_line_alias_grain_unique
+        metric: duplicateValues
+        mustBe: 0
+        dimension: uniqueness
+        severity: error
+        arguments:
+          properties: ['live_operator', 'live_line']
+    properties:
+      - {id: ga_live_op, name: live_operator, logicalType: string, physicalType: VARCHAR, required: true, primaryKey: true, primaryKeyPosition: 1}
+      - {id: ga_live_line, name: live_line, logicalType: string, physicalType: VARCHAR, required: true, primaryKey: true, primaryKeyPosition: 2}
+      - {id: ga_op, name: gtfs_operator, logicalType: string, physicalType: VARCHAR, required: true}
+      - {id: ga_line, name: gtfs_line, logicalType: string, physicalType: VARCHAR, required: true}
+      - {id: ga_buses, name: n_buses, logicalType: integer, physicalType: INTEGER}
+      - {id: ga_share, name: share, logicalType: number, physicalType: DOUBLE}
+      - {id: ga_source, name: source, logicalType: string, physicalType: VARCHAR, required: true, description: "'learned' or 'rule'."}
+
+  # ---------------------------------------------------------------------------
+  - id: gtfs_line_localities_obj
+    name: gtfs_line_localities
+    physicalName: gtfs_line_localities
+    logicalType: object
+    physicalType: table
+    businessName: Lines serving a locality
+    description: >-
+      Which lines the timetable says call in which localities: the join behind
+      place search. Published, not observed. Empty for London.
+    dataGranularityDescription: One row per (line, locality_norm).
+    quality:
+      - id: gtfs_line_localities_has_rows
+        metric: rowCount
+        mustBeGreaterThan: 50000
+        dimension: completeness
+        severity: error
+      - id: gtfs_line_localities_grain_unique
+        metric: duplicateValues
+        mustBe: 0
+        dimension: uniqueness
+        severity: error
+        arguments:
+          properties: ['line', 'locality_norm']
+    properties:
+      - {id: gl_line, name: line, logicalType: string, physicalType: VARCHAR, required: true, primaryKey: true, primaryKeyPosition: 1}
+      - {id: gl_norm, name: locality_norm, logicalType: string, physicalType: VARCHAR, required: true, primaryKey: true, primaryKeyPosition: 2, description: Same normalisation as the marts localities.locality_norm.}
+      - {id: gl_locality, name: locality, logicalType: string, physicalType: VARCHAR}
+      - {id: gl_stops, name: n_stops, logicalType: integer, physicalType: BIGINT}

@@ -9,6 +9,7 @@ every quality rule must hold.
     contracts/validate.py                      # both contracts + the ontology
     contracts/validate.py --contract contracts/bus-marts.odcs.yaml
     contracts/validate.py --marts /tmp/candidate.duckdb   # gate a rebuild
+    contracts/validate.py --gtfs /tmp/candidate_gtfs.duckdb   # gate a GTFS refresh
 
 Exit code 0 if every obligation holds, 1 otherwise, so it can gate a build.
 Rules whose severity is 'info', and `text` rules, are reported but never fail.
@@ -26,6 +27,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 
 DEFAULT_MARTS = os.path.join(ROOT, "dbt", "wraith_bus_ingestor.duckdb")
+DEFAULT_GTFS = os.environ.get("GTFS_DB_PATH", "/mnt/archive/wraith-bus-ingestor-gtfs/gtfs.duckdb")
 DEFAULT_QUESTDB = os.environ.get("QUESTDB_HTTP", "http://localhost:9001")
 
 # Physical types that mean the same thing to the engines we target.
@@ -234,7 +236,10 @@ def validate_contract(path, engines, res):
     contract = yaml.safe_load(open(path))
     name = contract.get("name", os.path.basename(path))
     server = (contract.get("servers") or [{}])[0]
-    engine = engines.get(server.get("type")) or engines.get("duckdb")
+    # A contract served from its own file is named by `server`; the GTFS one
+    # must never fall back to the marts engine and fail for the wrong reason.
+    engine = (engines.get(server.get("server")) or engines.get(server.get("type"))
+              or engines.get("duckdb"))
 
     print(f"\n\033[1m{name} v{contract.get('version')} "
           f"({contract.get('status')}) -> {engine.name}\033[0m")
@@ -302,10 +307,14 @@ def validate_ontology(path, contracts, res):
           f"({onto.get('status')})\033[0m")
 
     by_alias = {}
+    unvalidated = set()
     for entry in onto.get("contracts", []):
         c = contracts.get(os.path.basename(entry["path"]))
         if c is None:
-            res.fail("ontology", f"references contract {entry['path']} which was not validated")
+            # Not validated in this run (deselected, or its database is
+            # unavailable): its bindings cannot be judged, which is not drift.
+            res.skip(f"ontology bindings to {entry['alias']}", "contract not validated this run")
+            unvalidated.add(entry["alias"])
             continue
         by_alias[entry["alias"]] = {
             o["name"]: {p["name"]: p for p in o.get("properties", [])}
@@ -329,6 +338,8 @@ def validate_ontology(path, contracts, res):
                 if not prop.get("computed"):
                     res.fail(ref, "no binding and not marked computed")
                     broken += 1
+                continue
+            if binding["contract"] in unvalidated:
                 continue
             schemas = by_alias.get(binding["contract"])
             if schemas is None:
@@ -393,6 +404,7 @@ def main():
                     help="ODCS contract to validate (repeatable; default: both)")
     ap.add_argument("--ontology", default=os.path.join(HERE, "wraith-bus-ingestor.ontology.yaml"))
     ap.add_argument("--marts", default=DEFAULT_MARTS, help="path to the DuckDB marts file")
+    ap.add_argument("--gtfs", default=DEFAULT_GTFS, help="path to the served GTFS DuckDB file")
     ap.add_argument("--questdb", default=DEFAULT_QUESTDB)
     ap.add_argument("--questdb-window", type=int, default=5, metavar="MINUTES",
                     help="validate QuestDB over this recent window (default 5)")
@@ -400,13 +412,18 @@ def main():
     args = ap.parse_args()
 
     paths = args.contract or [os.path.join(HERE, f) for f in
-                              ("bus-positions.odcs.yaml", "bus-marts.odcs.yaml")]
+                              ("bus-positions.odcs.yaml", "bus-marts.odcs.yaml",
+                               "gtfs-timetable.odcs.yaml")]
 
     engines, res = {}, Result()
     try:
         engines["duckdb"] = DuckDBEngine(args.marts)
     except Exception as exc:
         print(f"\033[31mmarts unavailable:\033[0m {exc}")
+    try:
+        engines["gtfs-served"] = DuckDBEngine(args.gtfs)
+    except Exception as exc:
+        print(f"\033[33mgtfs unavailable:\033[0m {str(exc).splitlines()[0][:120]}")
     try:
         engines["custom"] = QuestDBEngine(args.questdb, args.questdb_window)
         engines["custom"].columns("bus_positions")
@@ -416,8 +433,13 @@ def main():
 
     contracts = {}
     for path in paths:
-        server_type = (yaml.safe_load(open(path)).get("servers") or [{}])[0].get("type")
-        if server_type not in engines and "duckdb" not in engines:
+        server = (yaml.safe_load(open(path)).get("servers") or [{}])[0]
+        server_type = server.get("type")
+        if server.get("server") == "gtfs-served" and "gtfs-served" not in engines:
+            print(f"\n\033[33mskipping {os.path.basename(path)}: GTFS database unavailable\033[0m")
+            continue
+        if (server_type not in engines and "duckdb" not in engines
+                and server.get("server") not in engines):
             print(f"\n\033[33mskipping {os.path.basename(path)}: no engine available\033[0m")
             continue
         if server_type == "custom" and "custom" not in engines:

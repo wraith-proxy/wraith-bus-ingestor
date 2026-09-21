@@ -51,8 +51,8 @@ final as (
         locality,
         {{ locality_norm('locality') }} as locality_norm,
         -- Integer grid cell of 0.002 deg: ~222 m north-south, ~131 m east-west
-        -- at UK latitudes. Precomputed here so int_pings_matched_to_stops can
-        -- equi-join on it instead of cross joining 20M pings against 344k stops.
+        -- at UK latitudes. Precomputed for int_pings_matched_to_stops (removed,
+        -- ADR-0008; the cells are now unused), which could equi-join on it instead of cross joining 20M pings against 344k stops.
         -- Integers, not round(lat,3), so that "the cell one to the east" is
         -- exactly cell+1 and never a float that misses the join by 1e-15.
         cast(floor(lat * 500) as integer) as lat_cell,

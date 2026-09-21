@@ -15,7 +15,7 @@ apiVersion: v3.2.0
 kind: DataContract
 id: 9f2c4b10-5d6e-4a33-b0c1-6e8a5d3f1c47
 name: wraith_bus_ingestor_marts
-version: 2.0.0
+version: 3.0.0
 status: draft
 domain: transit
 tenant: ghost-stack
@@ -24,26 +24,27 @@ tags: ['transit', 'bus', 'realtime', 'duckdb']
 description:
   purpose: >-
     Serving tables for live UK bus punctuality. They carry the fitted travel-time
-    model, the stop sequence of each line, the locality gazetteer that powers
-    place search, and observed punctuality by line. Together they let a stateless
+    model, the locality gazetteer that powers place search, and observed
+    punctuality by line. Stop sequences and line-to-locality lookups are NOT
+    here: since 3.0.0 they come from the published GTFS timetable (see
+    gtfs-timetable.odcs.yaml, ADR-0008). Together they let a stateless
     API turn a raw GPS ping into a red/amber/green answer.
   usage: >-
     Opened read-only by the API, loaded fully into memory at start-up and
     refreshed when the file mtime changes. Every table is small enough to hold in
     memory; none is intended for row-by-row lookup over a network.
   limitations: >-
-    Derived from observed vehicle movements, not from a published timetable: the
-    stop sequences and travel times are what buses actually did, not what they
-    were scheduled to do. `line` is a published service number, NOT a unique
-    route -- number 88 is several unrelated routes in different towns, merged
-    here. Day classification does not know about bank holidays, which are filed
+    Derived from observed vehicle movements: the travel-time models are what
+    buses actually did, not what they were scheduled to do. `line` is a
+    published service number, NOT a unique route -- number 88 is several
+    unrelated routes in different towns, merged here. Day classification does not know about bank holidays, which are filed
     as 'weekday'. Fitted on a non-contiguous date range; a feed outage on
     2026-08-28..30 removed one weekend from the sample.
   refresh: >-
     Marts refresh nightly at 03:00 via a host systemd timer (dbt/build.sh).
-    The journey/stop-match
-    layer (int_pings_segmented_to_journeys, int_pings_matched_to_stops) is
-    incremental, reprocessing only the trailing ~2 days each run; everything
+    The journey layer
+    (int_pings_segmented_to_journeys) is incremental, reprocessing only the
+    trailing ~2 days each run; everything
     downstream, including every mart in this contract, is still fully rebuilt
     each run from that incrementally-maintained base.
 
@@ -259,153 +260,6 @@ schema:
         description: 3600 / slope. Carried for sanity checking and for humans reading the table.
 
   # ---------------------------------------------------------------------------
-  - id: mart_line_stops_obj
-    name: line_stops
-    physicalName: line_stops
-    logicalType: object
-    physicalType: table
-    businessName: Line stop sequence
-    description: >-
-      The stops each line is observed to call at, in order, with the median time
-      from the start of the journey to each one. Answers "what was the last stop
-      and what is the next one", and is the only way to rate a circular route.
-    dataGranularityDescription: One row per (operator, line, direction, day_type, atco_code).
-    quality:
-      - id: line_stops_has_rows
-        metric: rowCount
-        mustBeGreaterThan: 10000
-        dimension: completeness
-        severity: error
-      - id: line_stops_grain_unique
-        metric: duplicateValues
-        mustBe: 0
-        dimension: uniqueness
-        severity: error
-        arguments:
-          properties: ['operator', 'line', 'direction', 'day_type', 'atco_code']
-      - id: line_stops_day_agnostic_rows_exist
-        type: sql
-        dimension: completeness
-        severity: error
-        description: The consumer falls back to '*' whenever a day-specific sequence is missing.
-        query: SELECT COUNT(*) FROM {object} WHERE day_type = '*'
-        mustBeGreaterThan: 0
-      - id: line_stops_operator_agnostic_rows_exist
-        type: sql
-        dimension: completeness
-        severity: error
-        description: >-
-          The consumer falls back to operator = '*' whenever a bus has no
-          operator, or an operator-specific sequence is missing. Every
-          pre-2026-09-12 observation can only ever land here.
-        query: SELECT COUNT(*) FROM {object} WHERE operator = '*'
-        mustBeGreaterThan: 0
-    properties:
-      - id: stops_operator
-        name: operator
-        businessName: Operator
-        logicalType: string
-        physicalType: VARCHAR
-        required: true
-        primaryKey: true
-        primaryKeyPosition: 1
-        description: >-
-          National Operator Code, or '*' for the sequence pooled across every
-          operator (the original, merged behaviour, kept as a fallback grain).
-          Added 2026-09-12; null in the source feed before that date.
-        examples: ['BEVC', 'ANEA', '*']
-      - id: stops_line
-        name: line
-        logicalType: string
-        physicalType: VARCHAR
-        required: true
-        primaryKey: true
-        primaryKeyPosition: 2
-      - id: stops_direction
-        name: direction
-        logicalType: string
-        physicalType: VARCHAR
-        required: true
-        primaryKey: true
-        primaryKeyPosition: 3
-      - id: stops_day_type
-        name: day_type
-        logicalType: string
-        physicalType: VARCHAR
-        required: true
-        primaryKey: true
-        primaryKeyPosition: 4
-        enum:
-          - value: weekday
-          - value: sat
-          - value: sun
-          - value: '*'
-      - id: stops_atco
-        name: atco_code
-        businessName: NaPTAN ATCO code
-        logicalType: string
-        physicalType: VARCHAR
-        required: true
-        primaryKey: true
-        primaryKeyPosition: 5
-        description: National stop identifier. Joins to NaPTAN and to the OriginRef/DestinationRef the live feed publishes.
-        examples: ['1800STIN0P1', '0600MA6154']
-      - id: stops_name
-        name: stop_name
-        logicalType: string
-        physicalType: VARCHAR
-        description: Stop common name, underscores already replaced with spaces.
-      - id: stops_locality
-        name: locality
-        logicalType: string
-        physicalType: VARCHAR
-      - id: stops_lat
-        name: lat
-        logicalType: number
-        physicalType: DOUBLE
-        required: true
-        quality:
-          - id: stops_lat_in_gb
-            type: sql
-            dimension: accuracy
-            query: SELECT COUNT(*) FROM {object} WHERE {property} NOT BETWEEN 49.8 AND 61.0
-            mustBe: 0
-      - id: stops_lon
-        name: lon
-        logicalType: number
-        physicalType: DOUBLE
-        required: true
-        quality:
-          - id: stops_lon_in_gb
-            type: sql
-            dimension: accuracy
-            query: SELECT COUNT(*) FROM {object} WHERE {property} NOT BETWEEN -8.7 AND 2.0
-            mustBe: 0
-      - id: stops_seq
-        name: seq
-        businessName: Position in sequence
-        logicalType: integer
-        physicalType: INTEGER
-        required: true
-        description: Rank of this stop within the line and direction, ordered by median time from origin. Dense from 1.
-      - id: stops_median_secs
-        name: median_secs_from_origin
-        businessName: Median seconds from journey start
-        logicalType: number
-        physicalType: DOUBLE
-        semanticType: measure
-        description: >-
-          Median seconds from the journey's first ping to this stop. Anchored on
-          the start of tracking, not on the scheduled departure, so only
-          DIFFERENCES between two stops are meaningful. Consumers must not treat
-          it as a scheduled time.
-      - id: stops_n_obs
-        name: n_obs
-        logicalType: integer
-        physicalType: BIGINT
-        description: Journeys observed calling here. Stops seen fewer than 5 times are dropped.
-
-  # ---------------------------------------------------------------------------
   - id: mart_localities_obj
     name: localities
     physicalName: localities
@@ -470,66 +324,6 @@ schema:
         physicalType: BIGINT
         semanticType: measure
         description: Stops in this locality. Shown beside each search suggestion to rank them.
-
-  # ---------------------------------------------------------------------------
-  - id: mart_line_localities_obj
-    name: line_localities
-    physicalName: line_localities
-    logicalType: object
-    physicalType: table
-    businessName: Lines serving a locality
-    description: >-
-      Which lines were actually observed passing through which localities, from
-      matched pings rather than from any published route description. This is the
-      join that answers "show me the buses that go through Wilmslow".
-    dataGranularityDescription: One row per (line, locality_norm).
-    quality:
-      - id: line_localities_has_rows
-        metric: rowCount
-        mustBeGreaterThan: 5000
-        dimension: completeness
-        severity: error
-      - id: line_localities_grain_unique
-        metric: duplicateValues
-        mustBe: 0
-        dimension: uniqueness
-        severity: error
-        arguments:
-          properties: ['line', 'locality_norm']
-    properties:
-      - id: ll_line
-        name: line
-        logicalType: string
-        physicalType: VARCHAR
-        required: true
-        primaryKey: true
-        primaryKeyPosition: 1
-      - id: ll_norm
-        name: locality_norm
-        logicalType: string
-        physicalType: VARCHAR
-        required: true
-        primaryKey: true
-        primaryKeyPosition: 2
-        description: Foreign key to localities.locality_norm.
-      - id: ll_display
-        name: locality
-        logicalType: string
-        physicalType: VARCHAR
-      - id: ll_n_pings
-        name: n_pings
-        logicalType: integer
-        physicalType: BIGINT
-        semanticType: measure
-        description: Matched pings. At least 20 are required, so one stray GPS fix cannot claim a town.
-      - id: ll_first_seen
-        name: first_seen
-        logicalType: date
-        physicalType: TIMESTAMP WITH TIME ZONE
-      - id: ll_last_seen
-        name: last_seen
-        logicalType: date
-        physicalType: TIMESTAMP WITH TIME ZONE
 
   # ---------------------------------------------------------------------------
   - id: mart_line_punctuality_obj

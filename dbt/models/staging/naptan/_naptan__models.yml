@@ -45,6 +45,6 @@ models:
           backend/app.py normalises the query the same way.
         tests: [not_null]
       - name: lat_cell
-        description: Integer grid cell index (0.002 deg) used by int_pings_matched_to_stops to turn the nearest-stop search into a hash join. Meaningless on its own.
+        description: Integer grid cell index (0.002 deg) formerly used by int_pings_matched_to_stops (removed, ADR-0008) to make the nearest-stop search a hash join; now unused. Meaningless on its own.
       - name: lon_cell
         description: Longitude half of the same grid cell index.

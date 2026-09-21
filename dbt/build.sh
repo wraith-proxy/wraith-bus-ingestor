@@ -75,7 +75,7 @@ SERVED="wraith_bus_ingestor.duckdb"
 BUILD="wraith_bus_ingestor_build.duckdb"
 STAGED="wraith_bus_ingestor_staged.duckdb"
 
-MARTS=(eta_models localities line_localities line_stops line_punctuality)
+MARTS=(eta_models localities line_punctuality)
 
 # Low priority for everything heavy. `nice` is always present; `ionice` is not
 # (it needs util-linux and a supporting scheduler), so fall back gracefully.
@@ -181,58 +181,12 @@ if [[ "$FULL_REFRESH" == "1" ]]; then
 fi
 
 echo "==> dbt run   (into $BUILD, at low priority)"
-# Split in two so the memory-sensitive line_stops grain cluster never runs
-# concurrently with anything else, without touching the project's load-
-# bearing threads:3 default (see profiles.yml) for every other model.
-# int_first_visit_per_journey+ is exactly the five models this cluster
-# comprises (confirmed: nothing else in the project refs either of them),
-# so --threads 1 here costs nothing to the rest of the build.
-"${DBT[@]}" run --profiles-dir . "${RUN_FLAGS[@]}" --exclude int_first_visit_per_journey+
-
-# Drop $BUILD's AND data/*.parquet's page cache before the second dbt run
-# starts. Root cause of a 2026-09-18 OOM-kill, confirmed via dbt.log
-# timestamps against journalctl (the kill landed 4s into the very first
-# line_stops batch model of the second run): cgroup v2 (wraith-bus-
-# build.service's MemoryMax) counts page cache against the same ceiling as
-# a process's own memory. That cgroup's MemorySwapMax=0 means there's no
-# swap escape valve if the next process's own fresh allocations land on
-# top of still-warm cache before the kernel reclaims it.
-#
-# Dropping $BUILD alone (the first fix attempt, same day) was not enough
-# on a real run: a second OOM-kill at effectively the same spot, systemd-
-# reported peak right at the 9000M ceiling, traced to a second source of
-# fresh cache this fix didn't touch -- a real (non-SKIP_EXTRACT) run's
-# extract.py had just written ~1.9GB of data/*.parquet moments earlier,
-# every byte freshly cached under this same cgroup. Safe to drop here:
-# every model int_first_visit_per_journey+ (the second run's --select)
-# depends on reads only already-materialized tables from the run above,
-# confirmed by grepping every model under it for ref()/source() calls --
-# none touch stg_bods__vehicle_pings, stg_naptan__stops, or a raw source,
-# so nothing downstream re-reads these files this build.
-#
-# `sync` flushes dirty pages system-wide first (POSIX_FADV_DONTNEED only
-# drops clean ones); the fadvise calls then un-charge these files
-# specifically from cache. Needs no root -- fadvise on a file you own is a
-# normal per-fd hint, not a privileged operation, and harmless if this
-# ever runs outside the cgroup (a no-op cache drop).
-sync
-"$PY" -c "
-import glob
-import os
-
-def drop(path):
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
-    finally:
-        os.close(fd)
-
-drop('$BUILD')
-for path in glob.glob('data/*.parquet'):
-    drop(path)
-"
-
-"${DBT[@]}" run --profiles-dir . "${RUN_FLAGS[@]}" --threads 1 --select int_first_visit_per_journey+
+# One run. It used to be two -- everything but the line_stops cluster, a page-
+# cache drop, then the cluster alone at --threads 1 -- because that cluster
+# (84 batch models) was the memory hazard. ADR-0008 deleted it: routes now come
+# from the published GTFS timetable, so nothing left here is memory-sensitive
+# enough to need serialising.
+"${DBT[@]}" run --profiles-dir . "${RUN_FLAGS[@]}"
 
 # 'set -e' would exit here on a failed test, which is right for the publish
 # gate but wrong for the metrics: a failing test is the single most important
@@ -252,7 +206,7 @@ if [[ "$test_rc" != "0" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Publish. Only the five marts are copied: the API reads nothing else, and the
+# Publish. Only the three marts are copied: the API reads nothing else, and the
 # materialised intermediates are ~95% of the scratch file's size. Copying into
 # a fresh database rather than deleting from a copy of the old one is what
 # actually reclaims the space -- DuckDB does not shrink a file on DROP.
@@ -282,15 +236,18 @@ PYEOF
 # so this subshell steps back to the repo root, where pyproject.toml lives,
 # rather than fighting dbt's own venv or `uv run`'s cwd handling from inside
 # dbt/.
-# By default it checks BOTH contracts (bus-positions against live QuestDB,
-# bus-marts against $STAGED) plus the ontology cross-check -- exactly the
+# It checks the two contracts this build is responsible for (bus-positions
+# against live QuestDB, bus-marts against $STAGED) plus the ontology cross-check
+# (bindings to the GTFS contract are skipped: that file has its own weekly
+# refresh and must never be able to block a marts publish) -- exactly the
 # "gate a rebuild" mode its own docstring describes. QuestDB being briefly
 # unreachable degrades to a skip, not a failure, so this stays safe to run
 # even with SKIP_EXTRACT=1 and no live feed. `set -e` means a real failure
 # here stops the script before the mv below -- the previous good marts keep
 # serving rather than being replaced with something that broke a contract.
 echo "==> validating contracts against the candidate marts"
-(cd .. && "$UV" run python3 contracts/validate.py --marts "dbt/$STAGED")
+(cd .. && "$UV" run python3 contracts/validate.py --marts "dbt/$STAGED" \
+    --contract contracts/bus-positions.odcs.yaml --contract contracts/bus-marts.odcs.yaml)
 
 # Atomic within a filesystem: readers never see a partial file. The old .wal
 # must go with the old file, or DuckDB will try to replay it against the new one.
