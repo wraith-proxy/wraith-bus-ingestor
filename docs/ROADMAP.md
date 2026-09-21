@@ -546,7 +546,7 @@ regression still earns its cost once the timetable rung is live is a
 after this phase has shipped and run for a while, not a decision made in
 advance of that data.
 
-## 1.14.0 -- a fast, deterministic nightly build (deployed 2026-09-20, not yet seen in a real 03:00 run)
+## 1.14.0 -- a fast, deterministic nightly build (deployed 2026-09-20; the first real 03:00 run, 2026-09-21, succeeded in 22 min 37 s)
 
 The owner's goal is a 03:00 nightly that **succeeds and is fast**. The measured
 profile ([ADR-0009](adr/0009-fast-nightly-build.md)) showed the nightly took about
@@ -575,11 +575,16 @@ cold run in the real service was 2,626 s), the cold `int_pings_matched_to_stops`
 passed at `memory_limit` 6GB (860 s), and the **incremental segmentation took 60.8 s**
 where the four logged previous nightlies took 2,219 to 3,154 s; the whole incremental
 build to publish, tests and contract gate included, took 9 min 52 s. With the extract
-(9 min 40 s) that points to a nightly of about 20 minutes, a sum of two separate
-measurements that has not been seen as one service run.
+(9 min 40 s) that pointed to a nightly of about 20 minutes.
 
-**Remaining:** the first real 03:00 run (the hand run did not use the unit's hooks);
-deploy the API image so the vehicle-identity fix takes effect; WF-S, the narrower
+**The first real 03:00 run (2026-09-21) confirmed it: 22 min 37 s, success**, after
+five consecutive failed 03:00 runs. In the service the incremental segmentation
+took 140.9 s (2,219 to 3,154 s before), `int_pings_matched_to_stops` 158 s, the
+first dbt run 5 min 26 s in all, and all 887 tests passed with none warned. About
+11 of the 22.6 minutes are now the extract, so any further speed-up is there rather
+than in dbt. Details: [ADR-0009](adr/0009-fast-nightly-build.md).
+
+**Remaining:** WF-S, the narrower
 sort payload and fewer window passes (much of the segmentation cost is disk-bound:
 iowait 46 to 76% on the DRAM-less root SSD), is now a smaller prize and should only
 be picked up if the nightly is still too slow; ADR-0008's Phase 1 (the API rewire
@@ -588,7 +593,7 @@ change. Also open: why `eta_models` varies from 6 s to 433 s across runs.
 
 ## Known issues -- raised, not yet actioned
 
-**The live map hid about 3% of vehicles (fixed in code 2026-09-20, not deployed).**
+**The live map hid about 3% of vehicles (fixed 2026-09-20, deployed 2026-09-21).**
 `backend/app.py` selected the newest row per vehicle with `LATEST ON timestamp
 PARTITION BY bus_id`, but operators mint their own vehicle references, so several
 unrelated buses share one `bus_id`: 474 of 16,580 vehicles (2.9%) were collapsed
@@ -597,8 +602,12 @@ into a namesake on the live table that evening, and the last-known-ETA cache and
 at the same query cost (about 0.1 s), keys the cache by `(operator, bus_id)`, and
 `/bus/<bus_id>` accepts an optional `?operator=` while still working for clients
 that send only `bus_id` (it returns the freshest namesake and lists the others in
-`same_bus_id`). The running container has not been rebuilt (no deploy automation,
-ADR-0004), and the Android app, which lives in its own repository, should start
+`same_bus_id`). The container was rebuilt and recreated by hand on 2026-09-21 04:43
+UTC (no deploy automation, ADR-0004) and checked against live data: 453 of 16,306
+live vehicles shared a `bus_id` with another operator's, and the map endpoint now
+returns 62 such ids as separate vehicles where the old code returned none. The
+Android app, which lives in its own repository, should be unaffected (the route is
+backward compatible; the app itself was not run against it) and should start
 sending `operator`.
 
 **Open decision: the ingest bounding box.** It was widened from the
