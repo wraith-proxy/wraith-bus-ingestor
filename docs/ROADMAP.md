@@ -8,6 +8,24 @@ tags `cz` cuts on every merge to `main` are an independent sequence --
 `.gitea/workflows/release.yml` bumps them per merge, so the two numbers
 drift apart by design and neither is wrong.
 
+## Where to pick up (as of 2026-09-21)
+
+Everything through 1.12.0 and 1.14.0 is delivered and on `main`; the API, the marts
+and the GTFS timetable are live. In order:
+
+1. **Watch two unproven first runs.** The first *scheduled* 03:00 nightly on the
+   reduced build (2026-09-22; a forced run of the real unit on 2026-09-21 took 15 m
+   33 s), and the first end-to-end GTFS refresh (timer enabled; Monday 2026-09-28
+   01:00), which also swaps in the reviewed alias table.
+2. **1.13.0, the timetable-backed ETA rung (Phase 2)** is the only planned,
+   not-landed item. It is unblocked.
+3. **Open, unscheduled:** the ingest bounding-box decision; the TfL Unified API
+   ingest for London; why `eta_models` varies from 6 s to 433 s; alerting on the
+   API's `marts_state`; the unexplained host freeze (RAM cleared, PSU and thermal
+   untested); and the 1.12.0 "Not done / unproven" list.
+4. **Not next:** WF-S (1.14.0) is only for a nightly that is still too slow, and it is
+   now 15.5 minutes, about 10.5 of them extraction.
+
 ## 1.0.0 -- single-NAS deployment, data owned
 
 A live, single-NAS deployment. Ingest, storage, transform and API all
@@ -452,7 +470,12 @@ because TfL publishes no aimed arrival.
 
 ## 1.13.0 -- timetable-backed ETA rung (Phase 2)
 
-Planned, not landed. Depends on 1.12.0. Adds a new rung to
+Planned, not landed. Its dependency, 1.12.0, was delivered 2026-09-21, so it is
+unblocked. What 1.12.0 leaves it to build on: `backend/gtfs.py` already pins a bus
+to a timetable pattern by `(operator, line, origin, destination)` with a
+position-based tiebreak (73.8% of non-TfL buses pinned, 13.5% unresolved), and
+`next_stop.aimed_iso` is still `None`. This phase is the finer step: pinning a
+*trip* by aimed departure time, which is the ~49% plateau below. Adds a new rung to
 `backend/app.py`'s `predict()` fallback chain, above the existing
 regression: for the vehicles whose trip can be pinned unambiguously against
 GTFS (operator, line, origin stop, aimed departure time), use the published
@@ -481,7 +504,7 @@ regression still earns its cost once the timetable rung is live is a
 after this phase has shipped and run for a while, not a decision made in
 advance of that data.
 
-## 1.14.0 -- a fast, deterministic nightly build (deployed 2026-09-20; the first real 03:00 run, 2026-09-21, succeeded in 22 min 37 s)
+## 1.14.0 -- a fast, deterministic nightly build (deployed 2026-09-20; 03:00 run 2026-09-21: 22 min 37 s; after ADR-0008 Phase 1, a forced run of the real unit: 15 min 33 s)
 
 The owner's goal is a 03:00 nightly that **succeeds and is fast**. The measured
 profile ([ADR-0009](adr/0009-fast-nightly-build.md)) showed the nightly took about
@@ -518,6 +541,15 @@ took 140.9 s (2,219 to 3,154 s before), `int_pings_matched_to_stops` 158 s, the
 first dbt run 5 min 26 s in all, and all 887 tests passed with none warned. About
 11 of the 22.6 minutes are now the extract, so any further speed-up is there rather
 than in dbt. Details: [ADR-0009](adr/0009-fast-nightly-build.md).
+
+**Since then (2026-09-21):** ADR-0008 Phase 1 deleted `int_pings_matched_to_stops`
+and the `line_stops` cluster, leaving 8 models in one `dbt run` (88 tests). A forced
+run of the real unit, with real extraction, took **15 min 33 s** and succeeded: extract
+about 10.5 min, `dbt run` 117.7 s, `dbt test` 136 s. In the same pass the persistent
+build warehouse was compacted (8.9 GB to 3.5 GB, the orphaned tables gone) and
+`memory_limit` went from 6 GB to 4 GB (same speed; 4.5 GB peak process memory against
+about 11 GB). It is one daytime run, so the first *scheduled* 03:00 on the reduced
+build (2026-09-22) is still to be watched.
 
 **Remaining:** WF-S, the narrower
 sort payload and fewer window passes (much of the segmentation cost is disk-bound:
@@ -598,17 +630,17 @@ peak was 8.7G against 9000M (largest process 7.32GB; Run 1 uncapped: 8.69GB
 RSS): it passed with ~0.3GB spare, and with ollama and immich stopped. 13000M is
 headroom, not a measured need. The trade is real: on a 15.4GB host with
 `MemorySwapMax=0`, a run that actually used it would squeeze QuestDB (up to
-8g), the ingestor and ollama/immich, which the unit does not stop. Not yet
-proven at the new cap: the unit file in the repo is 13000M, but
-`/etc/systemd/system/` must be updated by hand (sudo), and `ops/verify_build.sh`
-refuses to run until they match. Still open: nothing alerts on the API's
-`marts_state`.
+8g), the ingestor and ollama/immich, which the unit does not stop. The unit
+file in the repo and the installed one in `/etc/systemd/system/` are both 13000M now
+(checked 2026-09-21), and the runs since have passed under it. Still open: nothing
+alerts on the API's `marts_state`.
 
 **2026-09-20 (TJP-20090): the "fixed" nightly failed again, and a manual run took
 the host down.** The 03:00 build hit DuckDB's 4GB `memory_limit` in
 `int_pings_matched_to_stops` a day after passing it twice at that limit, so 4GB
-was a coin flip, not a fix; `memory_limit` is now 6GB (see the GOTCHA in
-`docs/operations.md`, unproven until a real run). It looked fine because the API
+was a coin flip, not a fix; `memory_limit` was raised to 6GB (see the GOTCHA in
+`docs/operations.md`); the 2026-09-21 03:00 run then passed, and once the cluster
+that needed the headroom was deleted it was lowered to 4GB, measured (see 1.14.0). It looked fine because the API
 kept serving the previous marts and nothing alerted for 26h: a failed run now
 records itself and alerts within ~10 minutes. Separately, the 32GB host hard-froze
 at ~16:21 on 2026-09-19, mid-run of `ops/verify_build.sh` Run 1 (`last -x`: `crash`,
