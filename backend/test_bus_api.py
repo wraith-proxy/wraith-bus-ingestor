@@ -430,51 +430,33 @@ def test_schedule_staleness_guard():
     assert app.schedule_epoch_s('nonsense', now, 1, 1) is None
 
 
-def _grid_marts():
-    """Marts holding one line with two stops, indexed the way _load_marts does."""
-    marts = dict(app.EMPTY_MARTS)
+def _route_stops():
+    """One route of three stops, the shape gtfs.route_for hands progress_delay."""
     a = {'atco': 'A', 'name': 'Alpha', 'locality': 'Ashton', 'lat': 53.500,
          'lon': -2.200, 'seq': 1, 'secs_from_origin': 300.0}
     m = {'atco': 'M', 'name': 'Mid', 'locality': 'Ashton', 'lat': 53.505,
          'lon': -2.200, 'seq': 2, 'secs_from_origin': 450.0}
     b = {'atco': 'B', 'name': 'Bravo', 'locality': 'Ashton', 'lat': 53.510,
          'lon': -2.200, 'seq': 3, 'secs_from_origin': 600.0}
-    marts['stops'] = {('*', '88', 'outbound', 'weekday'): [a, m, b]}
-    marts['stop_grid'] = {}
-    marts['stop_by_line_atco'] = {}
-    for key, stops in marts['stops'].items():
-        cells = marts['stop_grid'].setdefault(key, {})
-        by_atco = marts['stop_by_line_atco'].setdefault(key, {})
-        for st in stops:
-            by_atco.setdefault(st['atco'], st)
-            cells.setdefault(
-                (round(st['lat'], app.GRID), round(st['lon'], app.GRID)), []).append(st)
-    return marts, a, m, b
+    return [a, m, b], a, m, b
 
 
-def test_nearest_stop_grid():
-    marts, a, _m, _b = _grid_marts()
-    got, km = app.nearest_stop(marts, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)
+def test_nearest_stop():
+    stops, a, _m, _b = _route_stops()
+    got, km = app.nearest_stop(stops, 53.5001, -2.2001)
     assert got is a and km is not None and km < 0.05
     # Beyond the match radius -> no stop rather than a wrong one.
-    got, km = app.nearest_stop(marts, None, '88', 'outbound', 'weekday', 53.9, -2.2)
-    assert got is None and km is None
-    # Unknown direction falls through to the opposite one.
-    got, _km = app.nearest_stop(marts, None, '88', 'inbound', 'weekday', 53.5001, -2.2001)
-    assert got is a
-    # Unknown line, and missing coordinates, are both survivable.
-    assert app.nearest_stop(marts, None, 'NOPE', 'outbound', 'weekday', 53.5, -2.2) == (None, None)
-    assert app.nearest_stop(marts, None, '88', 'outbound', 'weekday', None, None) == (None, None)
-    # A real operator on the bus still resolves through the pooled ('*') row
-    # this fixture only has -- the operator rung misses, and it falls through.
-    got, _km = app.nearest_stop(marts, 'BEVC', '88', 'outbound', 'weekday', 53.5001, -2.2001)
-    assert got is a
+    assert app.nearest_stop(stops, 53.9, -2.2) == (None, None)
+    # No stops, missing coordinates and stops without coordinates are survivable.
+    assert app.nearest_stop([], 53.5, -2.2) == (None, None)
+    assert app.nearest_stop(stops, None, None) == (None, None)
+    assert app.nearest_stop([{'atco': 'X', 'lat': None, 'lon': None}], 53.5, -2.2) == (None, None)
 
 
 def test_progress_delay():
     """Delay is the observed route shape stretched onto this journey's own
     timetable, so the origin/destination anchors cancel."""
-    marts, a, m, b = _grid_marts()
+    stops, a, m, b = _route_stops()
     now = 1789200000.0
     # Route shape: origin A at 300 s, mid M at 450 s, destination B at 600 s,
     # so the span is 300 s and M sits at fraction 0.5.
@@ -486,21 +468,18 @@ def test_progress_delay():
 
     # Sitting at the origin: fraction 0, so expected elapsed 0 but 600 s gone.
     row = dict(base)
-    delay, stop = app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday',
-                                     53.5001, -2.2001)
+    delay, stop = app.progress_delay(row, stops, now, 53.5001, -2.2001)
     assert stop['atco'] == 'A' and delay == 600
     assert app.classify_status(delay) == 'late'
 
     # Halfway along at the halfway point of the timetable: bang on time.
-    delay, stop = app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday',
-                                     53.5051, -2.2001)
+    delay, stop = app.progress_delay(row, stops, now, 53.5051, -2.2001)
     assert stop['atco'] == 'M' and delay == 0
     assert app.classify_status(delay) == 'on_time'
 
     # At the destination the journey is over: no honest reading is possible, so
     # None rather than a delay that keeps growing while the bus sits there.
-    delay, stop = app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday',
-                                     53.5101, -2.2001)
+    delay, stop = app.progress_delay(row, stops, now, 53.5101, -2.2001)
     assert stop['atco'] == 'B' and delay is None
     assert app.classify_status(delay) == 'unknown'
 
@@ -508,31 +487,24 @@ def test_progress_delay():
     # not change the answer, since only the fraction between them is used.
     for st in (a, m, b):
         st['secs_from_origin'] += 1000
-    shifted, _stop = app.progress_delay(row, marts, now, None, '88', 'outbound', 'weekday',
-                                        53.5051, -2.2001)
+    shifted, _stop = app.progress_delay(row, stops, now, 53.5051, -2.2001)
     assert shifted == 0
     for st in (a, m, b):
         st['secs_from_origin'] -= 1000
 
     # Guards, each returning nothing rather than a wrong number.
     row = dict(base, origin_aimed_dep=(now + 600) * 1000)   # not departed yet
-    assert app.progress_delay(
-        row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
+    assert app.progress_delay(row, stops, now, 53.5001, -2.2001)[0] is None
     row = dict(base, origin_aimed_dep=(now - 86400) * 1000)  # yesterday's journey
-    assert app.progress_delay(
-        row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
+    assert app.progress_delay(row, stops, now, 53.5001, -2.2001)[0] is None
     row = dict(base, dest_aimed_arr=None)                    # no arrival time
-    assert app.progress_delay(
-        row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
+    assert app.progress_delay(row, stops, now, 53.5001, -2.2001)[0] is None
     row = dict(base, origin_ref='NOSUCH')                    # origin not on the line
-    assert app.progress_delay(
-        row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
+    assert app.progress_delay(row, stops, now, 53.5001, -2.2001)[0] is None
     row = dict(base, dest_ref='A')                           # zero-length span
-    assert app.progress_delay(
-        row, marts, now, None, '88', 'outbound', 'weekday', 53.5001, -2.2001)[0] is None
+    assert app.progress_delay(row, stops, now, 53.5001, -2.2001)[0] is None
     # Nowhere near a stop -> no reading, so predict() falls back to the model.
-    assert app.progress_delay(
-        dict(base), marts, now, None, '88', 'outbound', 'weekday', 53.9, -2.9)[0] is None
+    assert app.progress_delay(dict(base), stops, now, 53.9, -2.9)[0] is None
 
 
 def test_arrived_vehicles_stop_accruing_delay():
@@ -577,8 +549,10 @@ def test_arrived_vehicles_stop_accruing_delay():
     # stop-sequence method measures progress in median seconds, so it can sit
     # below ARRIVED_FRACTION while the bus is physically parked at the terminus
     # -- 10 live vehicles were being rated that way.
-    gm, a, mid, b = _grid_marts()
+    stops, a, _mid, b = _route_stops()
+    gm = dict(app.EMPTY_MARTS)
     gm['stop_by_atco'] = {'A': a, 'B': b}
+    gm['stops'] = {('*', '88', 'outbound', 'weekday'): stops}
     parked = {'line': '88', 'direction': 'outbound', 'lat': 53.5100, 'lon': -2.2000,
               'origin_ref': 'A', 'dest_ref': 'B',
               'origin_aimed_dep': (now - 2700) * 1000,
@@ -935,7 +909,8 @@ def test_load_marts_tolerates_both_shapes():
             m = app.pick_model(marts['eta'], 'BEVC', '88', 'outbound', day, 'am_peak')
             assert m is not None and m['source'] == 'line+direction+hour_band', (day, m)
             assert app.stops_for(marts, 'BEVC', '88', 'outbound', day)[0]['atco'] == 'A', day
-            stop, _km = app.nearest_stop(marts, 'BEVC', '88', 'outbound', day, 53.5001, -2.2001)
+            stop, _km = app.nearest_stop(
+                app.stops_for(marts, 'BEVC', '88', 'outbound', day), 53.5001, -2.2001)
             assert stop is not None and stop['atco'] == 'A', day
         # Stop names are still de-underscored on the old shape.
         assert marts['stop_by_atco']['A']['name'] == 'Alpha Street'
@@ -947,7 +922,9 @@ def test_route_stops_resolver_matches_stops_for():
     """route_stops_for_line must resolve through the exact same key stops_for()
     would, or the map could draw a different sequence than the one the delay
     math is using -- the two would silently disagree about the route."""
-    marts, a, m, b = _grid_marts()
+    stops, a, m, b = _route_stops()
+    marts = dict(app.EMPTY_MARTS)
+    marts['stops'] = {('*', '88', 'outbound', 'weekday'): stops}
 
     stops, operator, direction, day, source = app.route_stops_for_line(
         marts, None, '88', 'outbound', 'weekday')

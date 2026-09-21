@@ -25,6 +25,8 @@ except ImportError:  # pragma: no cover
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
+import gtfs
+
 try:  # duckdb is optional at import time so a missing driver degrades, not crashes
     import duckdb
 except ImportError:  # pragma: no cover
@@ -133,7 +135,6 @@ STALE_JOURNEY_FRACTION = 0.6
 STALE_JOURNEY_FLOOR_S = 900
 
 MIN_STOP_HOP_S = 30             # adjacent stops often share a median time
-GRID = 2  # decimal places for the stop lookup grid (~1.1 km cells)
 
 # QuestDB is queried as a URL-encoded SQL string, so anything interpolated into
 # a query is an injection vector. Whitelist and reject; never escape-and-hope.
@@ -333,6 +334,9 @@ def display_name(value):
     return value.strip() or None
 
 
+gtfs.name_fn = display_name
+
+
 def iso_from_epoch_s(seconds):
     if seconds is None:
         return None
@@ -376,7 +380,7 @@ EMPTY_MARTS = {
     'state': MARTS_MISSING, 'error': None,
     'reload_state': None, 'reload_error': None,
     'eta': {}, 'localities': [], 'line_loc': {}, 'stops': {}, 'stop_by_atco': {},
-    'stop_grid': {}, 'stop_by_line_atco': {}, 'route_geom': {},
+    'route_geom': {},
 }
 
 _marts_lock = threading.Lock()
@@ -418,8 +422,7 @@ def _fetch(con, sql, key):
 def _load_marts(path):
     marts = dict(EMPTY_MARTS)
     marts.update({'eta': {}, 'localities': [], 'line_loc': {}, 'stops': {},
-                  'stop_by_atco': {}, 'stop_grid': {},
-                  'stop_by_line_atco': {}, 'day_types': [],
+                  'stop_by_atco': {}, 'day_types': [],
                   # Lazily filled by road_snapped_geometry()'s caller, keyed by
                   # (line, direction, day). A fresh dict every reload, so a
                   # rebuilt marts file (new stop sequences) can never serve a
@@ -518,20 +521,6 @@ def _load_marts(path):
 
     for stops in marts['stops'].values():
         stops.sort(key=lambda s: (s['seq'] is None, s['seq']))
-
-    # Grid index so matching a bus to its nearest stop is a handful of distance
-    # checks rather than a scan of every stop on the line -- /api/buses does this
-    # for ~6000 vehicles on every poll.
-    for key, stops in marts['stops'].items():
-        cells = marts['stop_grid'].setdefault(key, {})
-        by_atco = marts['stop_by_line_atco'].setdefault(key, {})
-        for stop in stops:
-            if stop['atco']:
-                by_atco.setdefault(stop['atco'], stop)
-            if stop['lat'] is None or stop['lon'] is None:
-                continue
-            key = (round(stop['lat'], GRID), round(stop['lon'], GRID))
-            cells.setdefault(key, []).append(stop)
 
     marts['ok'] = True
     marts['state'] = MARTS_OK
@@ -706,25 +695,20 @@ def stops_index_key(index, operator, line, direction, day):
     return None
 
 
-def nearest_stop(marts, operator, line, direction, day, lat, lon):
-    """Closest stop on this line to a position, within STOP_MATCH_KM.
+def nearest_stop(stops, lat, lon):
+    """Closest stop of this route to a position, within STOP_MATCH_KM.
 
-    Checks only the bus's own grid cell and its eight neighbours."""
+    A plain scan: a route has tens of stops, and this runs only for the buses
+    the distance method could not rate, so no spatial index is worth holding."""
     if lat is None or lon is None:
         return None, None
-    key = stops_index_key(marts['stop_grid'], operator, line, direction, day)
-    cells = marts['stop_grid'].get(key) if key else None
-    if not cells:
-        return None, None
-    step = 10 ** -GRID
     best, best_km = None, STOP_MATCH_KM
-    for dy in (-1, 0, 1):
-        for dx in (-1, 0, 1):
-            key = (round(lat + dy * step, GRID), round(lon + dx * step, GRID))
-            for stop in cells.get(key, ()):
-                km = haversine_km(lat, lon, stop['lat'], stop['lon'])
-                if km < best_km:
-                    best, best_km = stop, km
+    for stop in stops:
+        if stop.get('lat') is None or stop.get('lon') is None:
+            continue
+        km = haversine_km(lat, lon, stop['lat'], stop['lon'])
+        if km < best_km:
+            best, best_km = stop, km
     return best, (round(best_km, 3) if best else None)
 
 
@@ -736,13 +720,13 @@ def _secs(stops_by_atco, atco):
     return None if val is None else float(val)
 
 
-def progress_delay(row, marts, now_s, operator, line, direction, day, lat, lon):
+def progress_delay(row, stops, now_s, lat, lon):
     """Delay from schedule adherence rather than from the ETA regression.
 
     The feed gives aimed times for the journey's origin and destination only --
     there are no per-stop scheduled times anywhere in SIRI-VM. So we take the
-    SHAPE of the route from our own history (line_stops knows the median
-    seconds a journey needs to reach each stop) and stretch it onto THIS
+    SHAPE of the route from the published timetable (each stop's scheduled
+    seconds from the start of its pattern) and stretch it onto THIS
     journey's advertised timetable:
 
         fraction  = (here - origin) / (destination - origin)   [observed shape]
@@ -768,15 +752,17 @@ def progress_delay(row, marts, now_s, operator, line, direction, day, lat, lon):
     if scheduled < MIN_SCHEDULED_JOURNEY_S or scheduled > MAX_REMAINING_S:
         return None, None
 
-    stop, _km = nearest_stop(marts, operator, line, direction, day, lat, lon)
+    stop, _km = nearest_stop(stops, lat, lon)
     if stop is None:
         return None, None
     here = stop.get('secs_from_origin')
     if here is None:
         return None, None
 
-    akey = stops_index_key(marts['stop_by_line_atco'], operator, line, direction, day)
-    by_atco = (marts['stop_by_line_atco'].get(akey) or {}) if akey else {}
+    by_atco = {}
+    for st in stops:
+        if st.get('atco'):
+            by_atco.setdefault(st['atco'], st)
     s_origin = _secs(by_atco, row.get('origin_ref'))
     s_dest = _secs(by_atco, row.get('dest_ref'))
     if s_origin is None or s_dest is None:
@@ -841,8 +827,8 @@ def geometric_progress_delay(row, marts, now_s):
         return None
 
     lat, lon = row.get('lat'), row.get('lon')
-    origin = marts['stop_by_atco'].get(row.get('origin_ref') or '')
-    dest = marts['stop_by_atco'].get(row.get('dest_ref') or '')
+    origin = stop_lookup(marts, row.get('origin_ref'))
+    dest = stop_lookup(marts, row.get('dest_ref'))
     if not origin or not dest or lat is None or lon is None:
         return None
     if origin.get('lat') is None or dest.get('lat') is None:
@@ -900,7 +886,7 @@ def predict(row, marts, now_s):
     lat, lon = row.get('lat'), row.get('lon')
 
     straight_km = None
-    dest = marts['stop_by_atco'].get(row.get('dest_ref') or '')
+    dest = stop_lookup(marts, row.get('dest_ref'))
     if dest and lat is not None and lon is not None and dest.get('lat') is not None:
         straight_km = haversine_km(lat, lon, dest['lat'], dest['lon'])
     # The model was fitted on along-route distance; scale the straight line up.
@@ -952,8 +938,8 @@ def predict(row, marts, now_s):
     delay_s = None if arrived else geometric_progress_delay(row, marts, now_s)
     delay_source = 'progress_distance' if delay_s is not None else None
     if delay_s is None and not arrived:
-        delay_s, _stop = progress_delay(
-            row, marts, now_s, operator, line, direction, day, lat, lon)
+        stops, _source = route_for(marts, row, now_s)
+        delay_s, _stop = progress_delay(row, stops, now_s, lat, lon)
         delay_source = 'progress_stops' if delay_s is not None else None
 
     # With a delay in hand, the timetable plus that delay beats the regression.
@@ -1037,6 +1023,45 @@ def stops_for(marts, operator, line, direction, day):
     return merged
 
 
+def prefetch_timetable(rows):
+    """Load, in two queries, every stop position and route pattern this poll
+    will ask for. Left to the per-bus lookups it would be thousands of queries
+    on the first poll after a GTFS refresh."""
+    gtfs.prime([r.get(k) for r in rows for k in ('origin_ref', 'dest_ref')])
+    gtfs.prime_routes({(r.get('operator'), r.get('line'), r.get('origin_ref'),
+                        r.get('dest_ref')) for r in rows})
+
+
+def stop_lookup(marts, atco):
+    """A stop's name and position from its ATCO code. NaPTAN (via the GTFS
+    database) first, because it covers London; line_stops only as the fallback
+    while that mart still exists."""
+    if not atco:
+        return None
+    return gtfs.stop(atco) or marts['stop_by_atco'].get(atco)
+
+
+def route_for(marts, row, now_s):
+    """(stop sequence, how it was found) for the route this bus is working.
+
+    1. A timetable pattern that runs exactly origin -> destination. When several
+       do, the most-run one (the tiebreak on position comes later, ADR-0008 (h)).
+    2. The line's primary pattern, which is enough to name a next stop but is
+       not pinned to this journey.
+    3. line_stops, while it still exists (London has no timetable).
+    Callers must not trust a stop sequence that lacks the bus's own origin and
+    destination; progress_delay checks."""
+    operator, line = row.get('operator'), row.get('line')
+    cands = gtfs.candidates(operator, line, row.get('origin_ref'), row.get('dest_ref'))
+    if cands and cands[0]['stops']:
+        return cands[0]['stops'], 'gtfs_pattern'
+    found = gtfs.line_route(operator, line, row.get('direction'))
+    if found:
+        return found['stops'], 'gtfs_line'
+    return stops_for(marts, operator, line, row.get('direction'),
+                     day_type(local_dt(now_s))), 'line_stops'
+
+
 def find_last_stop(pings, stops):
     """Newest ping that sits within 100 m of a stop on this line."""
     for ping in pings:
@@ -1069,6 +1094,7 @@ def buses():
 
     marts = get_marts()
     now_s = time.time()
+    prefetch_timetable(rows)
     features = []
     for row in rows:
         if not position_is_live(row, now_s):
@@ -1130,8 +1156,9 @@ def bus_detail(bus_id):
         props['same_bus_id'] = [{'operator': r.get('operator'), 'line': r.get('line')}
                                 for r in rows if r is not row]
 
-    stops = stops_for(marts, row.get('operator'), row.get('line'), row.get('direction'),
-                      day_type(local_dt(now_s)))
+    prefetch_timetable([row])
+    stops, route_source = route_for(marts, row, now_s)
+    props['route_source'] = route_source if stops else None
     if stops:
         try:
             pings = bus_history(bus_id, row.get('operator'))
@@ -1212,9 +1239,13 @@ def road_snapped_geometry(stops):
 def route_stops_for_line(marts, operator, line, direction, day):
     """Stop sequence plus how it was resolved, for /api/route.
 
-    Reuses stops_index_key so the reported provenance always describes the
-    SAME fallback stops_for() actually took -- there is no second, slightly
-    different, resolution path to drift out of sync with it."""
+    The timetable's primary pattern first. Failing that (London, or a line the
+    timetable lacks) line_stops, through stops_index_key so the reported
+    provenance describes the same fallback stops_for() takes."""
+    found = gtfs.line_route(operator, line, direction)
+    if found:
+        return (found['stops'], found['operator'], found['direction'], None,
+                found['source'])
     key = stops_index_key(marts['stops'], operator, line, direction, day)
     if key:
         resolved_operator, resolved_direction, resolved_day = key[0], key[2], key[3]
@@ -1273,8 +1304,8 @@ def route():
     features = []
     route_note = None
     if not stops:
-        route_note = (f"no stop sequence known for line '{line}'; the marts have "
-                       "never observed it, or they are not built yet")
+        route_note = (f"no stop sequence known for line '{line}'; the timetable "
+                       "has no such line (London has none), or it is not loaded")
     else:
         usable = [s for s in stops if s.get('lat') is not None and s.get('lon') is not None]
         truncated = len(usable) > MAX_ROUTE_STOPS
@@ -1340,13 +1371,12 @@ def route():
                           "merging unrelated routes")
 
     try:
-        for row in live_buses():
-            if row.get('line') != line:
-                continue
-            if direction and row.get('direction') and row.get('direction') != direction:
-                continue
-            if not position_is_live(row, now_s):
-                continue
+        wanted = [r for r in live_buses()
+                  if r.get('line') == line
+                  and not (direction and r.get('direction') and r.get('direction') != direction)
+                  and position_is_live(r, now_s)]
+        prefetch_timetable(wanted)
+        for row in wanted:
             props, _model, _pred = bus_properties(row, marts, now_s)
             props['kind'] = 'bus'
             features.append({
@@ -1391,7 +1421,9 @@ def search():
             break
 
     lines = set()
+    timetable = gtfs.line_localities([m['locality_norm'] for m in matches])
     for m in matches:
+        lines |= timetable.get(m['locality_norm'], set())
         lines |= marts['line_loc'].get(m['locality_norm'], set())
 
     live = []
