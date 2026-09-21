@@ -382,13 +382,18 @@ measurement is the 03:00 run of 2026-09-22.** Watch it rather than assume it.
   ontology check skips, instead of failing, bindings to a contract not validated in
   that run. Otherwise a fault in the weekly-refreshed GTFS file could block a marts
   publish.
-* `profiles.yml` still says `memory_limit: 6GB`, sized for the cluster; it has not
-  been re-tuned and is not known to be the right number now.
+* `profiles.yml` `memory_limit` went from 6 GB (sized for the cluster) to 4 GB. A
+  scratch run at 4 GB took the same time (segmentation 76.6 s against 78 s, 4 m 06 s
+  end to end, 88 tests pass) with peak process RSS 4.5 GB; at 6 GB the same build had
+  run at about 11 GB against the 13000M cap. Measured on a same-window rerun, so a
+  night with a genuinely new day is not covered.
 
-**Left as it is:** `wraith_bus_ingestor_build.duckdb` (9.3 GB) still contains the
-orphaned `int_line_stops_*` tables. dbt does not drop them and DuckDB does not shrink
-a file on `DROP`. They do no harm; reclaiming the space means a copy into a fresh
-file, or a `FULL_REFRESH`.
+**Compaction.** `wraith_bus_ingestor_build.duckdb` still held the orphaned
+`int_line_stops_*` and matched-stops tables (dbt does not drop them and DuckDB does
+not shrink a file on `DROP`). Only the incremental table has to persist, so on
+2026-09-21 it was copied alone into a fresh file: 82,357,365 rows, identical
+row-hash checksum, **8.9 GB to 3.5 GB**, in 147 s. The old file was kept until the
+forced nightly passed.
 
 **Rollback.** The previous API image is tagged `wraith-bus-ingestor-api:pre-gtfs`.
 Reverting the dbt side is a `git revert` of the deletion commit; the next nightly

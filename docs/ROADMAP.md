@@ -438,8 +438,8 @@ because TfL publishes no aimed arrival.
   goes live at the first refresh.
 - The API's steady `/buses` is about 2.6 s, against 0.6 s before; the tiebreak and
   prefetch are unoptimised. `docker-compose.yml` still gives the API `mem_limit: 6g`.
-- `wraith_bus_ingestor_build.duckdb` keeps the orphaned `int_line_stops_*` tables (9.3
-  GB file); `profiles.yml` `memory_limit` is still the cluster-era 6 GB; the naptan
+- The build warehouse was compacted 2026-09-21 (8.9 GB to 3.5 GB, orphaned tables
+  gone) and `profiles.yml` `memory_limit` re-tuned to 4 GB (see ADR-0009); the naptan
   staging model still computes `lat_cell`/`lon_cell` that nothing uses.
 - The Android app should send `?operator=` (1.9.0's identity fix) and should not rely
   on the `/route` `day_type` field, which is now always null.

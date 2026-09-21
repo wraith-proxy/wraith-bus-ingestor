@@ -25,8 +25,10 @@ wraith_bus_ingestor:
         # HISTORY, kept for the reasoning: everything below about line_stops and
         # int_line_stops_* describes models ADR-0008 deleted (routes now come from
         # the GTFS timetable). Today the largest consumer is
-        # int_pings_segmented_to_journeys; the 6 GB limit was set for the
-        # cluster and has not been re-tuned since it went.
+        # int_pings_segmented_to_journeys. Re-tuned 2026-09-21 from 6 GB to 4 GB
+        # after the cluster went: measured in a scratch copy, the build ran in
+        # the same time (segmentation 76.6 s against 78 s) with peak process
+        # RSS 4.5 GB, where 6 GB had run at ~11 GB against the 13000M cap.
         # Cut to 3 GB on 2026-09-12 after two host-level OOM events during
         # int_pings_segmented_to_journeys. Raised to 6 GB again on 2026-09-13
         # once a 16 GB swapfile was added: with swap as a backstop,
@@ -106,7 +108,7 @@ wraith_bus_ingestor:
         # ABOVE memory_limit (Run 1: 8.69GB RSS at a 4GB limit), so 6GB should
         # peak near 11GB, under the cap. Do NOT go to 8GB without raising
         # MemoryMax: ~13GB RSS would hit it. Unproven at 6GB until a real run.
-        memory_limit: '6GB'
+        memory_limit: '4GB'
         # DO NOT set temp_directory here. dbt-duckdb replays every `settings:`
         # entry on each new connection it opens, and DuckDB refuses to change
         # the temp directory once it has spilled to the current one -- so the
