@@ -1,9 +1,14 @@
 # wraith_bus_ingestor — a dbt project over live UK bus positions
 
-This project turns a firehose of bus GPS pings into five small tables that a
-Flask API can answer questions from: where each line goes, what its stops are in
-order, how punctual it is, and — the interesting one — how long a bus with
-*X* kilometres left to run will actually take.
+This project turns a firehose of bus GPS pings into three small tables that a
+Flask API can answer questions from: which places have bus stops, how punctual
+each line is, and — the interesting one — how long a bus with *X* kilometres left
+to run will actually take. (Routes and stop sequences used to be two more tables;
+they now come from the published timetable, see ADR-0008.)
+
+**New to dbt?** Start with [Learn dbt](../docs/learn-dbt/index.md), a short
+hands-on course that uses this very project, and never run `dbt` in this folder
+(it is the nightly build's): use `ops/dbt_sandbox.sh`.
 
 It is deliberately a *small* warehouse. Everything lives in one DuckDB file,
 `wraith_bus_ingestor.duckdb`, which Flask opens read-only. There is no cluster, no

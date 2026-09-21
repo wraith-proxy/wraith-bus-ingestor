@@ -34,11 +34,10 @@ models:
       +materialized: view
       +schema: null
     intermediate:
-      # Views by default, but the two models that every downstream model scans
-      # (journey segmentation and the stop spatial join) are materialised as
-      # incremental tables in their own config blocks -- recomputing a 20M-row
-      # window function over the whole retention window every run is the
-      # single biggest cost in this project.
+      # Views by default, but the model that every downstream model scans
+      # (journey segmentation) is an incremental table, set in its own config
+      # block -- recomputing a 20M-row window function over the whole retention
+      # window every run is the single biggest cost in this project.
       +materialized: view
     marts:
       # Marts are read by a long-lived Flask process over a read-only DuckDB
