@@ -1,6 +1,6 @@
 # ADR 0002: line_stops final assembly — stop_identity promotion and mode() → any_value()
 
-**Status:** Accepted
+**Status:** **Superseded by [ADR-0008](0008-published-timetables-vs-inferred-routes.md) on 2026-09-21** (the models this ADR governs were deleted). Was: Accepted
 **Date:** 2026-09-15
 **Related:** [ADR-0001](0001-line-stops-memory-and-batching.md), [docs/ROADMAP.md § 1.1.1](../ROADMAP.md)
 

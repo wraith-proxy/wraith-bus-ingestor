@@ -1,6 +1,6 @@
 # ADR 0001: line_stops memory architecture — root cause, batching, serial execution
 
-**Status:** Accepted (extended by [ADR-0002](0002-line-stops-final-assembly.md) — `line_stops`' own final assembly step needed a related but separate fix)
+**Status:** **Superseded by [ADR-0008](0008-published-timetables-vs-inferred-routes.md) on 2026-09-21** (the models this ADR governs were deleted). Was: Accepted (extended by [ADR-0002](0002-line-stops-final-assembly.md) — `line_stops`' own final assembly step needed a related but separate fix)
 **Date:** 2026-09-15
 **Related:** [docs/ROADMAP.md § 1.1.1](../ROADMAP.md), tickets TJP-14092 / TJP-14094
 

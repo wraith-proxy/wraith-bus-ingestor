@@ -3,13 +3,11 @@ version: 1.0.0
 config-version: 2
 
 # Everything here runs against a local DuckDB file (wraith_bus_ingestor.duckdb) that
-# Flask later opens READ-ONLY. The two most expensive intermediate models
-# (int_pings_segmented_to_journeys, int_pings_matched_to_stops) are
-# incremental -- see their own file headers -- so the scratch warehouse now
-# persists across runs on
-# purpose; a normal nightly run only reprocesses the last couple of days for
-# those two. Everything else here is still cheap enough to rebuild from
-# scratch every time, and does.
+# Flask later opens READ-ONLY. The most expensive intermediate model
+# (int_pings_segmented_to_journeys) is incremental -- see its file header --
+# so the scratch warehouse persists across runs on purpose; a normal nightly
+# run only reprocesses the last couple of days for it. Everything else here is
+# still cheap enough to rebuild from scratch every time, and does.
 profile: wraith_bus_ingestor
 
 # Single source of truth for how much history the incremental models keep --

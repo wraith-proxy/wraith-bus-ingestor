@@ -28,6 +28,8 @@ contracts:
     path: contracts/bus-positions.odcs.yaml
   - alias: marts
     path: contracts/bus-marts.odcs.yaml
+  - alias: gtfs
+    path: contracts/gtfs-timetable.odcs.yaml
 
 # ---------------------------------------------------------------------------
 # Shared semantic types. Declared once so the same concept cannot be typed two
@@ -249,16 +251,19 @@ objectTypes:
     pluralDisplayName: Lines
     icon: signpost
     status: active
-    description: A published service number. See ServiceNumber -- this is not a unique route.
+    description: >-
+      A published service number. See ServiceNumber -- this is not a unique
+      route. Known from the timetable, so London (no timetable) has no Line
+      objects.
     primaryKey: [lineId]
     titleProperty: lineId
     backingDatasets:
-      - contract: marts
-        object: line_localities
+      - contract: gtfs
+        object: gtfs_line_localities
     properties:
       - apiName: lineId
         valueType: ServiceNumber
-        binding: {contract: marts, object: line_localities, property: line}
+        binding: {contract: gtfs, object: gtfs_line_localities, property: line}
 
   - apiName: Operator
     displayName: Operator
@@ -281,28 +286,31 @@ objectTypes:
     pluralDisplayName: Stops
     icon: map-pin
     status: active
-    description: A NaPTAN bus stop.
+    description: >-
+      A NaPTAN bus stop. National, London included: this is what places a bus's
+      origin and destination. Latitude and longitude are text in NaPTAN; the API
+      casts them.
     primaryKey: [atcoCode]
     titleProperty: stopName
     backingDatasets:
-      - contract: marts
-        object: line_stops
+      - contract: gtfs
+        object: naptan_stops
     properties:
       - apiName: atcoCode
         valueType: AtcoCode
-        binding: {contract: marts, object: line_stops, property: atco_code}
+        binding: {contract: gtfs, object: naptan_stops, property: ATCOCode}
       - apiName: stopName
         valueType: String
-        binding: {contract: marts, object: line_stops, property: stop_name}
+        binding: {contract: gtfs, object: naptan_stops, property: CommonName}
       - apiName: localityName
         valueType: String
-        binding: {contract: marts, object: line_stops, property: locality}
+        binding: {contract: gtfs, object: naptan_stops, property: LocalityName}
       - apiName: latitude
         valueType: Double
-        binding: {contract: marts, object: line_stops, property: lat}
+        binding: {contract: gtfs, object: naptan_stops, property: Latitude}
       - apiName: longitude
         valueType: Double
-        binding: {contract: marts, object: line_stops, property: lon}
+        binding: {contract: gtfs, object: naptan_stops, property: Longitude}
 
   - apiName: LineStop
     displayName: Stop on a line
@@ -310,37 +318,39 @@ objectTypes:
     icon: list-ordered
     status: active
     description: >-
-      A stop's place in one line's running order, with how long journeys
-      typically take to reach it. Modelled as an object rather than a plain link
-      because it carries properties of its own.
-    primaryKey: [lineId, direction, dayType, atcoCode]
+      A stop's place in one timetable pattern of a line, with its scheduled time
+      from the pattern's first stop. Modelled as an object rather than a plain
+      link because it carries properties of its own. Timetable-only: none exist
+      for London.
+    primaryKey: [operatorRef, lineId, direction, patternId, sequence]
     titleProperty: atcoCode
     backingDatasets:
-      - contract: marts
-        object: line_stops
+      - contract: gtfs
+        object: gtfs_route_stops
     properties:
+      - apiName: operatorRef
+        valueType: String
+        binding: {contract: gtfs, object: gtfs_route_stops, property: operator}
       - apiName: lineId
         valueType: ServiceNumber
-        binding: {contract: marts, object: line_stops, property: line}
+        binding: {contract: gtfs, object: gtfs_route_stops, property: line}
       - apiName: direction
         valueType: Direction
-        binding: {contract: marts, object: line_stops, property: direction}
-      - apiName: dayType
-        valueType: DayType
-        binding: {contract: marts, object: line_stops, property: day_type}
+        binding: {contract: gtfs, object: gtfs_route_stops, property: direction}
+      - apiName: patternId
+        valueType: Long
+        binding: {contract: gtfs, object: gtfs_route_stops, property: pattern_id}
+        description: Unique only within (operator, line, direction), and not stable across timetable refreshes.
       - apiName: atcoCode
         valueType: AtcoCode
-        binding: {contract: marts, object: line_stops, property: atco_code}
+        binding: {contract: gtfs, object: gtfs_route_stops, property: atco_code}
       - apiName: sequence
         valueType: Integer
-        binding: {contract: marts, object: line_stops, property: seq}
-      - apiName: medianSecondsFromOrigin
+        binding: {contract: gtfs, object: gtfs_route_stops, property: seq}
+      - apiName: scheduledSecondsFromOrigin
         valueType: Double
-        binding: {contract: marts, object: line_stops, property: median_secs_from_origin}
-        description: Anchored on the start of tracking, so only differences between two stops carry meaning.
-      - apiName: observations
-        valueType: Long
-        binding: {contract: marts, object: line_stops, property: n_obs}
+        binding: {contract: gtfs, object: gtfs_route_stops, property: sched_secs_from_origin}
+        description: Scheduled, not observed. Anchored on the pattern's first stop.
 
   - apiName: Locality
     displayName: Locality
@@ -513,15 +523,16 @@ linkTypes:
     from: {objectType: Line, property: lineId}
     to: {objectType: Locality, property: localityNorm}
     through:
-      contract: marts
-      object: line_localities
+      contract: gtfs
+      object: gtfs_line_localities
       fromProperty: line
       toProperty: locality_norm
-      properties: [n_pings, first_seen, last_seen]
+      properties: [n_stops]
     description: >-
-      Observed, not published: a line serves a locality because its buses were
-      seen there at least 20 times, not because a timetable says so. This is the
-      link the place-search feature traverses.
+      Published, not observed: a line serves a locality because the timetable
+      has it calling at a stop there (since ADR-0008; it used to be inferred from
+      pings). This is the link the place-search feature traverses. Empty for
+      London.
 
   - apiName: lineHasTravelTimeModel
     displayName: modelled by

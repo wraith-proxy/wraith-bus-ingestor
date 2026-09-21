@@ -255,7 +255,7 @@ keyed as (
         -- rack up dozens of journey-starts in just the incremental window,
         -- so the two numbering schemes can coincidentally collide on the
         -- same suffix for two totally different physical journeys -- caught
-        -- live as a duplicate ping_seq in int_pings_matched_to_stops the
+        -- live as a duplicate ping_seq in int_pings_matched_to_stops (since removed, ADR-0008) the
         -- first time this ran as a true incremental (non-first) build.
         --
         -- journey_key has to be a property of the journey itself, not of how

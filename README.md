@@ -28,10 +28,11 @@ QuestDB (time-series, ILP)
   ↓ [dbt/build.sh, nightly 03:00 via systemd timer]
 dbt models (DuckDB)
   ├─ Staging: one model per source system (bods/, naptan/), views
-  ├─ Intermediate: journey cuts, direction inference, stop matching, remaining distance
-  └─ Marts: five frozen tables (eta_models, line_stops, line_localities, line_punctuality, localities)
+  ├─ Intermediate: journey cuts, direction inference, remaining distance
+  └─ Marts: three frozen tables (eta_models, line_punctuality, localities)
   ↓
-Flask API (read-only handle to wraith_bus_ingestor.duckdb)
+Flask API (read-only handle to wraith_bus_ingestor.duckdb, plus the GTFS timetable
+           gtfs.duckdb -- routes, next stops and line search come from the published timetable)
   ├─ GET /buses        — live vehicle positions as GeoJSON, < 10 min old
   ├─ GET /bus/<bus_id> — one vehicle: position, model grain used, predicted arrival
   ├─ GET /route        — stop sequence, geometry and live buses for one line
@@ -45,13 +46,13 @@ MapLibre map on slaycoach.quest/bus-map/ (in ghost-site)
 
 The dbt build is split across three files by design:
 
-- **`wraith_bus_ingestor_build.duckdb`** — persistent incremental warehouse. Two
-  expensive models (`int_pings_segmented_to_journeys`,
-  `int_pings_matched_to_stops`) are incremental; they take the fast path
-  only when this file already exists. Deleted before each run, they
-  silently became "full rebuild every time". Persisting it across runs
-  cuts the nightly rebuild from ~20-30 min to ~5 min.
-- **`wraith_bus_ingestor_staged.duckdb`** — fresh per-run throwaway where the five
+- **`wraith_bus_ingestor_build.duckdb`** — persistent incremental warehouse. The
+  one expensive model (`int_pings_segmented_to_journeys`) is incremental; it
+  takes the fast path only when this file already exists. Deleted before each
+  run, it silently became "full rebuild every time" (about an hour).
+  Persisting it across runs is what makes the nightly a matter of minutes
+  ([ADR-0009](docs/adr/0009-fast-nightly-build.md) has the measurements).
+- **`wraith_bus_ingestor_staged.duckdb`** — fresh per-run throwaway where the three
   marts are copied after `dbt test` and the contract gate both pass.
 - **`wraith_bus_ingestor.duckdb`** — the published file the API opens read-only. Only
   `mv`d into place after both gates pass, so a bad build leaves the

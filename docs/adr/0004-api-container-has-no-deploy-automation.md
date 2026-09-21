@@ -66,6 +66,14 @@ above once they're written down. Automating it is worth doing the next
 time a backend change ships and someone forgets these three commands
 again, not preemptively.
 
+**Amendment 2026-09-21.** The manual steps are still right, with two additions
+found while deploying ADR-0008 Phase 1: the API now needs a second read-only mount
+(the GTFS directory, `/gtfs`; without it every bus loses its ETA), and the recreate
+must use `--no-deps` so `osrm` is not touched. The deploy that day was still done by
+hand, and the previous image was tagged (`wraith-bus-ingestor-api:pre-gtfs`) before
+rebuilding so a rollback is one `docker tag` away. The revisit conditions below are
+unchanged.
+
 **Revisit if:** a second person starts deploying this stack, a backend
 change ships without anyone present to run the manual steps, or `api`
 gains a genuine multi-environment story (staging vs. production) where

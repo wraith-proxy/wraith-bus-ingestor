@@ -62,19 +62,17 @@ layers, each doing exactly one job:
       below).
     - `int_pings_measured_to_journey_end` — the ETA model's training set:
       for every ping, how far and how long is left in its journey.
-    - `int_pings_matched_to_stops` — snaps every ping to the nearest stop
-      within 120 m, using a grid-binning join (see below) instead of a full
-      cross join.
 
-  `int_pings_segmented_to_journeys` and `int_pings_matched_to_stops` are
-  materialized as **incremental tables**, not views: three downstream
-  models scan the journeys table, and recomputing window functions over
-  the full retention window every run would dominate the build. Each run
-  reprocesses only the trailing ~2 days; `FULL_REFRESH=1` forces a
-  from-scratch rebuild of both (see [Operations](operations.md)).
-- **`models/marts/`** — five tables, frozen by `contracts/bus-marts.odcs.yaml`,
-  read by the Flask API: `eta_models`, `line_stops`, `line_localities`,
-  `line_punctuality`, `localities`. Named as plain entities rather than
+  `int_pings_segmented_to_journeys` is materialized as an **incremental
+  table**, not a view: the downstream models scan the journeys table, and
+  recomputing window functions over the full retention window every run would
+  dominate the build. Each run reprocesses only the trailing ~2 days;
+  `FULL_REFRESH=1` forces a from-scratch rebuild (see
+  [Operations](operations.md)). Stop matching and stop sequences are no longer
+  built here: ADR-0008 replaced them with the published GTFS timetable, read by
+  the API from `gtfs.duckdb` (`contracts/gtfs-timetable.odcs.yaml`).
+- **`models/marts/`** — three tables, frozen by `contracts/bus-marts.odcs.yaml`,
+  read by the Flask API: `eta_models`, `line_punctuality`, `localities`. Named as plain entities rather than
   `mart_*`-prefixed, per dbt's own structure guide. Real tables, not
   views — a long-lived Flask process reads them over a read-only handle.
 

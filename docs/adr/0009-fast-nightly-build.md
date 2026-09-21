@@ -1,6 +1,6 @@
 # ADR 0009: A fast nightly build -- where the time goes, and the plan to cut it
 
-**Status:** Implemented 2026-09-20 (supervised migration run and publish the same night; not yet observed in a real 03:00 run). This ADR began as a proposal and a plan; the sections below are in the order they were written, and the last one, "Amendment: what was deployed", is the current state and supersedes any "not applied" statement above it. It records a measured profile of the nightly build, ideas that were investigated and what they showed, the window fix, and the deterministic segmentation change.
+**Status:** Implemented 2026-09-20 (supervised migration run and publish the same night) and **confirmed in the real 03:00 service on 2026-09-21: success in 22 min 37 s**, after five consecutive failed 03:00 runs. This ADR began as a proposal and a plan; the sections below are in the order they were written, and the last one, "Amendment: what was deployed", is the current state and supersedes any "not applied" statement above it. It records a measured profile of the nightly build, ideas that were investigated and what they showed, the window fix, and the deterministic segmentation change.
 **Date:** 2026-09-20
 **Related:** [ADR-0008](0008-published-timetables-vs-inferred-routes.md) (whose speed claim this ADR corrects), [ADR-0001](0001-line-stops-memory-and-batching.md), [ADR-0006](0006-bus-positions-schema-optimisation.md), [docs/ROADMAP.md](../ROADMAP.md) (1.14.0), `dbt/build.sh`, `dbt/models/intermediate/int_pings_segmented_to_journeys.sql`
 
@@ -316,14 +316,100 @@ The largest-process figure is consistent with the repo's earlier note that resid
 
 ### What is not proven
 
-- The real 03:00 service has not run this code. The hand run used the same script but not the unit's own hooks, container start/stop and nginx reload.
+- *(Resolved 2026-09-21: the real 03:00 service ran this code and succeeded, see "The first real 03:00 run" below.)* The hand run on the night of 2026-09-20 used the same script but not the unit's own hooks, container start/stop and nginx reload.
 - Equivalence of the deployed window with a cold build (point 1 above).
 - QuestDB's container reached 7.85 GiB of its 8 GiB in one poll during the scratch extraction with no restarts between days; the nightly restarts between days, and the hand run's extract did too and finished without incident, but that is one observation.
-- The API image was **not** redeployed: there is no deploy automation (ADR-0004), so the identity fix in `backend/app.py` is in the repository and tested but the running container still has the old code and still hides about 3% of vehicles until it is rebuilt.
+- The API image was **not** redeployed on the night of 2026-09-20: there is no deploy automation (ADR-0004), so the identity fix in `backend/app.py` was in the repository and tested while the running container still had the old code. *(Resolved 2026-09-21 04:43 UTC: rebuilt and recreated by hand, see below.)*
+
+### The first real 03:00 run (2026-09-21)
+
+The unit started at 03:00:01 and finished at **03:22:38: `Deactivated successfully`, 22 min 37 s wall and 46 min 3 s of CPU**, with no failure, OOM or kill line in the journal. The five 03:00 runs before it (2026-09-16 to 09-20) had all failed (exit 127 after 43 min, exit 1 after 50 min, exit 1 after one second, exit 1 after 65 min, exit 1 after 54 min; the journal gives the exit codes and durations, not one shared cause); the only pass in that window was the hand-run verification of 2026-09-19.
+
+| Step | Measured, real service |
+|---|---|
+| Extract, 8 days | 82,357,365 rows; about 11 minutes from 03:00:01 until the first dbt model began |
+| `int_pings_segmented_to_journeys` (incremental) | **140.9 s** (2,219 to 3,154 s in the four earlier logged nightlies; 60.8 s in the supervised hand run) |
+| `int_journeys_shaped_and_directed` / `int_pings_measured_to_journey_end` | 22.3 s / 11.7 s |
+| `eta_models` | 122.8 s |
+| `int_pings_matched_to_stops` (incremental) | 158.0 s (860 s cold; it failed the 2026-09-20 run at the old 4GB limit) |
+| First dbt run, whole | 325.7 s (5 min 26 s), 11 of 11 passed |
+| The 86 `line_stops` models | 229.1 s |
+| Tests | 117.9 s, **887 passed, 0 warned, 0 failed** |
+| Publish | marts published at 03:22 (139 MB); `build.sh` reported 22 min 24 s in total |
+
+`dbt_build_runs` in QuestDB recorded `success / 887 / 0 / 0`, every container the unit stops was back up afterwards (including the immich and ollama set), and the API answered 200. The forecast in this amendment ("about 20 minutes", two separate measurements added together) was 22.6 minutes as one run. The segmentation model took 141 s in the service against 61 s in the hand run of the night before; the cause was not investigated (the hand run had the container stop set down for longer and no concurrent morning work, but that is a guess). It is still about 19 times faster than the old nightly's 2,219 to 3,154 s.
+
+Not settled by this run: whether the corrected window equals a cold build (the run shows it works, not that it is equal), and how it behaves in winter time, when the previous local date ends exactly at the data boundary instead of an hour before it.
+
+### The API rebuild (2026-09-21 04:43 UTC)
+
+By hand, following ADR-0004: `docker compose build api`, then `docker compose up -d --force-recreate --no-deps api` (`--no-deps` because `--force-recreate` would otherwise also recreate QuestDB, its dependency), then an nginx reload. The container came up at 3.1 GiB of its 6 GiB limit. Checked against live data: 453 of 16,306 live vehicles shared a `bus_id` with a vehicle of another operator; for one of them `GET /bus/<id>` returned the freshest namesake and listed the other in `same_bus_id`, `?operator=` returned each vehicle on its own, and a hostile `operator` returned 400; the map endpoint now returned 62 `bus_id`s that appear for two or more vehicles, where the old code could return none. The Android app, which lives in its own repository, calls `/bus/<bus_id>`; the route is backward compatible and covered by a unit test, but the app itself was not run against it, and it should start sending `operator`.
 
 ### Rollback
 
 `git revert` of `477ea0e` and `61543a2` (and `e2f905c` if the old window is wanted), then one `FULL_REFRESH=1 ./build.sh`, because the old model must not read new-shape keys and has no detector. The published marts file was replaced in place by the publish step, so there is no backup of the previous marts; a rollback rebuilds them.
+
+## Amendment: the line_stops cluster is gone (2026-09-21)
+
+[ADR-0008](0008-published-timetables-vs-inferred-routes.md) Phase 1 deleted
+`int_pings_matched_to_stops` (158 s in the 03:00 run of 2026-09-21), the 84-model
+`line_stops` cluster and its two marts, so the build is now 8 models in one `dbt run`.
+
+**A supervised dry run, on a scratch copy of the project and of the persistent
+warehouse, with `SKIP_EXTRACT=1`:** 4 m 07 s end to end. `dbt run` 122 s
+(segmentation 78 s, `int_journeys_shaped_and_directed` 25 s, the training set 12 s,
+`eta_models` 6 s, everything else under 2 s), `dbt test` 100.6 s (88 tests, all pass),
+three marts published, the contract gate passed. The three surviving marts are
+identical to the ones the real 03:00 run published from the same input
+(`eta_models` 129,135 rows equal at 6 dp; `localities` and `line_punctuality`
+equal).
+
+**What that does and does not show.** It shows the reduced build is correct and how
+long the database work takes. It does **not** show tonight's wall clock: the run
+skipped the 11-minute extract, re-processed the same window instead of a new night,
+ran with the site's containers up rather than stopped, and segmentation took 78 s
+here against 140.9 s in the service (the difference is still unexplained). Taking
+the 22 m 37 s of the last real run and removing what was deleted gives an estimate of
+about 16 minutes, most of it extraction. **That was an estimate; it is now measured** (next paragraph). The 03:00 run of
+2026-09-22 is still the first *scheduled* one.
+
+**Forced run of the real unit, 2026-09-21 07:13:51 to 07:29:24 (`systemctl start
+wraith-bus-build.service`, real extraction, containers stopped and restarted by the
+unit): 15 m 33 s, success**, against 22 m 37 s for the 03:00 run that morning. Extract
+about 10.5 min; `dbt run` 117.7 s (segmentation 81.5 s, shaped 19.6 s, training set
+10 s, `eta_models` 6.2 s); `dbt test` 136 s, 88 pass; contract gate 62 passed, 0
+failed; three marts published; `/model-info` `ok`, 129,135 models. This ran on the
+compacted 3.5 GB warehouse with `memory_limit` 4 GB. Caveats: one run, in the daytime,
+so extraction and the rewrite window are not a night's; the 03:00 scheduled run is
+still to be watched. The first `/buses` after the containers restarted took 5.4 s
+(cold caches, 23k vehicles).
+
+**Deliberate changes to the nightly that this involved:**
+
+* `build.sh` no longer splits the run, drops the page cache between runs, or runs a
+  `--threads 1` phase; the reason for all three was the cluster.
+* The contract gate now names the two contracts the build produces
+  (`bus-positions`, `bus-marts`) instead of validating every contract, and the
+  ontology check skips, instead of failing, bindings to a contract not validated in
+  that run. Otherwise a fault in the weekly-refreshed GTFS file could block a marts
+  publish.
+* `profiles.yml` `memory_limit` went from 6 GB (sized for the cluster) to 4 GB. A
+  scratch run at 4 GB took the same time (segmentation 76.6 s against 78 s, 4 m 06 s
+  end to end, 88 tests pass) with peak process RSS 4.5 GB; at 6 GB the same build had
+  run at about 11 GB against the 13000M cap. Measured on a same-window rerun, so a
+  night with a genuinely new day is not covered.
+
+**Compaction.** `wraith_bus_ingestor_build.duckdb` still held the orphaned
+`int_line_stops_*` and matched-stops tables (dbt does not drop them and DuckDB does
+not shrink a file on `DROP`). Only the incremental table has to persist, so on
+2026-09-21 it was copied alone into a fresh file: 82,357,365 rows, identical
+row-hash checksum, **8.9 GB to 3.5 GB**, in 147 s. The old file was kept until the
+forced nightly passed.
+
+**Rollback.** The previous API image is tagged `wraith-bus-ingestor-api:pre-gtfs`.
+Reverting the dbt side is a `git revert` of the deletion commit; the next nightly
+then rebuilds `line_stops`, and only then would the old API image work against the
+served marts.
 
 ## Roadmap
 

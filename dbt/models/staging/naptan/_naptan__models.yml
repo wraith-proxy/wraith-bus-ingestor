@@ -44,7 +44,3 @@ models:
           "Ashton-under-Lyne" in the register. Frozen in CONTRACT.md s2 because
           backend/app.py normalises the query the same way.
         tests: [not_null]
-      - name: lat_cell
-        description: Integer grid cell index (0.002 deg) used by int_pings_matched_to_stops to turn the nearest-stop search into a hash join. Meaningless on its own.
-      - name: lon_cell
-        description: Longitude half of the same grid cell index.

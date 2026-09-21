@@ -49,13 +49,12 @@ which opens the file read-only. The API is not allowed to read anything in
 models are the producer's private business and may change without notice;
 anything in this contract may only change via a version bump.
 
-Five tables:
+Three tables (since 3.0.0; `line_stops` and `line_localities` moved to the
+GTFS contract below):
 
 | Table | What it is |
 |---|---|
 | `eta_models` | Fitted OLS coefficients, one row per grain plus fallback rows — see [Bus Platform](bus-platform.md#the-eta-model) |
-| `line_stops` | Stop sequence per `(operator, line, direction)` |
-| `line_localities` | Which localities each line passes through |
 | `line_punctuality` | Observed delay distribution per line/grain |
 | `localities` | Locality gazetteer powering `/search` |
 
@@ -73,6 +72,26 @@ fixable in this layer: `line` is a published number, not a unique route
 (the same "88" exists in unrelated towns); day classification has no
 concept of bank holidays; the fitted window has a real gap (2026-08-28 to
 08-30, a feed outage).
+
+## `gtfs-timetable.odcs.yaml` — the timetable boundary
+
+**Producer:** `gtfs/fetch.py`, weekly. **Consumer:** `backend/gtfs.py`, which
+opens the file read-only **per query** and never holds it. Added in ADR-0008 to
+replace the two marts that used to infer routes from pings.
+
+| Table | What it is |
+|---|---|
+| `naptan_stops` | Every NaPTAN stop, national (London included); places a bus's origin and destination |
+| `gtfs_route_patterns` | Each distinct stop sequence of a line, with `trip_share` |
+| `gtfs_route_stops` | The ordered stops of each pattern, with scheduled seconds from the first |
+| `gtfs_line_alias` | Reviewed live-label to timetable-label aliases (learned rows only if hand-accepted) |
+| `gtfs_line_localities` | Which lines call in which localities; the join behind `/search` |
+
+The structural limit is in the contract's `limitations`: **BODS GTFS has no TfL**,
+so London has stop positions but no route, next stop or line search. The
+nightly build does not validate this contract (a problem in a weekly-refreshed
+file must never block a marts publish); run
+`contracts/validate.py --gtfs <file>` to gate a refresh by hand.
 
 ## `wraith-bus-ingestor.ontology.yaml` — the semantic layer
 
