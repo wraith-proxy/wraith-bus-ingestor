@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wraith-bus-ingestor"
-version = "1.10.0"
+version = "1.11.0"
 description = "Live UK bus tracking data platform: BODS SIRI-VM ingest, QuestDB, a dbt/DuckDB ETA model, and the Flask API that serves it."
 readme = "README.md"
 license = { file = "LICENSE" }
