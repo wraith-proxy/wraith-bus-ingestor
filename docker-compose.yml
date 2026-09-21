@@ -59,11 +59,16 @@ services:
       - QUESTDB_URL=${QUESTDB_URL}
       - OSRM_URL=${OSRM_URL}
       - MARTS_PATH=/models/wraith_bus_ingestor.duckdb
+      - GTFS_PATH=/gtfs/gtfs.duckdb
     volumes:
       # dbt marts, read-only. The whole directory is mounted rather than the
       # .duckdb file itself: bind-mounting a file that does not exist yet makes
       # Docker create a directory in its place.
       - ./dbt:/models:ro
+      # Served GTFS timetable (gtfs/fetch.py, ADR-0008), read-only, directory
+      # mounted for the same reason -- and so a refresh that swaps the file is
+      # seen without recreating the container. The API never holds it open.
+      - ${GTFS_DIR:-/mnt/archive/wraith-bus-ingestor-gtfs}:/gtfs:ro
     networks:
       - ghost-net
     depends_on:
