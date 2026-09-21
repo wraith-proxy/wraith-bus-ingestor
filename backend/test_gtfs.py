@@ -142,3 +142,23 @@ def test_prime_routes_batches_and_survives_hostile_values():
         gtfs.prime([weird, 'A'])
         assert gtfs.stop('A') is not None and gtfs.stop(weird) is None
         assert gtfs.candidates('OP1', '88', 'A', 'C')             # table still there
+
+
+def test_prime_lines_batches_like_line_route():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'gtfs.duckdb')
+        _build(path)
+        _point_at(path)
+        weird = "x'; DROP TABLE gtfs_route_stops; --\x1e\x1f"
+        gtfs.prime_lines([('OP1', '88', 'inbound'), ('OP1', '88', None),
+                          ('OP1', 'cot', 'outbound'), ('OP1', '88', 'clockwise'),
+                          ('OP9', '88', None), ('OP1', weird, None), (None, '88', None)])
+        assert gtfs._lines[('OP1', '88', 'inbound')]['direction'] == 'inbound'
+        assert gtfs._lines[('OP1', '88', None)]['direction'] == 'outbound'
+        assert gtfs._lines[('OP1', 'cot', 'outbound')]['stops'][1]['atco'] == 'M1'   # via alias
+        assert gtfs._lines[('OP1', '88', 'clockwise')]['source'] == 'opposite_direction'
+        assert gtfs._lines[('OP9', '88', None)] is None
+        assert gtfs._lines[('OP1', weird, None)] is None
+        assert (None, '88', None) not in gtfs._lines               # no operator: not batched
+        assert gtfs.line_route('OP1', '88', 'inbound') is gtfs._lines[('OP1', '88', 'inbound')]
+        assert gtfs.line_route(None, '88')['operator'] == 'OP2'      # single-key path still works

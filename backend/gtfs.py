@@ -233,6 +233,73 @@ def _pattern_stops(operator, line, direction, pattern_id):
     return [_stop_dict(*r[:5], seq=r[5], secs=r[6]) for r in rows]
 
 
+def _route_dict(stops, operator, r_dir, direction):
+    return {'stops': stops, 'operator': operator, 'direction': r_dir,
+            'source': 'exact' if not direction or r_dir == direction else 'opposite_direction'}
+
+
+def _load_lines(keys):
+    """Fill _lines for many (operator, line, direction) keys, operator present,
+    in one connection. A cold poll has over a thousand distinct keys and a
+    connection each took ~80 s. Same resolution as _load_candidates; the pattern
+    chosen is the primary one in the requested direction if there is one, else
+    outbound, else the one with most trips."""
+    if not available():
+        return
+    try:
+        con = duckdb.connect(GTFS_PATH, read_only=True)
+    except Exception:
+        return
+    found = {k: None for k in keys}
+    try:
+        con.execute('CREATE TEMP TABLE k(op VARCHAR, ln VARCHAR, d VARCHAR)')
+        con.execute(
+            'INSERT INTO k SELECT split_part(t, chr(31), 1), split_part(t, chr(31), 2), '
+            'split_part(t, chr(31), 3) FROM (SELECT unnest(string_split(?, chr(30))) AS t)',
+            [_pack(chr(31).join(_clean(f or '') for f in k) for k in keys)])
+        con.execute(
+            'CREATE TEMP TABLE kr AS SELECT k.*, '
+            'CASE WHEN e.operator IS NOT NULL THEN k.op ELSE a.gtfs_operator END AS rop, '
+            'CASE WHEN e.operator IS NOT NULL THEN k.ln ELSE a.gtfs_line END AS rln '
+            'FROM k LEFT JOIN (SELECT DISTINCT operator, line FROM gtfs_route_patterns) e '
+            'ON e.operator = k.op AND e.line = k.ln '
+            'LEFT JOIN gtfs_line_alias a ON a.live_operator = k.op AND a.live_line = k.ln')
+        con.execute(
+            'CREATE TEMP TABLE pick AS SELECT * FROM (SELECT kr.op, kr.ln, kr.d, '
+            'p.operator AS pop, p.line AS pline, p.direction AS pdir, p.pattern_id AS pid, '
+            'row_number() OVER (PARTITION BY kr.op, kr.ln, kr.d ORDER BY '
+            '(p.direction = kr.d) DESC, (p.direction = \'outbound\') DESC, '
+            'p.n_trips DESC, p.operator, p.pattern_id) AS rn '
+            'FROM kr JOIN gtfs_route_patterns p ON p.operator = kr.rop AND p.line = kr.rln '
+            'AND p.is_primary) WHERE rn = 1')
+        stops = {}
+        for r in con.execute(
+                'SELECT pick.op, pick.ln, pick.d, pick.pop, pick.pdir, s.atco_code, '
+                's.stop_name, s.locality, s.lat, s.lon, s.seq, s.sched_secs_from_origin '
+                'FROM pick JOIN gtfs_route_stops s ON s.operator = pick.pop '
+                'AND s.line = pick.pline AND s.direction = pick.pdir '
+                'AND s.pattern_id = pick.pid ORDER BY s.seq').fetchall():
+            stops.setdefault(r[:5], []).append(
+                _stop_dict(r[5], r[6], r[7], r[8], r[9], seq=r[10], secs=r[11]))
+    except Exception:
+        return                          # leave the keys uncached: retried next poll
+    finally:
+        con.close()
+    for (op, ln, d, pop, pdir), rows in stops.items():
+        found[(op, ln, d or None)] = _route_dict(rows, pop, pdir, d or None)
+    _lines.update(found)
+
+
+def prime_lines(keys):
+    """Batch-load line routes for (operator, line, direction) keys; keys already
+    cached, or without an operator or line, are skipped."""
+    _check()
+    todo = sorted({k for k in keys if k[0] and k[1] and k not in _lines},
+                  key=lambda k: tuple(f or '' for f in k))
+    if todo:
+        _load_lines(todo)
+
+
 def line_route(operator, line, direction=None):
     """One representative route for a line, for the map's route overlay:
     {stops, operator, direction, source}, or None. Chooses among the primary
@@ -242,30 +309,19 @@ def line_route(operator, line, direction=None):
         return None
     _check()
     key = (operator, line, direction)
-    if key in _lines:
-        return _lines[key]
-    op, ln = _resolve(operator, line) if operator else (None, line)
-    if operator and not op:
-        found = None
-    else:
-        where, args = 'line = ? AND is_primary', [ln]
-        if op:
-            where += ' AND operator = ?'
-            args.append(op)
-        rows = _query(
-            f'SELECT operator, direction, pattern_id FROM gtfs_route_patterns WHERE {where} '
-            'ORDER BY (direction = ?) DESC, (direction = \'outbound\') DESC, '
-            'n_trips DESC, operator, pattern_id LIMIT 1', args + [direction or ''])
-        found = None
-        if rows:
-            r_op, r_dir, pid = rows[0]
-            stops = _pattern_stops(r_op, ln, r_dir, pid)
-            if stops:
-                found = {'stops': stops, 'operator': r_op, 'direction': r_dir,
-                         'source': ('exact' if not direction or r_dir == direction
-                                    else 'opposite_direction')}
-    _lines[key] = found
-    return found
+    if key not in _lines:
+        if operator:
+            prime_lines([key])
+        else:
+            rows = _query(
+                'SELECT operator, direction, pattern_id FROM gtfs_route_patterns '
+                'WHERE line = ? AND is_primary ORDER BY (direction = ?) DESC, '
+                '(direction = \'outbound\') DESC, n_trips DESC, operator, pattern_id LIMIT 1',
+                [line, direction or ''])
+            stops = _pattern_stops(rows[0][0], line, rows[0][1], rows[0][2]) if rows else []
+            _lines[key] = (_route_dict(stops, rows[0][0], rows[0][1], direction)
+                           if stops else None)
+    return _lines.get(key)
 
 
 def line_localities(norms):

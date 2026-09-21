@@ -950,6 +950,10 @@ def prefetch_timetable(rows, sync_seed=False):
     gtfs.prime([r.get(k) for r in rows for k in ('origin_ref', 'dest_ref')])
     gtfs.prime_routes({(r.get('operator'), r.get('line'), r.get('origin_ref'),
                         r.get('dest_ref')) for r in rows})
+    # Buses no pattern matched fall back to their line's primary route (route_for).
+    gtfs.prime_lines({(r.get('operator'), r.get('line'), r.get('direction')) for r in rows
+                      if not gtfs.candidates(r.get('operator'), r.get('line'),
+                                             r.get('origin_ref'), r.get('dest_ref'))})
     observe_trails(rows, sync_seed)
 
 
