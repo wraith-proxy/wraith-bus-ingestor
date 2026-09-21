@@ -1113,7 +1113,7 @@ def stop_lookup(marts, atco):
     return gtfs.stop(atco) or marts['stop_by_atco'].get(atco)
 
 
-def route_for(marts, row, now_s):
+def route_for(marts, row, now_s, merge_line_stops=False):
     """(stop sequence, how it was found) for the route this bus is working.
 
     1. A timetable pattern that runs exactly origin -> destination. When several
@@ -1121,7 +1121,10 @@ def route_for(marts, row, now_s):
        otherwise the most-run one, reported as 'gtfs_pattern_unresolved'.
     2. The line's primary pattern, which is enough to name a next stop but is
        not pinned to this journey.
-    3. line_stops, while it still exists (London has no timetable).
+    3. line_stops, while it still exists (London has no timetable). Only the
+       single-bus endpoint may ask for merge_line_stops: merging every
+       direction scans the whole index, 10 ms a bus, which made /buses 60 times
+       slower when every poll did it.
     Callers must not trust a stop sequence that lacks the bus's own origin and
     destination; progress_delay checks."""
     operator, line = row.get('operator'), row.get('line')
@@ -1134,8 +1137,11 @@ def route_for(marts, row, now_s):
     found = gtfs.line_route(operator, line, row.get('direction'))
     if found:
         return found['stops'], 'gtfs_line'
-    return stops_for(marts, operator, line, row.get('direction'),
-                     day_type(local_dt(now_s))), 'line_stops'
+    day = day_type(local_dt(now_s))
+    if merge_line_stops:
+        return stops_for(marts, operator, line, row.get('direction'), day), 'line_stops'
+    key = stops_index_key(marts['stops'], operator, line, row.get('direction'), day)
+    return (marts['stops'][key] if key else []), 'line_stops'
 
 
 def find_last_stop(pings, stops):
@@ -1233,7 +1239,7 @@ def bus_detail(bus_id):
                                 for r in rows if r is not row]
 
     prefetch_timetable([row], sync_seed=True)
-    stops, route_source = route_for(marts, row, now_s)
+    stops, route_source = route_for(marts, row, now_s, merge_line_stops=True)
     props['route_source'] = route_source if stops else None
     if stops:
         try:

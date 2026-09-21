@@ -157,3 +157,24 @@ def test_everything_degrades_when_the_timetable_is_missing():
     app.prefetch_timetable([_row(), _row(origin_ref=None)])        # must not raise
     frag, _model, _pred = app.predict(_row(), marts, time.time())
     assert frag['eta_iso'] is None and frag['status'] == 'unknown'
+
+
+def test_poll_path_never_takes_the_expensive_line_stops_merge():
+    """/buses calls route_for for thousands of buses. stops_for's merge scans the
+    whole index (10 ms a bus): only /bus/<id> may ask for it."""
+    _point_at('/nonexistent/gtfs.duckdb')
+    marts = _marts()
+    marts['stops'] = {('*', 'L9', 'inbound', '*'): [{'atco': 'T', 'seq': 1}]}
+    real = app.stops_for
+    app.stops_for = lambda *a: (_ for _ in ()).throw(AssertionError('merge on the poll path'))
+    try:
+        # Direction the index only has the opposite of: resolved by stops_index_key.
+        stops, _src = app.route_for(marts, _row(operator='TFLO', line='L9'), time.time())
+        assert stops == [{'atco': 'T', 'seq': 1}]
+        # Nothing matches without the merge: empty, quickly, no scan.
+        assert app.route_for(marts, _row(operator='TFLO', line='nope'), time.time())[0] == []
+    finally:
+        app.stops_for = real
+    stops, _src = app.route_for(marts, _row(operator='TFLO', line='L9'), time.time(),
+                                merge_line_stops=True)
+    assert stops == [{'atco': 'T', 'seq': 1}]
