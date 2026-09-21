@@ -17,33 +17,39 @@ def _build(path):
                 "('A','Alpha Street','Ashton','53.6','-2.3','active'),"
                 "('B','Beta Road','Bury','53.7','-2.4','active'),"
                 "('Z','No Coords','Nowhere','','','active')")
-    con.execute('CREATE TABLE gtfs_route_patterns(operator VARCHAR, line VARCHAR, direction VARCHAR, '
-                'pattern_id INTEGER, is_primary BOOLEAN, n_trips INTEGER, n_stops INTEGER, '
-                'first_atco VARCHAR, last_atco VARCHAR, is_circular BOOLEAN, trip_share DOUBLE)')
+    con.execute('CREATE TABLE gtfs_route_patterns(operator VARCHAR, line VARCHAR, '
+                'direction VARCHAR, pattern_id INTEGER, is_primary BOOLEAN, n_trips INTEGER, '
+                'n_stops INTEGER, first_atco VARCHAR, last_atco VARCHAR, '
+                'is_circular BOOLEAN, trip_share DOUBLE)')
     con.execute("INSERT INTO gtfs_route_patterns VALUES "
                 "('OP1','88','outbound',1,true,20,3,'A','C',false,0.8),"
                 "('OP1','88','outbound',2,false,5,3,'A','C',false,0.2),"
                 "('OP1','88','inbound',1,true,25,3,'C','A',false,1.0),"
                 "('OP2','88','outbound',1,true,90,2,'X','Y',false,1.0)")
-    con.execute('CREATE TABLE gtfs_route_stops(operator VARCHAR, line VARCHAR, direction VARCHAR, '
-                'atco_code VARCHAR, stop_name VARCHAR, locality VARCHAR, lat DOUBLE, lon DOUBLE, '
+    con.execute('CREATE TABLE gtfs_route_stops(operator VARCHAR, line VARCHAR, '
+                'direction VARCHAR, atco_code VARCHAR, stop_name VARCHAR, '
+                'locality VARCHAR, lat DOUBLE, lon DOUBLE, '
                 'seq INTEGER, sched_secs_from_origin DOUBLE, n_trips INTEGER, pattern_id INTEGER, '
                 'is_primary BOOLEAN)')
     rows = []
     for pid, mid in ((1, 'M1'), (2, 'M2')):
         for seq, (atco, secs) in enumerate((('A', 0), (mid, 300), ('C', 600)), 1):
-            rows.append(f"('OP1','88','outbound','{atco}','n{atco}','L',53.0,-2.0,{seq},{secs},5,{pid},{pid == 1})")
+            rows.append(f"('OP1','88','outbound','{atco}','n{atco}','L',53.0,-2.0,"
+                        f"{seq},{secs},5,{pid},{pid == 1})")
     for seq, (atco, secs) in enumerate((('C', 0), ('M1', 300), ('A', 600)), 1):
-        rows.append(f"('OP1','88','inbound','{atco}','n{atco}','L',53.0,-2.0,{seq},{secs},5,1,true)")
+        rows.append(f"('OP1','88','inbound','{atco}','n{atco}','L',53.0,-2.0,"
+                    f"{seq},{secs},5,1,true)")
     rows.append("('OP2','88','outbound','X','nX','L',54.0,-1.0,1,0,5,1,true)")
     rows.append("('OP2','88','outbound','Y','nY','L',54.1,-1.1,2,60,5,1,true)")
     con.execute('INSERT INTO gtfs_route_stops VALUES ' + ','.join(rows))
     con.execute('CREATE TABLE gtfs_line_alias(live_operator VARCHAR, live_line VARCHAR, '
-                'gtfs_operator VARCHAR, gtfs_line VARCHAR, n_buses INTEGER, share DOUBLE, source VARCHAR)')
+                'gtfs_operator VARCHAR, gtfs_line VARCHAR, n_buses INTEGER, '
+                'share DOUBLE, source VARCHAR)')
     con.execute("INSERT INTO gtfs_line_alias VALUES ('OP1','cot','OP1','88',3,1.0,'learned')")
     con.execute('CREATE TABLE gtfs_line_localities(line VARCHAR, locality_norm VARCHAR, '
                 'locality VARCHAR, n_stops INTEGER)')
-    con.execute("INSERT INTO gtfs_line_localities VALUES ('88','ASHTON','Ashton',2),('9','ASHTON','Ashton',1)")
+    con.execute("INSERT INTO gtfs_line_localities VALUES "
+                "('88','ASHTON','Ashton',2),('9','ASHTON','Ashton',1)")
     con.close()
 
 
