@@ -68,6 +68,14 @@ def observe(vehicle, journey, gen, cands, lat, lon, ts, seeding=False):
     seeded one marks where live data starts, so seeding never double-counts it."""
     if lat is None or lon is None or len(cands) < 2:
         return
+    if not seeding:
+        # A repeat of the ping we already scored (most polls, for most buses):
+        # decide that before paying for the distances.
+        with _lock:
+            t = _trails.get(vehicle)
+            if (t is not None and t['journey'] == journey and t['gen'] == gen
+                    and ts is not None and ts <= t.get('last_ts', '')):
+                return
     scored = {_label(c): min(distance_m(lat, lon, c['stops']), CAP_M) for c in cands}
     with _lock:
         t = _trails.get(vehicle)

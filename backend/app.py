@@ -1077,14 +1077,21 @@ def find_last_stop(pings, stops):
 # Bus routes
 # --------------------------------------------------------------------------
 
-@app.route('/buses', methods=['GET'])
-def buses():
+# The feed moves every ~30 s, so a poll built a few seconds ago is as good as a
+# new one. One build serves every caller inside the window (several tabs, a
+# fast poller); the lock stops a burst of simultaneous misses each building it.
+BUSES_TTL = 5
+_buses_cache = {'at': 0.0, 'body': None}
+_buses_lock = threading.Lock()
+
+
+def _build_buses():
+    """(body bytes, status): the /buses GeoJSON, or a 503 when QuestDB is down."""
     try:
         rows = live_buses()
     except Exception as exc:
         log_once('qdb-buses', f'questdb unavailable: {exc}')
-        return jsonify({"type": "FeatureCollection", "features": []}), 503
-
+        return None
     marts = get_marts()
     now_s = time.time()
     prefetch_timetable(rows)
@@ -1098,7 +1105,19 @@ def buses():
             "geometry": {"type": "Point", "coordinates": [row.get('lon'), row.get('lat')]},
             "properties": props,
         })
-    return jsonify({"type": "FeatureCollection", "features": features})
+    return jsonify({"type": "FeatureCollection", "features": features}).get_data()
+
+
+@app.route('/buses', methods=['GET'])
+def buses():
+    with _buses_lock:
+        if _buses_cache['body'] is None or time.time() - _buses_cache['at'] >= BUSES_TTL:
+            _buses_cache['body'] = _build_buses()     # failures are not cached
+            _buses_cache['at'] = time.time()
+        body = _buses_cache['body']
+    if body is None:
+        return jsonify({"type": "FeatureCollection", "features": []}), 503
+    return app.response_class(body, mimetype='application/json')
 
 
 @app.route('/bus/<bus_id>', methods=['GET'])

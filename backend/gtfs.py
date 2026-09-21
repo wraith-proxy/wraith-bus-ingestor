@@ -210,6 +210,9 @@ def candidates(operator, line, origin_ref, dest_ref):
     key = (operator, line, origin_ref, dest_ref)
     if not all(key):
         return []
+    hit = _cands.get(key)
+    if hit is not None:                 # the poll's hot path: no re-entry, no stat
+        return hit
     prime_routes([key])
     return _cands.get(key, [])
 

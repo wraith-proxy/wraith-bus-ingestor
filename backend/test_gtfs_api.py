@@ -143,3 +143,36 @@ def test_everything_degrades_when_the_timetable_is_missing():
     app.prefetch_timetable([_row(), _row(origin_ref=None)])        # must not raise
     frag, _model, _pred = app.predict(_row(), marts, time.time())
     assert frag['eta_iso'] is None and frag['status'] == 'unknown'
+
+
+def test_buses_response_is_built_once_per_window_and_failures_are_not_cached():
+    calls = []
+    row = _row(bus_id='b1', timestamp='2026-09-21T10:00:00.000000Z')
+
+    def fake_live():
+        calls.append(1)
+        return [row]
+    real = (app.live_buses, app.get_marts, app._buses_cache.copy())
+    _point_at('/nonexistent/gtfs.duckdb')
+    app.live_buses, app.get_marts = fake_live, _marts
+    app._buses_cache.update(at=0.0, body=None)
+    try:
+        client = app.app.test_client()
+        first = client.get('/buses')
+        second = client.get('/buses')
+        assert first.status_code == 200 and first.get_data() == second.get_data()
+        assert len(calls) == 1 and len(first.get_json()['features']) == 1
+        app._buses_cache['at'] -= app.BUSES_TTL + 1                 # window over
+        client.get('/buses')
+        assert len(calls) == 2
+
+        def boom():
+            raise OSError('questdb down')
+        app.live_buses = boom
+        app._buses_cache.update(at=0.0, body=None)
+        assert client.get('/buses').status_code == 503
+        app.live_buses = fake_live
+        assert client.get('/buses').status_code == 200              # recovers at once
+    finally:
+        app.live_buses, app.get_marts = real[0], real[1]
+        app._buses_cache.update(real[2])
