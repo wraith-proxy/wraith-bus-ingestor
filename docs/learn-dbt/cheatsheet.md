@@ -58,6 +58,6 @@ Everything below was run in the sandbox. Run them from inside it
 |---|---|
 | `Binder Error: Referenced column ... not found` | A column typo in your SQL. It suggests the right name. |
 | `depends on a node named ... which was not found` | A `ref()` to a model that does not exist. Check spelling. |
-| `FAIL 9609` on a test | The data is wrong: 9609 bad rows. Open the compiled query. |
+| `FAIL 3` on a test | The data is wrong: 3 bad rows. Open the compiled query. |
 | `ERROR` on a test | dbt could not run the check, usually because the model is not built yet. |
 | Everything is a mess | `ops/dbt_sandbox.sh`, and start again. |

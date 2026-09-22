@@ -67,18 +67,20 @@ Try these in the sandbox. Answers are hidden in the boxes.
 
     returns nothing. Why is that guaranteed? Look at the `group by`.
 
-??? question "2. Add a test that the `localities` table has at least 10,000 rows"
-    A singular test, `tests/assert_localities_not_tiny.sql`:
+??? question "2. Add a test that the `localities` table has at least 3 rows"
+    3, not 10,000 -- this sandbox's whole fixture is six made-up towns. A singular
+    test, `tests/assert_localities_not_tiny.sql`:
 
     ```sql
     select 'localities is suspiciously small' as failure
     from {{ ref('localities') }}
-    having count(*) < 10000
+    having count(*) < 3
     ```
 
-    Returns a row only when the table is too small. In the real project a check like
-    this exists as a data contract (`contracts/bus-marts.odcs.yaml`), so a broken
-    build cannot publish an empty table.
+    Returns a row only when the table is too small. In the real project a check
+    like this exists as a data contract (`contracts/bus-marts.odcs.yaml`), sized
+    for the real ~25,000 localities, not this sandbox's 6 -- a broken build there
+    cannot publish an empty table either.
 
 ??? question "3. Predict before you run: what does `dbt ls --resource-type model --select +line_punctuality` show?"
     `line_punctuality`, `int_journeys_shaped_and_directed`,
