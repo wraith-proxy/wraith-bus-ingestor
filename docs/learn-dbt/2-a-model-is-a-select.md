@@ -64,7 +64,7 @@ of stops*. Make a new file:
 cat > models/marts/big_localities.sql <<'SQL'
 select locality, n_stops
 from {{ ref('localities') }}
-where n_stops >= 100
+where n_stops >= 10
 SQL
 ```
 
@@ -76,7 +76,14 @@ dbt show --select big_localities --limit 5
 ```
 
 ```text
-1 of 1 OK created sql table model main.big_localities ...... [OK in 0.11s]
+1 of 1 OK created sql table model main.big_localities ...... [OK in 0.12s]
+```
+
+```text
+| locality   | n_stops |
+| ---------- | ------- |
+| Duckville  |      22 |
+| Sandopolis |      14 |
 ```
 
 You have added a table to the project by creating one file. There is no
@@ -84,7 +91,7 @@ registration step; dbt finds every `.sql` file under `models/` by itself.
 
 ## Tinker
 
-1. Change `100` to `300` and run it again. What changed in the output?
+1. Change `10` to `20`. Now only one place should qualify -- which one, and why?
 2. Add a second column, `lat`, to the `select`. Run it. Did dbt need to be told
    about the new column?
 3. **Break it.** Change `n_stops` to `n_stopz` and run it.

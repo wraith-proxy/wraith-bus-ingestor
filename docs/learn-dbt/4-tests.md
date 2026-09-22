@@ -17,16 +17,16 @@ A **singular test** is a `.sql` file in `tests/`. It is a `SELECT` that returns
 the rows that are *wrong*. If it returns zero rows, the test passes. If it returns
 any rows, it fails.
 
-Make one for your new model. We said "big" means at least 100 stops, so:
+Make one for your new model. We said "big" means at least 10 stops, so:
 
 ```bash
 cat > tests/assert_big_localities_are_big.sql <<'SQL'
 select * from {{ ref('big_localities') }}
-where n_stops < 100
+where n_stops < 10
 SQL
 ```
 
-Set `big_localities.sql` back to `n_stops >= 100`, run it, and test it:
+Set `big_localities.sql` back to `n_stops >= 10`, run it, and test it:
 
 ```bash
 dbt run  --select big_localities
@@ -39,7 +39,7 @@ dbt test --select big_localities
 
 ### Now make it fail
 
-Change `100` to `10` in the model, rebuild, and test again:
+Change `10` to `3` in the model, rebuild, and test again:
 
 ```bash
 dbt run  --select big_localities
@@ -47,14 +47,15 @@ dbt test --select big_localities
 ```
 
 ```text
-1 of 1 FAIL 9609 assert_big_localities_are_big ...... [FAIL 9609 in 0.04s]
-  Got 9609 results, configured to fail if != 0
+1 of 1 FAIL 3 assert_big_localities_are_big ...... [FAIL 3 in 0.04s]
+  Got 3 results, configured to fail if != 0
   compiled code at target/compiled/.../assert_big_localities_are_big.sql
 ```
 
-(Your number will differ.) The test found places that are not "big". dbt even
-tells you where the compiled query is, so you can run it and look at the bad rows.
-Put the `100` back.
+The test found the 3 places that are not "big": Mapleford (9), Bridgeton (5) and
+Old Mill (3), all now let in by the model's own weaker `>= 3` but still below the
+test's `< 10`. dbt even tells you where the compiled query is, so you can run it
+and look at the bad rows yourself. Put the `10` back.
 
 ## Kind 2: the one-liners in YAML
 
@@ -77,7 +78,7 @@ cat > models/marts/big_localities.yml <<'YML'
 version: 2
 models:
   - name: big_localities
-    description: Places with at least 100 bus stops.
+    description: Places with at least 10 bus stops.
     columns:
       - name: locality
         tests: [not_null, unique]

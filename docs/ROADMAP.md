@@ -8,21 +8,23 @@ tags `cz` cuts on every merge to `main` are an independent sequence --
 `.gitea/workflows/release.yml` bumps them per merge, so the two numbers
 drift apart by design and neither is wrong.
 
-## Where to pick up (as of 2026-09-21)
+## Where to pick up (as of 2026-09-22)
 
 Everything through 1.12.0 and 1.14.0 is delivered and on `main`; the API, the marts
 and the GTFS timetable are live. In order:
 
-1. **Watch two unproven first runs.** The first *scheduled* 03:00 nightly on the
-   reduced build (2026-09-22; a forced run of the real unit on 2026-09-21 took 15 m
-   33 s), and the first end-to-end GTFS refresh (timer enabled; Monday 2026-09-28
-   01:00), which also swaps in the reviewed alias table.
+1. **The first scheduled 03:00 on the reduced build passed (2026-09-22): 22 min 27 s,
+   success**, though segmentation alone ran about 3x the forced run's time for
+   reasons not yet established (see 1.14.0). Still to watch: the first end-to-end
+   GTFS refresh (timer enabled; Monday 2026-09-28 01:00), which also swaps in the
+   reviewed alias table.
 2. **1.13.0, the timetable-backed ETA rung (Phase 2)** is the only planned,
    not-landed item. It is unblocked.
 3. **Open, unscheduled:** the ingest bounding-box decision; the TfL Unified API
-   ingest for London; why `eta_models` varies from 6 s to 433 s; alerting on the
-   API's `marts_state`; the unexplained host freeze (RAM cleared, PSU and thermal
-   untested); and the 1.12.0 "Not done / unproven" list.
+   ingest for London; two unexplained runtime swings (`eta_models` 6 s to 433 s;
+   segmentation 81.5 s to 437 s on 2026-09-22); alerting on the API's `marts_state`;
+   the unexplained host freeze (RAM cleared, PSU and thermal untested); and the
+   1.12.0 "Not done / unproven" list.
 4. **Not next:** WF-S (1.14.0) is only for a nightly that is still too slow, and it is
    now 15.5 minutes, about 10.5 of them extraction.
 
@@ -504,7 +506,7 @@ regression still earns its cost once the timetable rung is live is a
 after this phase has shipped and run for a while, not a decision made in
 advance of that data.
 
-## 1.14.0 -- a fast, deterministic nightly build (deployed 2026-09-20; 03:00 run 2026-09-21: 22 min 37 s; after ADR-0008 Phase 1, a forced run of the real unit: 15 min 33 s)
+## 1.14.0 -- a fast, deterministic nightly build (deployed 2026-09-20; 03:00 run 2026-09-21: 22 min 37 s; after ADR-0008 Phase 1, forced run 2026-09-21: 15 min 33 s; first scheduled 03:00 on the reduced build, 2026-09-22: 22 min 27 s)
 
 The owner's goal is a 03:00 nightly that **succeeds and is fast**. The measured
 profile ([ADR-0009](adr/0009-fast-nightly-build.md)) showed the nightly took about
@@ -548,8 +550,17 @@ run of the real unit, with real extraction, took **15 min 33 s** and succeeded: 
 about 10.5 min, `dbt run` 117.7 s, `dbt test` 136 s. In the same pass the persistent
 build warehouse was compacted (8.9 GB to 3.5 GB, the orphaned tables gone) and
 `memory_limit` went from 6 GB to 4 GB (same speed; 4.5 GB peak process memory against
-about 11 GB). It is one daytime run, so the first *scheduled* 03:00 on the reduced
-build (2026-09-22) is still to be watched.
+about 11 GB). It was one daytime run.
+
+**The first scheduled 03:00 on the reduced build (2026-09-22): 22 min 27 s, success.**
+Extract about 11 min 25 s, `dbt run` 8 min 5 s (8/8), `dbt test` 164 s (88/88), 40/0
+on the contract gate, `/model-info` `ok` at 130,539 models. Slower than the forced
+run because segmentation alone took 437 s against that run's 81.5 s -- nearly 3x, and
+the reason is not established (more genuinely new data in the window, a colder page
+cache overnight, and contention from something else running at 03:00 are all
+plausible; none has been checked). This is now the second unexplained runtime swing
+in this build, alongside `eta_models`' 6-433 s -- both filed under "Known issues"
+rather than chased, since nothing failed and nothing is stale.
 
 **Remaining:** WF-S, the narrower
 sort payload and fewer window passes (much of the segmentation cost is disk-bound:
@@ -558,6 +569,28 @@ be picked up if the nightly is still too slow; ADR-0008's Phase 1 (the API rewir
 and the deletion of the 89 models) was delivered 2026-09-21 (see 1.12.0). Also open: why `eta_models` varies from 6 s to 433 s across runs.
 
 ## Known issues -- raised, not yet actioned
+
+**Three repeated SQL expressions, found writing the Learn dbt walkthrough, are
+macro candidates.** Not acted on; flagged for whoever next touches these models.
+`path_km / (duration_secs / 3600.0)` (a bus's average speed) appears 3x in
+`int_journeys_shaped_and_directed.sql` -- once as `mean_speed_kmh`, twice more in
+its own plausibility filter. `coalesce(operator, '~none~')` (the pre-2026-09-12,
+no-operator sentinel) appears 3x across that file and
+`int_pings_segmented_to_journeys.sql`. `lat between 49.8 and 61.0 and lon between
+-8.7 and 2.0` (the GB bounding box) appears 2x, once each in
+`stg_bods__vehicle_pings.sql` and `stg_naptan__stops.sql`. `date_diff('second',
+...)` also repeats (5x) but with different argument pairs each time -- the same
+SQL shape, not the same rule, so not a macro case.
+
+**Segmentation ran 3x slower on the first scheduled 03:00 of the reduced build
+(2026-09-22).** 437 s against 81.5 s in the forced run two days earlier, on the
+same model with the same 4 GB `memory_limit`; the rest of the build (extract,
+the other 7 models, `dbt test`, the contract gate, publish) ran at the expected
+times and the build succeeded (22 min 27 s total). No cause has been checked --
+candidates are more genuinely new data in that night's window, a colder page
+cache overnight, or contention from something else running at 03:00. Filed
+alongside the `eta_models` 6-433 s swing below as a variance to watch, not
+chased, since nothing failed and the marts published on time.
 
 **The live map hid about 3% of vehicles (fixed 2026-09-20, deployed 2026-09-21).**
 `backend/app.py` selected the newest row per vehicle with `LATEST ON timestamp

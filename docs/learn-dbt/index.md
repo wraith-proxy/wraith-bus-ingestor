@@ -38,7 +38,7 @@ flowchart LR
 
 | Stop | You will learn | Time |
 |---|---|---|
-| [1. Take off](1-take-off.md) | Build a safe sandbox and run dbt for the first time | 10 min |
+| [1. Take off](1-take-off.md) | Build a safe, synthetic sandbox and run dbt for the first time | 10 min |
 | [2. A model is a SELECT](2-a-model-is-a-select.md) | Read, run and write a model | 15 min |
 | [3. ref(): models find each other](3-ref-and-the-graph.md) | Dependencies, and how to run just a slice | 15 min |
 | [4. Tests](4-tests.md) | Make dbt catch your mistakes | 15 min |
@@ -54,7 +54,7 @@ flowchart LR
 !!! danger "Never run `dbt` inside the repo's `dbt/` folder"
     That folder belongs to the **03:00 nightly build**. It has its own warehouse
     file, and if you run dbt there you can make tonight's build fail. Stop 1
-    gives you a **sandbox**: a private copy with a small slice of real data.
+    gives you a **sandbox**: a private copy with its own small, made-up data.
     Everything in this course happens there, and you cannot hurt anything.
 
 !!! tip "Break things"
@@ -66,6 +66,9 @@ flowchart LR
 
 - A terminal on the machine that hosts this repo, and the repo checked out.
 - The project's Python environment (`uv sync` has been run in the repo).
-- The nightly build has run at least once, so the sample data exists.
+
+That's it. The sandbox's data is synthetic, generated fresh by a script
+committed in the repo -- it does not need the nightly build to have ever run,
+or any real bus data to exist anywhere.
 
 Ready? Climb on: [Stop 1, Take off](1-take-off.md).

@@ -82,8 +82,8 @@ Create `macros/size_label.sql`:
 cat > macros/size_label.sql <<'SQL'
 {% macro size_label(n) -%}
 case
-    when {{ n }} >= 300 then 'city'
-    when {{ n }} >= 60  then 'town'
+    when {{ n }} >= 15 then 'city'
+    when {{ n }} >= 6  then 'town'
     else 'village'
 end
 {%- endmacro %}
@@ -93,14 +93,18 @@ SQL
 Use it:
 
 ```bash
-dbt show --inline "select locality, n_stops, {{ size_label('n_stops') }} as size from {{ ref('localities') }} order by n_stops desc" --limit 5
+dbt show --inline "select locality, n_stops, {{ size_label('n_stops') }} as size from {{ ref('localities') }} order by n_stops desc" --limit 6
 ```
 
 ```text
-| locality  | n_stops | size |
-| --------- | ------- | ---- |
-| Leicester |     483 | city |
-| Taunton   |     394 | city |
+| locality   | n_stops | size    |
+| ---------- | ------- | ------- |
+| Duckville  |      22 | city    |
+| Sandopolis |      14 | town    |
+| Mapleford  |       9 | town    |
+| Bridgeton  |       5 | village |
+| Old Mill   |       3 | village |
+| Nowhereton |       1 | village |
 ```
 
 Now look at what dbt *really* sent to the database:
@@ -117,7 +121,7 @@ text substitution; the database never hears about it.
 1. Change the thresholds. Which places change label?
 2. Make a model `models/marts/place_sizes.sql` that uses `size_label` and run it.
 3. Add a second argument to the macro for the "city" threshold, with a default:
-   `{% macro size_label(n, city=300) -%}`.
+   `{% macro size_label(n, city=15) -%}`.
 
 ??? question "Where would you put a rule that three different models all need?"
     In a macro. Write it once in `macros/`, call it from each model.
