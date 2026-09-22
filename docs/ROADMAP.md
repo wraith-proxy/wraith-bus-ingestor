@@ -570,6 +570,18 @@ and the deletion of the 89 models) was delivered 2026-09-21 (see 1.12.0). Also o
 
 ## Known issues -- raised, not yet actioned
 
+**Three repeated SQL expressions, found writing the Learn dbt walkthrough, are
+macro candidates.** Not acted on; flagged for whoever next touches these models.
+`path_km / (duration_secs / 3600.0)` (a bus's average speed) appears 3x in
+`int_journeys_shaped_and_directed.sql` -- once as `mean_speed_kmh`, twice more in
+its own plausibility filter. `coalesce(operator, '~none~')` (the pre-2026-09-12,
+no-operator sentinel) appears 3x across that file and
+`int_pings_segmented_to_journeys.sql`. `lat between 49.8 and 61.0 and lon between
+-8.7 and 2.0` (the GB bounding box) appears 2x, once each in
+`stg_bods__vehicle_pings.sql` and `stg_naptan__stops.sql`. `date_diff('second',
+...)` also repeats (5x) but with different argument pairs each time -- the same
+SQL shape, not the same rule, so not a macro case.
+
 **Segmentation ran 3x slower on the first scheduled 03:00 of the reduced build
 (2026-09-22).** 437 s against 81.5 s in the forced run two days earlier, on the
 same model with the same 4 GB `memory_limit`; the rest of the build (extract,
