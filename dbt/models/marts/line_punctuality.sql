@@ -33,7 +33,14 @@ with journeys as (
         end_ts,
         dest_aimed_arr_ts
     from {{ ref('int_journeys_shaped_and_directed') }}
+    -- direction is required/primaryKey in bus-marts.odcs.yaml, and this mart
+    -- has no '*'-direction fallback grain the way eta_models does -- so a
+    -- journey the feed didn't tag (31.9% since the direction-inference
+    -- heuristic was retired, ROADMAP.md 1.2.0) is excluded here rather than
+    -- published as a NULL, same principle as eta_models' operator/direction
+    -- guard just above it in this same mart layer.
     where dest_aimed_arr_ts is not null
+      and direction is not null
 
 ),
 
