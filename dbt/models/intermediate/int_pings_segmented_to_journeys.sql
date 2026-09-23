@@ -136,7 +136,7 @@
   doesn't grow past what extract.py actually still has behind it.
 #}
 
-{%- set part = "coalesce(operator, '~none~'), bus_id" -%}
+{%- set part = no_operator_sentinel('operator') ~ ", bus_id" -%}
 {%- set ord = 'ping_ts, recorded_at, line, lat, lon' -%}
 
 with pings as (
@@ -272,7 +272,7 @@ keyed as (
         -- the same accumulator shape as the sum() this replaces, which has
         -- run this exact scale repeatedly tonight without incident. NULLs
         -- need no special handling: max() already ignores them.
-        coalesce(operator, '~none~') || '|' || bus_id || '#' || cast(
+        {{ no_operator_sentinel('operator') }} || '|' || bus_id || '#' || cast(
             epoch_ms(
                 max(case when is_journey_start = 1 then ping_ts end) over (
                     partition by {{ part }} order by {{ ord }}

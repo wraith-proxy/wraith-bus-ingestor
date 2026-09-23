@@ -18,27 +18,40 @@ macros:
       - name: lon2
         description: Longitude of the second point.
 
-  - name: bearing_deg
+  - name: avg_speed_kmh
     description: >
-      Initial great-circle (compass) bearing in degrees, 0-360, from point 1 to
-      point 2. Used to infer a journey's direction of travel when the feed does
-      not supply DirectionRef.
+      A journey's average speed in km/h: path distance over elapsed time.
+      Repeated 3x verbatim in int_journeys_shaped_and_directed.sql before
+      this macro existed (ROADMAP.md 1.18.0).
     arguments:
-      - name: lat1
-      - name: lon1
-      - name: lat2
-      - name: lon2
+      - name: path_km
+        description: Distance travelled, in km.
+      - name: duration_secs
+        description: Elapsed time, in seconds.
 
-  - name: bearing_delta
+  - name: no_operator_sentinel
     description: >
-      Smallest absolute angle between two compass bearings, 0-180 degrees.
-      Plain subtraction is wrong across the 0/360 seam (350 and 10 are 20
-      degrees apart, not 340); this handles the wraparound.
+      The pre-2026-09-12, no-operator sentinel -- coalesce(operator,
+      '~none~'). operator is genuinely NULL for every ping before that date,
+      and SQL joins/partitions never match NULL to NULL. Repeated verbatim in
+      int_pings_segmented_to_journeys.sql before this macro existed
+      (ROADMAP.md 1.18.0).
     arguments:
-      - name: b1
-        description: First bearing, degrees.
-      - name: b2
-        description: Second bearing, degrees.
+      - name: operator_expr
+        description: The operator column or expression to key on.
+
+  - name: in_gb_bbox
+    description: >
+      The GB ingest bounding box (mainland Great Britain). Repeated verbatim
+      in stg_bods__vehicle_pings.sql and stg_naptan__stops.sql before this
+      macro existed (ROADMAP.md 1.18.0). See ROADMAP.md, "Decided,
+      2026-09-23 -- keep the ingest bounding box GB-wide" for why it stays
+      this wide.
+    arguments:
+      - name: lat_expr
+        description: The latitude column or expression to filter.
+      - name: lon_expr
+        description: The longitude column or expression to filter.
 
   - name: hour_band
     description: >

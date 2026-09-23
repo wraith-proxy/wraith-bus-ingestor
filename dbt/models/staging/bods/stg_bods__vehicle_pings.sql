@@ -69,8 +69,7 @@ plausible as (
     where ping_tstz is not null
       and lat is not null
       and lon is not null
-      and lat between 49.8 and 61.0
-      and lon between -8.7 and 2.0
+      and {{ in_gb_bbox('lat', 'lon') }}
       and not (lat = 0 and lon = 0)
 
 ),

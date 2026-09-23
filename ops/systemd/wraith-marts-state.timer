@@ -1,0 +1,10 @@
+[Unit]
+Description=Publish wraith-bus-ingestor marts_state every 5 minutes, matching the Grafana alert group's 5m evaluation interval
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+Unit=wraith-marts-state.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Publish the API's marts_state to QuestDB for Grafana alerting
+
+[Service]
+Type=oneshot
+# thomaspeoples, not root (unlike wraith-bus-precleanup.service): this only
+# does HTTP GET/POST, no privileged operation.
+User=thomaspeoples
+ExecStart=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/.venv/bin/python3 /home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/ops/publish_marts_state.py
+StandardOutput=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/publish_marts_state.log
+StandardError=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/publish_marts_state.log

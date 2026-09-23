@@ -66,11 +66,14 @@ models:
       the route. Implausible journeys are dropped here, so every downstream
       model can take this table at face value.
 
-      Also where direction is decided. The feed's DirectionRef is NULL for the
-      entire historical training set, and eta_models is unusable without a
-      direction -- outbound and inbound journeys would be fitted as one. So a direction
-      is INFERRED from the journey's first-to-last compass bearing against the
-      line's modal bearing. It is a heuristic, and it is labelled as one.
+      Also where direction is decided. Until 2026-09-23 this also INFERRED a
+      direction from journey geometry whenever the feed's own DirectionRef was
+      NULL. Retired (ROADMAP.md 1.2.0): measured against the build warehouse,
+      feed_direction now covers 68.1% of journeys, and where both existed the
+      heuristic disagreed with it 53.9% of the time -- chance level, because
+      the heuristic's inbound/outbound split was never tied to the feed's own
+      convention. direction is now feed_direction, unmodified; NULL on the
+      31.9% the feed didn't tag, which nothing downstream requires non-null.
     columns:
       - name: journey_key
         description: Primary key. One row per surviving journey.
@@ -79,54 +82,13 @@ models:
         description: Service number. Not a route identifier -- see stg_bods__vehicle_pings.line.
         tests: [not_null]
       - name: feed_direction
-        description: The operator's DirectionRef if the feed supplied one for any ping of this journey, else NULL. Currently NULL for every row.
-      - name: direction_inferred
-        description: >
-          HEURISTIC, not observed, by one of two rules depending on route shape.
-          LINEAR routes: the journey's first-to-last bearing compared against
-          the line's reference bearing (the circular mean of its modal 45-degree
-          bin); within 90 degrees is 'outbound', otherwise 'inbound'.
-          CIRCULAR routes: the bearing rule is worse than useless, because a
-          loop ends where it started and its bearing is GPS noise -- identical
-          loops would be scattered at random between the two directions. Those
-          use the SIGN OF THE ENCLOSED AREA instead (shoelace formula), which
-          asks "which way round" rather than "which way along" and always
-          agrees between two buses running the same loop the same way.
-          The circulation sense is mapped onto the same 'outbound'/'inbound'
-          tokens rather than introducing new ones: the names are arbitrary for a
-          loop, and new tokens would break every direction lookup in the API for
-          no gain. What matters is that the bucketing is consistent.
-          The upgrade path for both rules is to stop inferring once enough
-          post-2026-09-12 data has accumulated for the real DirectionRef.
-        tests:
-          - not_null
-          - accepted_values:
-              arguments:
-                values: ['inbound', 'outbound']
-      - name: is_circular_line
-        description: >
-          Whether the line is treated as a loop route: median straight_km /
-          path_km across its journeys below 0.35, i.e. the typical journey ends
-          up much nearer its start than the distance it covered. Decided per
-          LINE rather than per journey, so one short-turn working on a loop
-          route is not bucketed by a different rule than the rest of its line.
-          Ceiling: 0.35.
-      - name: line_median_linearity
-        description: The median straight_km / path_km behind is_circular_line. 1.0 is a perfectly straight A-to-B run, 0.0 returns exactly to its start.
-      - name: signed_area_2
-        description: >
-          Twice the signed area the journey's path encloses (shoelace formula,
-          lon as x and lat as y). Only its SIGN is used -- positive is
-          anticlockwise, negative clockwise -- and only for circular lines.
+        description: The operator's DirectionRef if the feed supplied one for any ping of this journey, else NULL. Present on 68.1% of journeys as of 2026-09-23.
       - name: direction
         description: >
-          The direction actually used downstream -- coalesce(feed_direction,
-          direction_inferred). The feed always wins where it has an opinion, so
-          this improves on its own as real DirectionRef data ages in. Never '*':
-          '*' names a fallback grain of the model, not a real direction of
-          travel.
+          feed_direction, unmodified -- see the model description. NULL where
+          the feed did not tag this journey. Never '*': '*' names a fallback
+          grain of the model, not a real direction of travel.
         tests:
-          - not_null
           - accepted_values:
               arguments:
                 values: ['inbound', 'outbound', 'clockwise', 'anticlockwise']
@@ -159,10 +121,6 @@ models:
         description: Trimmed journey duration. Constrained to 4 minutes .. 5 hours; outside that it is a fragment or a failed segmentation.
       - name: mean_speed_kmh
         description: path_km over duration. Constrained to 1..90 km/h -- below is a parked bus with drifting GPS, above is a vehicle-ref collision the segmentation failed to split.
-      - name: journey_bearing
-        description: Compass bearing from the journey's first position to its last, 0-360. The input to direction inference.
-      - name: reference_bearing
-        description: The line's representative heading, used as the axis that splits its journeys into two directions.
       - name: dest_aimed_arr_ts
         description: Scheduled arrival, when the feed gave one. The sole input to line_punctuality and currently NULL on every surviving journey.
 
@@ -185,8 +143,10 @@ models:
         description: Service number, one of the grain columns of the fitted model.
         tests: [not_null]
       - name: direction
-        description: Journey direction, inferred or observed; a grain column of the fitted model.
-        tests: [not_null]
+        description: >
+          Journey direction, straight from the feed's DirectionRef -- see
+          int_journeys_shaped_and_directed. A grain column of the fitted
+          model; NULL forms its own grain like any other value.
       - name: hour_band
         description: >
           The band of THIS ping, not of the journey. The API looks the model up
