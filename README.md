@@ -168,12 +168,14 @@ days to Parquet on a separate drive, verified row for row before the live
 copy is dropped (`docs/adr/0007`). The archive is self-describing and can be
 queried in place with DuckDB.
 
-**Direction is inferred.** The feed started sending real `DirectionRef` on
-2026-09-12, but historical data is NULL. `int_journeys_shaped_and_directed`
-infers it from compass bearing on linear routes (split on the line's modal
-bearing) and from signed area on circular routes (shoelace formula, since a
-loop's bearing is noise). It is a heuristic, it is labelled as one, and it
-will retire itself as new data accumulates.
+**Direction comes straight from the feed.** `int_journeys_shaped_and_directed`
+used to infer it (compass bearing on linear routes, signed area on circular
+ones) whenever the feed's `DirectionRef` was NULL, which was true of almost
+every historical row. Retired 2026-09-23 (`docs/ROADMAP.md` 1.2.0): measured
+against the build warehouse, the feed now tags 68.1% of journeys, and where
+both existed the heuristic disagreed with it 53.9% of the time -- chance
+level, since its inbound/outbound split was never tied to the feed's own
+convention. `direction` is now `feed_direction`, unmodified; NULL on the rest.
 
 **Journeys are cut by speed and movement, not time gaps.** Bus engines keep
 sending position pings while parked at the terminus every three minutes, so

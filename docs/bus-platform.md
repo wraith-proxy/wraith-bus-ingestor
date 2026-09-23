@@ -76,17 +76,20 @@ layers, each doing exactly one job:
   `mart_*`-prefixed, per dbt's own structure guide. Real tables, not
   views — a long-lived Flask process reads them over a read-only handle.
 
-### Direction is inferred, not given
+### Direction comes straight from the feed
 
-The feed's `DirectionRef` only started arriving on 2026-09-12, so it's
-`NULL` for all older data. `int_journeys_shaped_and_directed` infers direction two ways:
-linear routes are split on the journey's first-to-last compass bearing
-against the line's modal bearing; circular routes (median
-`straight_km / path_km` below 0.35 — a loop's endpoints are close together)
-are split on the sign of the enclosed area (shoelace formula), since a
-loop's bearing carries no information about which way round it ran. This
-heuristic retires itself automatically as real `DirectionRef` data
-accumulates.
+`int_journeys_shaped_and_directed` used to infer direction two ways when the
+feed's `DirectionRef` was NULL (true of almost every row before 2026-09-12):
+linear routes split on the journey's first-to-last compass bearing against
+the line's modal bearing; circular routes (median `straight_km / path_km`
+below 0.35) split on the sign of the enclosed area (shoelace formula). Retired
+2026-09-23 (`docs/ROADMAP.md` 1.2.0) once measurement showed why it should be:
+the feed now tags 68.1% of journeys, and where both existed the heuristic
+disagreed with it 53.9% of the time -- chance level, because its
+inbound/outbound split was never tied to the feed's own convention, and the
+feed already reports `clockwise`/`anticlockwise` directly for loops anyway.
+`direction` is now `feed_direction`, unmodified; NULL where the feed didn't
+tag a journey, which nothing downstream requires non-null.
 
 ### The grid trick for stop matching
 

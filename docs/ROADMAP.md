@@ -10,49 +10,19 @@ drift apart by design and neither is wrong.
 
 ## Where to pick up (as of 2026-09-23)
 
-Everything through 1.12.0 and 1.14.0 is delivered and on `main`; the API, the marts
-and the GTFS timetable are live. Priority order, owner-set 2026-09-23:
+Everything is delivered and on `main` except the two items below. The API, the
+marts, the GTFS timetable, the timetable-pinned ETA rung and the dbt CI gate are
+all live.
 
-**Batch 1 -- delivered 2026-09-23:**
-1. ~~1.18.0 -- macro-ize three repeated SQL expressions.~~ Done: `avg_speed_kmh`,
-   `no_operator_sentinel`, `in_gb_bbox`.
-2. ~~1.16.0 -- alert on the API's `marts_state`.~~ Done: `ops/publish_marts_state.py`
-   + `wraith-marts-state.timer` (not yet enabled -- needs a human
-   `systemctl enable --now`) + a new Grafana rule. Unproven until it has actually
-   fired once.
-3. ~~1.2.0 -- retire the direction heuristic.~~ Done: `direction` is now
-   `feed_direction` verbatim. Measured first: 68.1% coverage, 53.9% disagreement
-   with the retired heuristic where both existed (chance level).
-
-**Batch 2 -- triaged 2026-09-23:**
-4. The 1.12.0 "Not done / unproven" list. Two items closed outright (the
-   scheduled-nightly watch was already done elsewhere; the stale bullet is
-   removed). Three genuinely still need dedicated work, not attempted here:
-   re-measuring tiebreak production accuracy (no truth-set script exists to
-   rerun), rightsizing the API's `mem_limit` (blocked on the same page-cache
-   nuance this list already flagged), and the GTFS refresh timer (blocked on
-   the calendar -- first run is Monday 2026-09-28, nothing to do until then).
-5. ~~DuckDB's per-run memory growth.~~ Measured, not fixed: 5 nights of
-   `precleanup.log` plus live `free`/`docker stats` show swap peaking under
-   800 MiB of 19-23 GiB available and fully reclaimed nightly -- real, but not
-   currently a threat on this 31 GiB host. Root cause still unidentified;
-   downgraded from "still open" to "monitor, not chase."
-
-**Fast-followers:**
-6. ~~1.13.0 -- the timetable-backed ETA rung (Phase 2).~~ **Delivered 2026-09-23.**
-   Measured live: 84.1% of a 17,661-key non-TfL snapshot pinned to a trip -- well
-   above ADR-0008's ~49% estimate, gap not explained, flagged for whoever next
-   touches this. `next_stop.aimed_iso` is now populated for pinned vehicles.
-7. ~~1.1.0 -- gate dbt in CI.~~ **Delivered 2026-09-23.** `test.yml` now runs
-   `dbt run` + `dbt test` against the Learn dbt sandbox; verified the gate
-   actually fails on a broken model, not just a syntax check.
-8. **1.17.0** -- retry dbt v2 + DuckDB 2.0 alpha. The `line_stops` cluster that
+1. **1.17.0** -- retry dbt v2 + DuckDB 2.0 alpha. The `line_stops` cluster that
    caused the 2026-09-18 blowup is gone since 1.12.0, so the retry starts from a
    much smaller pipeline than the one that failed.
-9. **1.15.0** -- TfL Unified API ingest for London.
+2. **1.15.0** -- TfL Unified API ingest for London.
 
-**Decided, 2026-09-23:** keep the ingest bounding box GB-wide (see "Known issues"
-below).
+Everything else this session touched (1.18.0, 1.16.0, 1.2.0, 1.13.0, 1.1.0, the
+GB bounding-box decision, the 1.12.0 loose ends, DuckDB's swap behaviour) is
+recorded under its own milestone heading below or under "Known issues" --
+delivered, decided, or accepted as a permanent, monitored fact, not open work.
 
 ## 1.0.0 -- single-NAS deployment, data owned
 
@@ -126,10 +96,12 @@ step before `dbt test` even runs, exit code 1 -- confirming this actually
 gates a broken model or a failed assertion, not just a syntax check like
 "Validate data contracts" above it.
 
-Contract versions (`bus-marts.odcs.yaml`, `bus-positions.odcs.yaml`) are
-already at `2.0.0` from the September restructure -- 1.0.0 was a
-commitment to no more breaking changes without a major bump, not a
-version reset, and that commitment stands regardless of this gap.
+Contract versions (`bus-marts.odcs.yaml`, `bus-positions.odcs.yaml`, both now
+`3.1.0` after 1.10.0's schema optimisation and 1.2.0's direction-enum fix) have
+moved since the September restructure that first put them under version
+control -- 1.0.0 was a commitment to no more breaking changes without a major
+bump, not a promise the number would stand still, and that commitment stands
+regardless of this gap.
 
 ## 1.1.1 -- line_stops' unbounded memory
 
@@ -168,15 +140,29 @@ was reinventing less reliably.
 unmodified. Dropped: the bearing/shoelace CTEs, the `bearing_deg`/
 `bearing_delta` macros (no other consumer), and 6 dead output columns
 (`direction_inferred`, `is_circular_line`, `line_median_linearity`,
-`signed_area_2`, `journey_bearing`, `reference_bearing`). `direction` is
-NULL on the 31.9% of journeys the feed didn't tag -- accepted, not patched
-over. Checked before shipping: nothing downstream requires it non-null.
-`eta_models` and `line_punctuality` both group on `direction` among other
-columns, so a NULL forms its own grain like any other value, and
-`pick_model()` in `backend/app.py` already falls through to a coarser grain
-on a miss -- it was already designed to tolerate a live bus's direction not
-matching a training-set label. Fixed the `not_null` tests on `direction`
-across 3 yml files that this makes newly false.
+`signed_area_2`, `journey_bearing`, `reference_bearing`). At the intermediate
+layer `direction` is genuinely NULL on the 31.9% of journeys the feed didn't
+tag -- accepted, not patched over.
+
+**Caught in doc review, not by the first pass of tests: `direction` is
+`required`/`primaryKey` in `contracts/bus-marts.odcs.yaml`, and the marts
+must actually honour that or `contracts/validate.py` fails the publish gate
+the first time a real build produces a NULL-direction grain.** `eta_models`
+already had the identical problem for `operator` (NULL before 2026-09-12) and
+already solved it: a direction-grained rung filters `where direction is not
+null`, exactly like the existing `where operator is not null` guard right
+next to it, so a journey the feed didn't tag simply reaches the coarser
+`'*'`-direction rungs instead -- same principle as an operator-less journey
+reaching the `'*'`-operator rungs today. `line_punctuality` has no `'*'`
+fallback grain at all, so it excludes an untagged journey outright. Verified
+against the real 7.4GB build warehouse, not just the tiny sandbox: 738,116 of
+2,316,604 journeys (31.9%) are NULL-direction at the intermediate layer, and
+both marts still publish zero NULL-direction rows (`eta_models` 101,316 rows,
+`line_punctuality` 23,342) -- checked directly, and `dbt test` (84/84)
+confirms it, before this ever reached a real 03:00 build. Fixed the
+`not_null` tests on `direction` across 3 yml files that this makes newly
+false; the marts-layer two stay `not_null`, correctly, since the guard makes
+that promise actually hold.
 
 ## 1.3.0 -- incident recovery: upserts, replay, drift guards
 
@@ -480,44 +466,41 @@ per query, with nothing loaded into memory; `backend/tiebreak.py` chooses betwee
 patterns that share endpoints (a whole-journey trail distance, 3 m lead, prior
 fallback flagged unresolved). Stop positions come from NaPTAN, which covers London,
 so London keeps its regression ETA and distance delay. The API's resident memory fell
-from about 3.3 GiB to 0.5 GiB. `bus-marts` is 3.0.0; `gtfs-timetable.odcs.yaml` is
-new; `build.sh` is one `dbt run`.
+from about 3.3 GiB to 0.5 GiB. `bus-marts` went to 3.0.0 at the time (now
+3.1.0, see 1.2.0's contract fix); `gtfs-timetable.odcs.yaml` is new; `build.sh`
+is one `dbt run`.
 
 **Measured live (non-TfL, 14,304 buses):** 73.8% pinned to a pattern, 13.5%
 unresolved (prior, flagged), 9.2% line-level only, 3.5% no route. London: no route,
 last/next stop, `/route` overlay or line list in search; it never had a schedule delay
 because TfL publishes no aimed arrival.
 
-**Not done / unproven:**
-- The tiebreak's production accuracy was not re-measured (77.8% is the offline
-  figure on one snapshot; the 3 m margin was tuned on that snapshot). Checked
-  2026-09-23: no truth-set script exists in the repo to rerun -- the original
+**Not done / unproven -- accepted as background facts to monitor, not open
+roadmap work (2026-09-23):**
+- The tiebreak's production accuracy was never re-measured (77.8% is still the
+  offline figure on one snapshot; the 3 m margin was tuned on that same
+  snapshot). No truth-set script exists in the repo to rerun -- the original
   measurement built its truth set (buses with an aimed departure today that
   match exactly one trip) as a one-off analysis, not a committed tool.
-  Re-measuring properly means rebuilding that methodology, not one query;
-  still needs a dedicated pass, not attempted here.
-- ~~The nightly on the reduced build~~: watched and resolved -- see 1.14.0. The
-  first *scheduled* 03:00 on the reduced build ran 2026-09-22 (22 min 27 s,
-  success); the nightly is fast enough now and this is no longer tracked here.
-- The weekly GTFS refresh timer is installed and enabled (2026-09-21; next run Monday
-  2026-09-28 01:00) but **has never run end to end**, so the first run is unproven.
-  The served alias table is still the first build's 631 rows (604 TfL, none of which
-  the API can match); the reviewed table goes live at that first refresh.
-- `/buses` now builds in about 1.15 s (2.6 s before the 2026-09-21 optimisation, 0.6 s
-  originally) and one build serves every request inside a 5 s window. The tiebreak
-  scoring is still pure Python. `docker-compose.yml` still gives the API `mem_limit: 6g`
-  though `docker stats` shows it sitting around 750 MiB (RSS). Checked 2026-09-23:
-  not shrunk here on purpose -- this section's own note above about the 1.1 GB GTFS
-  file's page cache being charged against this same limit under cgroup v2 means a
-  safe number needs the same measured-under-real-load treatment `memory_limit` got
-  for dbt (ADR-0009), not a guess. Still open.
-- The build warehouse was compacted 2026-09-21 (8.9 GB to 3.5 GB, orphaned tables
-  gone) and `profiles.yml` `memory_limit` re-tuned to 4 GB (see ADR-0009); the unused
-  `lat_cell`/`lon_cell` columns were dropped from the naptan staging model.
-- The Android app should send `?operator=` (1.9.0's identity fix) and should not rely
-  on the `/route` `day_type` field, which is now always null.
-- The cgroup v2 page-cache interaction is real for the 1.1 GB GTFS file read through
-  `ghost-backend`; RSS is small but page cache is charged to the container's 6g.
+  Re-measuring properly means rebuilding that methodology from scratch;
+  accepted as a standing unknown rather than scheduled.
+- The weekly GTFS refresh timer is installed and enabled (2026-09-21; next run
+  Monday 2026-09-28 01:00) but has never run end to end. The served alias
+  table is still the first build's 631 rows (604 TfL, none of which the API
+  can match); the reviewed table goes live at that first refresh. Nothing to
+  do until then -- watch it happen, don't chase it.
+- `docker-compose.yml` still gives the API `mem_limit: 6g` though it sits
+  around 750 MiB (RSS). Deliberately not shrunk: the 1.1 GB GTFS file's page
+  cache is charged against this same limit under cgroup v2 (see below), so a
+  safe number needs the same measured-under-real-load treatment
+  `memory_limit` got for dbt (ADR-0009), not a guess. Accepted at 6g until
+  someone does that measurement.
+- The Android app should send `?operator=` (1.9.0's identity fix) and should
+  not rely on the `/route` `day_type` field, which is now always null -- a
+  note for that repo, not work in this one.
+- The cgroup v2 page-cache interaction is real for the 1.1 GB GTFS file read
+  through `ghost-backend`; RSS is small but page cache is charged to the
+  container's 6g. Informational, not a fault.
 
 
 ## 1.13.0 -- timetable-backed ETA rung (Phase 2) -- delivered 2026-09-23
@@ -699,7 +682,11 @@ and concatenating with `~` instead of embedding it in a string.
 pairs each time -- the same SQL shape, not the same rule, so not a macro
 case, and left alone.
 
-## Known issues -- raised, not yet actioned
+## Known issues -- resolved history and accepted facts to monitor
+
+Every entry below is fixed, decided, or measured and knowingly accepted as-is
+-- nothing here is open roadmap work. Kept for the reasoning and the numbers
+behind each call, the same as an ADR.
 
 **The live map hid about 3% of vehicles (fixed 2026-09-20, deployed 2026-09-21).**
 `backend/app.py` selected the newest row per vehicle with `LATEST ON timestamp
