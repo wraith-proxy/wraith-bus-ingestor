@@ -43,7 +43,9 @@ and the GTFS timetable are live. Priority order, owner-set 2026-09-23:
    Measured live: 84.1% of a 17,661-key non-TfL snapshot pinned to a trip -- well
    above ADR-0008's ~49% estimate, gap not explained, flagged for whoever next
    touches this. `next_stop.aimed_iso` is now populated for pinned vehicles.
-7. **1.1.0** -- gate dbt in CI. Up next.
+7. ~~1.1.0 -- gate dbt in CI.~~ **Delivered 2026-09-23.** `test.yml` now runs
+   `dbt run` + `dbt test` against the Learn dbt sandbox; verified the gate
+   actually fails on a broken model, not just a syntax check.
 8. **1.17.0** -- retry dbt v2 + DuckDB 2.0 alpha. The `line_stops` cluster that
    caused the 2026-09-18 blowup is gone since 1.12.0, so the retry starts from a
    much smaller pipeline than the one that failed.
@@ -106,28 +108,28 @@ else available) whatever ETA this bus_id last actually had. Every bus
 gets an ETA wherever one can be honestly produced, not just the ones the
 regression already covered.
 
-## 1.1.0 -- gate dbt in CI
+## 1.1.0 -- gate dbt in CI -- delivered 2026-09-23
 
-CI still only gates tests + contracts, not a dbt build -- no job anywhere
-actually runs one. `pages.yml` runs `dbt docs generate` on `ubuntu-latest`,
-but that's docs, not a gated build/test.
+Deprioritized earlier today ("not worth the added CI time"), then reinstated
+by the owner the same day. `.gitea/workflows/test.yml`'s `test-and-verify` job
+now runs `dbt run` + `dbt test` as its last step, against
+`ops/dbt_sandbox.sh`'s throwaway project -- the same synthetic-data sandbox
+`docs/learn-dbt/` walks through, fed from the two committed fixtures under
+`dbt/tests/fixtures/`, not the real (gitignored) production data this runner
+has never had. `ghost-runner`'s 2026-09-17 move to Debian/glibc (1.5.0) is
+what made this possible at all -- musllinux had no dbt wheel to run there.
 
-**Former blocker, resolved in 1.5.0:** `ghost-runner` (Alpine/musl)
-couldn't run dbt at all -- `dbt-core-experimental-parser` shipped no
-musllinux wheel and refused to build from source on any platform. 1.5.0
-moved `ghost-runner` to Debian/glibc, so a job on `ghost-runner` is a real
-option now, not just `ubuntu-latest`. Neither is done yet -- this entry is
-still open, just no longer platform-blocked. Whichever runner it lands on,
-the job runs `dbt build` + `dbt test` and fails the pipeline on a broken
-model or a failed assertion.
+Verified both ways before landing, not just written and hoped: a clean sandbox
+run passes (8/8 models, 82/82 tests, ~2.5 s total), and a deliberately broken
+model (bad table reference) makes `dbt run` fail with `set -e` stopping the
+step before `dbt test` even runs, exit code 1 -- confirming this actually
+gates a broken model or a failed assertion, not just a syntax check like
+"Validate data contracts" above it.
 
 Contract versions (`bus-marts.odcs.yaml`, `bus-positions.odcs.yaml`) are
 already at `2.0.0` from the September restructure -- 1.0.0 was a
 commitment to no more breaking changes without a major bump, not a
 version reset, and that commitment stands regardless of this gap.
-
-Deliberately deprioritized (owner's call, 2026-09-23): not worth the added CI
-time right now. Left open, not scheduled.
 
 ## 1.1.1 -- line_stops' unbounded memory
 

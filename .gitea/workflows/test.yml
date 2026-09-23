@@ -36,6 +36,27 @@ jobs:
         # The gate that checks real data is dbt/build.sh, which runs this
         # same script against the live marts before every publish.
         run: uv run python3 contracts/validate.py
+      - name: dbt build + test (Learn dbt sandbox)
+        # ROADMAP.md 1.1.0. Same limitation as "Validate data contracts"
+        # above -- no live QuestDB or NaPTAN register on this runner -- so
+        # this runs against ops/dbt_sandbox.sh's throwaway project instead: a
+        # copy of dbt/ with its own warehouse, fed from the two committed
+        # fixtures under dbt/tests/fixtures/ (the same ones docs/learn-dbt/
+        # walks through from a fresh clone). That makes this a real `dbt run`
+        # + `dbt test` against real (if synthetic) data, not a syntax check --
+        # it catches a broken model or a failing assertion, which "Validate
+        # data contracts" cannot. ghost-runner can run dbt at all only since
+        # its 2026-09-17 move to Debian/glibc (see ci-images); dbt-core and
+        # dbt-duckdb are already in .venv from "Install dependencies" above.
+        run: |
+          set -euo pipefail
+          DEST="$(mktemp -d)/dbt-sandbox"
+          ./ops/dbt_sandbox.sh "$DEST"
+          export PATH="$PWD/.venv/bin:$PATH"
+          export DBT_PROFILES_DIR="$DEST"
+          cd "$DEST"
+          dbt run
+          dbt test
 
   auto-merge:
     needs: test-and-verify
