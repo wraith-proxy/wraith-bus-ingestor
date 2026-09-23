@@ -38,9 +38,12 @@ and the GTFS timetable are live. Priority order, owner-set 2026-09-23:
    currently a threat on this 31 GiB host. Root cause still unidentified;
    downgraded from "still open" to "monitor, not chase."
 
-**Fast-followers, in this order:**
-6. **1.13.0** -- the timetable-backed ETA rung (Phase 2). Unblocked.
-7. **1.1.0** -- gate dbt in CI.
+**Fast-followers:**
+6. ~~1.13.0 -- the timetable-backed ETA rung (Phase 2).~~ **Delivered 2026-09-23.**
+   Measured live: 84.1% of a 17,661-key non-TfL snapshot pinned to a trip -- well
+   above ADR-0008's ~49% estimate, gap not explained, flagged for whoever next
+   touches this. `next_stop.aimed_iso` is now populated for pinned vehicles.
+7. **1.1.0** -- gate dbt in CI. Up next.
 8. **1.17.0** -- retry dbt v2 + DuckDB 2.0 alpha. The `line_stops` cluster that
    caused the 2026-09-18 blowup is gone since 1.12.0, so the retry starts from a
    much smaller pipeline than the one that failed.
@@ -515,41 +518,56 @@ because TfL publishes no aimed arrival.
   `ghost-backend`; RSS is small but page cache is charged to the container's 6g.
 
 
-## 1.13.0 -- timetable-backed ETA rung (Phase 2)
+## 1.13.0 -- timetable-backed ETA rung (Phase 2) -- delivered 2026-09-23
 
-Planned, not landed. Its dependency, 1.12.0, was delivered 2026-09-21, so it is
-unblocked. What 1.12.0 leaves it to build on: `backend/gtfs.py` already pins a bus
-to a timetable pattern by `(operator, line, origin, destination)` with a
-position-based tiebreak (73.8% of non-TfL buses pinned, 13.5% unresolved), and
-`next_stop.aimed_iso` is still `None`. This phase is the finer step: pinning a
-*trip* by aimed departure time, which is the ~49% plateau below. Adds a new rung to
-`backend/app.py`'s `predict()` fallback chain, above the existing
-regression: for the vehicles whose trip can be pinned unambiguously against
-GTFS (operator, line, origin stop, aimed departure time), use the published
-timetable instead of the ETA regression. Per-vehicle pinning is far weaker
-than the route-level coverage 1.12.0 relies on -- [ADR-0008](adr/0008-published-timetables-vs-inferred-routes.md)
-measured an exact-match plateau near 49% of the non-TfL live fleet, however
-the join is loosened, because 18.1% of all keyed live vehicles (3,827 of
-21,192) find their operator, line and origin stop in GTFS but miss on
-departure time -- the operator's real-time system and its own published
-timetable disagree by minutes and much of the rest belongs to services that
-aren't running that day or aren't in GTFS under that operator at all.
+New `gtfs.pin_trip(operator, line, origin_ref, aimed_dep_ms)` in `backend/gtfs.py`
+pins a vehicle's journey to one specific GTFS trip by join variant A from
+[ADR-0008](adr/0008-published-timetables-vs-inferred-routes.md) -- operator, line,
+origin stop, exact departure time -- batched per poll the same way `candidates()`
+and `line_route()` already are (`gtfs.prime_pins`, called from
+`prefetch_timetable`), so a repeated call for the same journey is a cache hit, not
+a re-query. Unambiguous only: if more than one trip matches, or none does, it
+returns `None` and the caller is unaffected -- purely additive, no existing rung
+in `predict()`'s chain reordered or weakened. `predict()` now tries the pinned
+trip's own scheduled arrival at the destination *before* the regression (a new top
+rung, `eta_source: 'timetable_pinned'`); a vehicle that does not pin computes the
+regression exactly as it always has. `next_stop.aimed_iso` in the `/bus/<id>`
+detail endpoint, hard-coded `None` since the field existed, is now filled from the
+same pinned trip's stop_times for every stop along it, not just origin/destination.
 
-Purely additive: a vehicle that does not pin unambiguously falls through to
-the regression exactly as it does today, unchanged. This phase also fills
-`next_stop`'s `aimed_iso` field, which has returned `None` with a comment
-against it since the field existed, because there was no timetable source to
-fill it from.
+GTFS's own past-midnight convention (departure times past `24:00:00` for a trip
+whose service day was technically yesterday) is handled by trying both
+interpretations and taking the anchor epoch from whichever one actually matched --
+tested against a hand-built fixture trip filed under a `24:xx:xx` departure.
 
-London stays on the regression. TfL publishes no timetables to BODS (see
-"Known issues" below), so none of its ~7,365 live vehicles can pin against
-GTFS at all; this phase does nothing for them, by design, not by oversight.
-`eta_models` itself is kept as-is -- it still covers all of London plus the
-roughly half of the non-TfL fleet this phase cannot pin. Whether the
-regression still earns its cost once the timetable rung is live is a
-**Phase 3 question**, deliberately left open here: it needs measurement
-after this phase has shipped and run for a while, not a decision made in
-advance of that data.
+**Measured against real live data before and after landing, not assumed:**
+`gtfs.pin_trip` was checked against several real live buses pulled from QuestDB
+before writing `predict()`'s integration (one had `dest_aimed_arr: null` in the live
+feed itself, yet the pinned trip still supplied a real destination arrival --
+concrete evidence of what this rung adds beyond `timetable_raw`). A live snapshot
+of 17,661 distinct non-TfL (operator, line, origin, departure) keys, taken
+2026-09-23, pinned 14,860 of them -- **84.1%**, spot-checked correct across 6
+different operators (each pin's origin stop lands at position 0 of the matched
+trip, as it must). This is well above ADR-0008's ~49% exact-match plateau and the
+gap is not explained -- not a bug found in this pass (the same rate holds with the
+past-midnight handling disabled, and every spot-checked pin is structurally
+correct), but also not reconciled against the ADR's original snapshot, which no
+longer exists to compare row-for-row. Whoever next has reason to touch this rung
+should treat 84.1% as the current real number, not the ADR's, but should not treat
+either as fully understood.
+
+London stays on the regression, exactly as planned: TfL publishes no timetables to
+BODS (see "Known issues" below), so none of its ~7,365 live vehicles can pin
+against GTFS at all. `eta_models` is unchanged -- it still covers all of London
+plus whatever non-TfL fraction does not pin. Whether it still earns its
+computational cost now that the pinned rung is live is a **Phase 3 question**,
+deliberately still open: it needs measurement after this has run in production for
+a while, not a decision made in advance of that data.
+
+12 new tests (`backend/test_gtfs.py`, `backend/test_bus_api.py`): unambiguous pin,
+ambiguous-trip and inactive-service non-pins, the past-midnight anchor, batching,
+and `predict()` actually preferring the pin over a model that would otherwise have
+matched. Full suite (66 tests) passes.
 
 ## 1.14.0 -- a fast, deterministic nightly build (deployed 2026-09-20; 03:00 run 2026-09-21: 22 min 37 s; after ADR-0008 Phase 1, forced run 2026-09-21: 15 min 33 s; first scheduled 03:00 on the reduced build, 2026-09-22: 22 min 27 s)
 

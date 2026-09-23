@@ -825,6 +825,46 @@ def position_is_live(row, now_s):
     return age <= MAX_POSITION_AGE_S
 
 
+def pinned_trip(row):
+    """The GTFS trip this row's journey unambiguously pins to (ROADMAP.md
+    1.13.0 / ADR-0008 Phase 2), or None. A thin wrapper over gtfs.pin_trip
+    keyed the same way journey_key() keys a journey, so a repeated call for
+    the same journey is a cache hit, not a re-query."""
+    return gtfs.pin_trip(row.get('operator'), row.get('line'),
+                         row.get('origin_ref'), row.get('origin_aimed_dep'))
+
+
+def pinned_stop_arrival(pin, atco):
+    """This pinned trip's real wall-clock arrival epoch at one stop, or None
+    if the stop is not on it (should not happen for origin/dest, which is how
+    the pin was found, but a defensive lookup costs nothing)."""
+    if pin is None or not atco:
+        return None
+    for st in pin['stops']:
+        if st['atco'] == atco and st['arr_secs'] is not None:
+            return pin['anchor_epoch_s'] + st['arr_secs']
+    return None
+
+
+def pinned_eta(row, now_s):
+    """(predicted_epoch_s, eta_iso) from a pinned trip's own scheduled
+    arrival at this journey's destination, or (None, None) if the trip does
+    not pin. This is the timetable ITSELF, not a delay adjustment -- delay
+    still comes from progress_delay/geometric_progress_delay exactly as
+    before; a pinned vehicle still gets progress-based lateness on top,
+    same as any other. The reasonableness window is the same one
+    schedule_epoch_s applies to the feed's own aimed times, since a pinned
+    arrival is exactly that sort of value."""
+    pin = pinned_trip(row)
+    aimed = pinned_stop_arrival(pin, row.get('dest_ref'))
+    if aimed is None:
+        return None, None
+    predicted = schedule_epoch_s(aimed * 1000.0, now_s, MAX_SCHEDULE_AGE_S, MAX_SCHEDULE_AHEAD_S)
+    if predicted is None:
+        return None, None
+    return predicted, iso_from_epoch_s(predicted)
+
+
 def predict(row, marts, now_s):
     """Return (properties-fragment, model, predicted_epoch_s)."""
     line = row.get('line')
@@ -846,7 +886,16 @@ def predict(row, marts, now_s):
     eta_iso = None
     eta_source = None
     predicted = None
-    if remaining_km is not None and model and remaining_km <= MAX_REMAINING_KM:
+    # ROADMAP.md 1.13.0 / ADR-0008 Phase 2: a vehicle whose trip pins
+    # unambiguously to a GTFS timetable entry uses that published schedule
+    # instead of the regression -- the new top rung, ahead of everything
+    # below. Purely additive: a vehicle that does not pin (still true of
+    # roughly half of non-TfL buses, and all of TfL, which has no GTFS
+    # timetable at all) computes the regression exactly as it always has.
+    predicted, eta_iso = pinned_eta(row, now_s)
+    if eta_iso is not None:
+        eta_source = 'timetable_pinned'
+    elif remaining_km is not None and model and remaining_km <= MAX_REMAINING_KM:
         secs = max(0.0, (model['slope_s_per_km'] or 0.0) * remaining_km
                    + (model['intercept_s'] or 0.0))
         if secs <= MAX_REMAINING_S:
@@ -950,6 +999,8 @@ def prefetch_timetable(rows, sync_seed=False):
     gtfs.prime([r.get(k) for r in rows for k in ('origin_ref', 'dest_ref')])
     gtfs.prime_routes({(r.get('operator'), r.get('line'), r.get('origin_ref'),
                         r.get('dest_ref')) for r in rows})
+    gtfs.prime_pins({(r.get('operator'), r.get('line'), r.get('origin_ref'),
+                      r.get('origin_aimed_dep')) for r in rows})
     # Buses no pattern matched fall back to their line's primary route (route_for).
     gtfs.prime_lines({(r.get('operator'), r.get('line'), r.get('direction')) for r in rows
                       if not gtfs.candidates(r.get('operator'), r.get('line'),
@@ -1212,14 +1263,20 @@ def bus_detail(bus_id):
                     secs = max(0.0, (model['slope_s_per_km'] or 0.0) * km)
                     if km <= MAX_REMAINING_KM and secs <= MAX_REMAINING_S:
                         eta_iso = iso_from_epoch_s(now_s + secs)
+                # ROADMAP.md 1.13.0: the SIRI-VM feed carries aimed times only
+                # for the journey's origin and destination -- there is no
+                # per-intermediate-stop schedule in it to compare against. A
+                # pinned GTFS trip (gtfs.pin_trip, already computed inside
+                # predict() above -- this is a cache hit, not a re-query) does
+                # carry one, for the roughly half of non-TfL buses that pin.
+                # Unpinned buses (all of TfL, and the rest of non-TfL) keep
+                # getting null here, exactly as before.
+                aimed_iso = iso_from_epoch_s(
+                    pinned_stop_arrival(pinned_trip(row), nxt.get('atco')))
                 props['next_stop'] = {
                     'name': nxt['name'], 'locality': nxt['locality'], 'atco': nxt['atco'],
                     'eta_iso': eta_iso,
-                    # The SIRI VM feed carries aimed times only for the journey's
-                    # origin and destination — there is no per-intermediate-stop
-                    # schedule to compare against, so this stays null until a
-                    # timetable (GTFS/TransXChange) source is ingested.
-                    'aimed_iso': None,
+                    'aimed_iso': aimed_iso,
                     'lat': nxt['lat'], 'lon': nxt['lon'],
                 }
 

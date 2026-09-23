@@ -50,6 +50,49 @@ def _build(path):
                 'locality VARCHAR, n_stops INTEGER)')
     con.execute("INSERT INTO gtfs_line_localities VALUES "
                 "('88','ASHTON','Ashton',2),('9','ASHTON','Ashton',1)")
+
+    # Raw GTFS tables for trip pinning (gtfs.pin_trip, ROADMAP.md 1.13.0).
+    # Real column set is wider than this (see gtfs/fetch.py); only the
+    # columns pin_trip's own queries touch are needed here.
+    con.execute('CREATE TABLE gtfs_agency(agency_id VARCHAR, agency_noc VARCHAR)')
+    con.execute("INSERT INTO gtfs_agency VALUES ('AG1','OP1')")
+    con.execute('CREATE TABLE gtfs_routes(route_id VARCHAR, agency_id VARCHAR, '
+                'route_short_name VARCHAR)')
+    con.execute("INSERT INTO gtfs_routes VALUES ('R1','AG1','88')")
+    con.execute('CREATE TABLE gtfs_calendar(service_id VARCHAR, monday INTEGER, '
+                'tuesday INTEGER, wednesday INTEGER, thursday INTEGER, friday INTEGER, '
+                'saturday INTEGER, sunday INTEGER, start_date VARCHAR, end_date VARCHAR)')
+    con.execute("INSERT INTO gtfs_calendar VALUES "
+                "('WD',1,1,1,1,1,0,0,'20240101','20241231'),"        # weekdays only
+                "('SUN',0,0,0,0,0,0,1,'20240101','20241231')")       # Sundays only
+    con.execute('CREATE TABLE gtfs_calendar_dates(service_id VARCHAR, date VARCHAR, '
+                'exception_type INTEGER)')
+    con.execute('CREATE TABLE gtfs_trips(route_id VARCHAR, service_id VARCHAR, '
+                'trip_id VARCHAR)')
+    con.execute("INSERT INTO gtfs_trips VALUES "
+                "('R1','WD','T1'),"     # Mon-Fri 08:00 from A, unambiguous
+                "('R1','SUN','T3'),"    # Sundays only, otherwise identical to T1
+                "('R1','SUN','T4')")    # Sunday-into-Monday, past-midnight departure
+    con.execute('CREATE TABLE gtfs_stop_times(trip_id VARCHAR, stop_id VARCHAR, '
+                'stop_sequence INTEGER, arrival_time VARCHAR, departure_time VARCHAR)')
+    con.execute("INSERT INTO gtfs_stop_times VALUES "
+                "('T1','A',1,'08:00:00','08:00:00'),"
+                "('T1','M1',2,'08:05:00','08:05:00'),"
+                "('T1','C',3,'08:10:00','08:10:00'),"
+                "('T3','A',1,'08:00:00','08:00:00'),"
+                "('T3','C',2,'08:10:00','08:10:00'),"
+                "('T4','A',1,'25:00:00','25:00:00'),"   # 01:00 the next calendar day
+                "('T4','C',2,'25:10:00','25:10:00')")
+    con.close()
+
+
+def _add_ambiguous_trip(path):
+    """T2: same operator/line/origin/departure as T1 (variant A/C has no
+    destination in the key, ADR-0008), so adding it makes that key ambiguous."""
+    con = duckdb.connect(path)
+    con.execute("INSERT INTO gtfs_trips VALUES ('R1','WD','T2')")
+    con.execute("INSERT INTO gtfs_stop_times VALUES "
+                "('T2','A',1,'08:00:00','08:00:00'),('T2','B',2,'08:20:00','08:20:00')")
     con.close()
 
 
@@ -162,3 +205,84 @@ def test_prime_lines_batches_like_line_route():
         assert (None, '88', None) not in gtfs._lines               # no operator: not batched
         assert gtfs.line_route('OP1', '88', 'inbound') is gtfs._lines[('OP1', '88', 'inbound')]
         assert gtfs.line_route(None, '88')['operator'] == 'OP2'      # single-key path still works
+
+
+# Monday 2024-03-04 08:00 and 01:00 Europe/London (GMT, no BST -- no DST
+# ambiguity to worry about). Real epoch-millis timestamps, same shape as
+# row['origin_aimed_dep']. Picking real dates rather than "today" keeps the
+# test deterministic regardless of when it runs -- pin_trip only cares about
+# the calendar date the given timestamp falls on, never the real clock.
+MON_0800 = 1709539200000
+MON_0100 = 1709514000000    # lands under Sunday's service via the >24h GTFS convention
+
+
+def test_pin_trip_unambiguous_match():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'gtfs.duckdb')
+        _build(path)
+        _point_at(path)
+        pin = gtfs.pin_trip('OP1', '88', 'A', MON_0800)
+        assert pin['trip_id'] == 'T1'
+        assert [s['atco'] for s in pin['stops']] == ['A', 'M1', 'C']
+        # anchor_epoch_s + a stop's own arr_secs is that stop's real epoch.
+        c = next(s for s in pin['stops'] if s['atco'] == 'C')
+        assert pin['anchor_epoch_s'] + c['arr_secs'] == MON_0800 / 1000.0 + 600  # 08:10
+
+
+def test_pin_trip_ambiguous_and_inactive_service_do_not_pin():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'gtfs.duckdb')
+        _build(path)
+        _point_at(path)
+        assert gtfs.pin_trip('OP1', '88', 'A', MON_0800)['trip_id'] == 'T1'
+        gtfs._clear()
+        _add_ambiguous_trip(path)
+        gtfs._clear()
+        # T1 and T2 now both run weekdays, same operator/line/origin/departure
+        # -- variant A/C deliberately has no destination in the key
+        # (ADR-0008), so this is a real ambiguity, not a bug.
+        assert gtfs.pin_trip('OP1', '88', 'A', MON_0800) is None
+        # T3 (Sunday-only service) proves an inactive-that-day service is
+        # excluded outright, not merely counted as ambiguous: it never
+        # touches the Monday pin above even though it shares every other
+        # field with T1.
+        assert gtfs.pin_trip('OP1', '88', 'A', MON_0800 + 6 * 86400 * 1000)['trip_id'] == 'T3'
+
+
+def test_pin_trip_past_midnight_anchors_to_the_previous_service_day():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'gtfs.duckdb')
+        _build(path)
+        _point_at(path)
+        # T4 is filed under Sunday's service_id with departure_time '25:00:00'
+        # (past midnight); MON_0100 is the real wall-clock instant that
+        # represents. T3 (plain Sunday 08:00) must not interfere.
+        pin = gtfs.pin_trip('OP1', '88', 'A', MON_0100)
+        assert pin['trip_id'] == 'T4'
+        c = next(s for s in pin['stops'] if s['atco'] == 'C')
+        # 25:10:00 on T4 is 00:10 the next real day -- 10 minutes after MON_0100.
+        assert pin['anchor_epoch_s'] + c['arr_secs'] == MON_0100 / 1000.0 + 600
+
+
+def test_pin_trip_no_match_and_missing_field_return_none():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'gtfs.duckdb')
+        _build(path)
+        _point_at(path)
+        assert gtfs.pin_trip('OP1', '88', 'nowhere', MON_0800) is None
+        assert gtfs.pin_trip('OP1', '88', 'A', None) is None
+        assert gtfs.pin_trip(None, '88', 'A', MON_0800) is None
+
+
+def test_prime_pins_batches_and_caches():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, 'gtfs.duckdb')
+        _build(path)
+        _point_at(path)
+        keys = [('OP1', '88', 'A', MON_0800), ('OP1', '88', 'nowhere', MON_0800),
+               ('OP1', '88', 'A', None)]
+        gtfs.prime_pins(keys)
+        assert gtfs._pins[('OP1', '88', 'A', MON_0800)]['trip_id'] == 'T1'
+        assert gtfs._pins[('OP1', '88', 'nowhere', MON_0800)] is None
+        assert ('OP1', '88', 'A', None) not in gtfs._pins    # incomplete key skipped
+        assert gtfs.pin_trip('OP1', '88', 'A', MON_0800) is gtfs._pins[('OP1', '88', 'A', MON_0800)]

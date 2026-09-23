@@ -322,6 +322,42 @@ def test_predict_guards():
     assert model is None and pred is None
 
 
+def test_predict_uses_a_pinned_trip_ahead_of_the_regression():
+    """ROADMAP.md 1.13.0 / ADR-0008 Phase 2: a vehicle whose journey pins to a
+    GTFS trip uses that trip's own scheduled arrival instead of the
+    regression, even when a model would otherwise have matched -- and even
+    when the live feed itself gave no dest_aimed_arr at all (gtfs.gtfs.py's
+    own test found a real live bus in exactly that state)."""
+    now = 1_757_600_000.0
+    marts = dict(app.EMPTY_MARTS)
+    marts['eta'] = {('*', '*', '*', '*', '*'): {'slope_s_per_km': 120.0, 'intercept_s': 60.0,
+                                                'r2': 0.4, 'n_obs': 99}}
+    _inject_stops({'NEAR': {'atco': 'NEAR', 'name': 'Near', 'locality': 'X',
+                            'lat': 53.85, 'lon': -2.2, 'seq': 1}})
+    row = {'line': '88', 'direction': 'inbound', 'operator': 'OP1',
+           'lat': 53.4, 'lon': -2.2, 'origin_ref': 'ORIG', 'dest_ref': 'NEAR',
+           'origin_aimed_dep': int(now * 1000), 'dest_aimed_arr': None}
+    key = (row['operator'], row['line'], row['origin_ref'], row['origin_aimed_dep'])
+    pinned_arrival = now + 900   # 15 minutes from the pinned trip's own schedule
+    gtfs._pins[key] = {'trip_id': 'T1', 'anchor_epoch_s': pinned_arrival - 300,
+                       'stops': [{'atco': 'ORIG', 'seq': 1, 'arr_secs': 0, 'dep_secs': 0},
+                                 {'atco': 'NEAR', 'seq': 2, 'arr_secs': 300, 'dep_secs': 300}]}
+    try:
+        frag, model, pred = app.predict(row, marts, now)
+        assert model is not None                          # regression matched...
+        assert frag['eta_source'] == 'timetable_pinned'    # ...but the pin wins
+        assert pred == pinned_arrival
+        assert frag['eta_iso'] == app.iso_from_epoch_s(pinned_arrival)
+
+        # An unpinned bus (no key in gtfs._pins) is completely unaffected --
+        # purely additive, exactly as ADR-0008 requires.
+        other = dict(row, origin_ref='ELSEWHERE')
+        frag2, _m, _p = app.predict(other, marts, now)
+        assert frag2['eta_source'] == 'regression'
+    finally:
+        gtfs._pins.pop(key, None)
+
+
 def test_eta_falls_back_to_last_known():
     """A bus with no regression match, no timetable and no schedule this tick
     still shows the ETA it last actually had, rather than going blank."""

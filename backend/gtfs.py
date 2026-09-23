@@ -20,11 +20,18 @@ there.
 import os
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 try:  # optional at import time, same as app.py
     import duckdb
 except ImportError:  # pragma: no cover
     duckdb = None
+
+try:  # same fallback as app.py: tzdata may be missing from a slim image
+    from zoneinfo import ZoneInfo
+    _LOCAL_TZ = ZoneInfo('Europe/London')
+except Exception:  # pragma: no cover
+    _LOCAL_TZ = timezone.utc
 
 GTFS_PATH = os.getenv('GTFS_PATH', '/gtfs/gtfs.duckdb')
 GTFS_TTL = 60                # only stat the file once a minute
@@ -37,6 +44,7 @@ _state = {'mtime': None, 'checked': 0.0}
 _stops = {}                  # atco -> stop dict, or None for a known miss
 _cands = {}                  # (operator, line, origin, dest) -> [pattern dicts]
 _lines = {}                  # (operator, line, direction) -> route dict | None
+_pins = {}                   # (operator, line, origin, aimed_dep_ms) -> pin dict | None
 generation = 0               # bumps when the file changes; pattern ids die with it
 
 
@@ -46,6 +54,7 @@ def _clear():
     _stops.clear()
     _cands.clear()
     _lines.clear()
+    _pins.clear()
 
 
 def _check():
@@ -215,6 +224,186 @@ def candidates(operator, line, origin_ref, dest_ref):
         return hit
     prime_routes([key])
     return _cands.get(key, [])
+
+
+# ---------------------------------------------------------------------------
+# Trip pinning (ROADMAP.md 1.13.0 / ADR-0008 Phase 2)
+# ---------------------------------------------------------------------------
+#
+# candidates() above pins a bus to a ROUTE PATTERN (operator, line, endpoints).
+# This pins it to one specific scheduled TRIP, by join variant A/C from
+# ADR-0008: operator + line + origin stop + exact aimed departure time,
+# service actually running that day. ADR-0008 measured this unambiguous
+# exact-match rate at ~49% of the non-TfL live fleet and found widening the
+# time tolerance bought more matches at the cost of picking between several
+# candidates -- so this is exact-match only, by design, not a bug to fix
+# later. A miss (no match, or more than one) returns None and the caller
+# falls through to the regression exactly as before -- purely additive.
+
+_GTFS_SECS_MACRO = (
+    "CREATE OR REPLACE TEMP MACRO gtfs_secs(t) AS "
+    "CASE WHEN nullif(trim(t), '') IS NULL THEN NULL "
+    "ELSE try_cast(split_part(t, ':', 1) AS INTEGER) * 3600 "
+    "+ try_cast(split_part(t, ':', 2) AS INTEGER) * 60 "
+    "+ try_cast(split_part(t, ':', 3) AS INTEGER) END"
+)
+
+
+def _local_date_and_secs(epoch_ms):
+    """(YYYYMMDD, seconds-since-local-midnight) for an epoch-millis timestamp,
+    in Europe/London -- the same zone the dbt side and app.py's hour_band /
+    day_type use. None on a bad value rather than raising: a malformed
+    aimed-departure field must just fail to pin, not break the poll."""
+    try:
+        dt = datetime.fromtimestamp(int(epoch_ms) / 1000.0, tz=_LOCAL_TZ)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+    return dt.strftime('%Y%m%d'), dt.hour * 3600 + dt.minute * 60 + dt.second
+
+
+def _load_pins(keys):
+    """Fill _pins for many (operator, line, origin_ref, aimed_dep_ms) keys in
+    one connection. Two interpretations per key are tried and unioned before
+    counting distinct trips, because GTFS times run past 24:00:00 for a
+    service that started the previous calendar day: 'today, plain
+    seconds-of-day' and 'yesterday, seconds-of-day + 86400' (a trip departing
+    00:10 today may be filed as 24:10:00 under yesterday's service_id). A key
+    is pinned only if the union of both interpretations resolves to exactly
+    one trip_id -- if either interpretation alone is ambiguous but the other
+    is empty, or both agree on the same trip, it still counts as one; if they
+    disagree, that is a genuine ambiguity and the key is left unpinned."""
+    if not available():
+        return
+    try:
+        con = duckdb.connect(GTFS_PATH, read_only=True)
+    except Exception:
+        return
+    found = {k: None for k in keys}
+    try:
+        con.execute(_GTFS_SECS_MACRO)
+        rows = []
+        for ix, (op, ln, origin, dep_ms) in enumerate(keys):
+            for date_str, secs in _pin_interpretations(dep_ms):
+                rows.append(f'{ix}{chr(31)}{_clean(op)}{chr(31)}{_clean(ln)}'
+                            f'{chr(31)}{_clean(origin)}{chr(31)}{date_str}{chr(31)}{secs}')
+        if not rows:
+            return
+        con.execute('CREATE TEMP TABLE k(ix INTEGER, op VARCHAR, ln VARCHAR, '
+                    'o VARCHAR, d VARCHAR, secs INTEGER)')
+        con.execute(
+            'INSERT INTO k SELECT split_part(t, chr(31), 1)::INTEGER, '
+            'split_part(t, chr(31), 2), split_part(t, chr(31), 3), '
+            'split_part(t, chr(31), 4), split_part(t, chr(31), 5), '
+            'split_part(t, chr(31), 6)::INTEGER '
+            'FROM (SELECT unnest(string_split(?, chr(30))) AS t)', [_pack(rows)])
+        con.execute(
+            'CREATE TEMP TABLE svc AS '
+            'WITH dates AS (SELECT DISTINCT d FROM k), '
+            'base AS (SELECT dt.d, cast(cal.service_id AS VARCHAR) AS service_id '
+            'FROM dates dt JOIN gtfs_calendar cal ON '
+            "(CASE dayofweek(strptime(dt.d, '%Y%m%d')) "
+            'WHEN 0 THEN cal.sunday WHEN 1 THEN cal.monday WHEN 2 THEN cal.tuesday '
+            'WHEN 3 THEN cal.wednesday WHEN 4 THEN cal.thursday WHEN 5 THEN cal.friday '
+            'ELSE cal.saturday END) = 1 '
+            "AND coalesce(try_strptime(cast(cal.start_date AS VARCHAR), '%Y%m%d'), "
+            "try_cast(cast(cal.start_date AS VARCHAR) AS TIMESTAMP)) <= strptime(dt.d, '%Y%m%d') "
+            "AND coalesce(try_strptime(cast(cal.end_date AS VARCHAR), '%Y%m%d'), "
+            "try_cast(cast(cal.end_date AS VARCHAR) AS TIMESTAMP)) >= strptime(dt.d, '%Y%m%d')), "
+            'removed AS (SELECT dt.d, cast(cd.service_id AS VARCHAR) AS service_id '
+            'FROM dates dt JOIN gtfs_calendar_dates cd ON cast(cd.date AS VARCHAR) = dt.d '
+            "AND cast(cd.exception_type AS VARCHAR) = '2'), "
+            'added AS (SELECT dt.d, cast(cd.service_id AS VARCHAR) AS service_id '
+            'FROM dates dt JOIN gtfs_calendar_dates cd ON cast(cd.date AS VARCHAR) = dt.d '
+            "AND cast(cd.exception_type AS VARCHAR) = '1') "
+            'SELECT d, service_id FROM base EXCEPT SELECT d, service_id FROM removed '
+            'UNION SELECT d, service_id FROM added')
+        con.execute(
+            'CREATE TEMP TABLE noc AS SELECT cast(agency_id AS VARCHAR) AS agency_id, '
+            'min(agency_noc) AS noc FROM gtfs_agency GROUP BY 1')
+        winners = con.execute(
+            'SELECT ix, any_value(trip_id) AS trip_id, any_value(secs) AS secs FROM ('
+            'SELECT DISTINCT k.ix, st.trip_id, k.secs '
+            'FROM k '
+            'JOIN svc ON svc.d = k.d '
+            'JOIN gtfs_trips t ON cast(t.service_id AS VARCHAR) = svc.service_id '
+            'JOIN gtfs_routes r ON cast(r.route_id AS VARCHAR) = cast(t.route_id AS VARCHAR) '
+            'JOIN noc ON noc.agency_id = cast(r.agency_id AS VARCHAR) '
+            'JOIN gtfs_stop_times st ON st.trip_id = t.trip_id AND st.stop_id = k.o '
+            'AND gtfs_secs(st.departure_time) = k.secs '
+            'WHERE noc.noc = k.op AND r.route_short_name = k.ln'
+            ') cand '
+            'GROUP BY ix HAVING count(DISTINCT trip_id) = 1'
+        ).fetchall()
+        trip_ids = sorted({tid for _ix, tid, _secs in winners})
+        stops = {}
+        if trip_ids:
+            for tid, seq, atco, arr, dep in con.execute(
+                    'SELECT trip_id, stop_sequence, stop_id, gtfs_secs(arrival_time), '
+                    'gtfs_secs(departure_time) FROM gtfs_stop_times '
+                    'WHERE trip_id IN (SELECT unnest(?)) ORDER BY trip_id, stop_sequence',
+                    [trip_ids]).fetchall():
+                stops.setdefault(tid, []).append(
+                    {'atco': atco, 'seq': seq, 'arr_secs': arr, 'dep_secs': dep})
+    except Exception:
+        return                          # leave the keys uncached: retried next poll
+    finally:
+        con.close()
+    for ix, tid, matched_secs in winners:
+        # anchor_epoch_s + a stop's own arr_secs/dep_secs (raw GTFS
+        # seconds-of-service-day, which run past 86400 for a trip that
+        # started the previous calendar day) is that stop's real wall-clock
+        # epoch. Derived from the key's own aimed-departure instant minus
+        # whichever interpretation matched, so it is correct whether the
+        # trip's service day was today or yesterday -- see _load_pins.
+        _op, _ln, _origin, dep_ms = keys[ix]
+        anchor = dep_ms / 1000.0 - matched_secs
+        found[keys[ix]] = {'trip_id': tid, 'anchor_epoch_s': anchor,
+                            'stops': stops.get(tid, [])}
+    _pins.update(found)
+
+
+def _pin_interpretations(dep_ms):
+    """(date, secs) pairs to try for one aimed-departure timestamp: today's
+    calendar date at plain seconds-of-day, and yesterday's at +86400, per the
+    GTFS past-midnight convention -- see _load_pins."""
+    parsed = _local_date_and_secs(dep_ms)
+    if parsed is None:
+        return []
+    date_str, secs = parsed
+    try:
+        today = datetime.strptime(date_str, '%Y%m%d')
+    except ValueError:
+        return []
+    yesterday = (today - timedelta(days=1)).strftime('%Y%m%d')
+    return [(date_str, secs), (yesterday, secs + 86400)]
+
+
+def prime_pins(keys):
+    """Batch-load trip pins for (operator, line, origin_ref, aimed_dep_ms)
+    keys; keys already cached, or missing a field, are skipped."""
+    _check()
+    todo = sorted({key for key in keys if all(key) and key not in _pins})
+    if todo:
+        _load_pins(todo)
+
+
+def pin_trip(operator, line, origin_ref, aimed_dep_ms):
+    """{'trip_id', 'anchor_epoch_s', 'stops': [{'atco','seq','arr_secs',
+    'dep_secs'}, ...]} for the one GTFS trip this vehicle's current journey
+    unambiguously matches by (operator, line, origin stop, exact aimed
+    departure) -- or None if it does not pin (no match, more than one match,
+    or a missing field). See the module note above for why exact-match only.
+    anchor_epoch_s + any stop's arr_secs/dep_secs is that stop's real
+    wall-clock epoch (see _load_pins for why a plain "local midnight" does
+    not always work). stops is the WHOLE trip, ordered by stop_sequence."""
+    key = (operator, line, origin_ref, aimed_dep_ms)
+    if not all(key):
+        return None
+    hit = _pins.get(key)
+    if key in _pins:
+        return hit
+    prime_pins([key])
+    return _pins.get(key)
 
 
 def _pattern_stops(operator, line, direction, pattern_id):
