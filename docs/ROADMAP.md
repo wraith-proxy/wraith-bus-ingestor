@@ -11,17 +11,24 @@ drift apart by design and neither is wrong.
 ## Where to pick up (as of 2026-09-23)
 
 Everything through 1.12.0 and 1.14.0 is delivered and on `main`; the API, the marts
-and the GTFS timetable are live. In order:
+and the GTFS timetable are live. Priority order, owner-set 2026-09-23:
 
-1. **1.13.0, the timetable-backed ETA rung (Phase 2)** is the only planned,
-   not-landed item currently unblocked.
-2. **1.17.0, retrying dbt v2 + DuckDB 2.0 alpha**, is planned. The `line_stops`
-   cluster that caused the 2026-09-18 blowup is gone since 1.12.0, so the retry
-   starts from a much smaller pipeline than the one that failed.
-3. **Open, unscheduled:** the TfL Unified API ingest for London (1.15.0); alerting
-   on the API's `marts_state` (1.16.0); DuckDB's per-run memory growth (the nightly
-   swap cleanup only hides it); macro-izing three repeated SQL expressions (1.18.0);
-   and the 1.12.0 "Not done / unproven" list.
+**Batch 1 (pick up first):**
+1. **1.18.0** -- macro-ize three repeated SQL expressions.
+2. **1.16.0** -- alert on the API's `marts_state`.
+3. **1.2.0** -- retire the direction heuristic.
+
+**Batch 2:**
+4. The 1.12.0 "Not done / unproven" list.
+5. DuckDB's per-run memory growth (the nightly swap cleanup only hides it).
+
+**Fast-followers, in this order:**
+6. **1.13.0** -- the timetable-backed ETA rung (Phase 2). Unblocked.
+7. **1.1.0** -- gate dbt in CI.
+8. **1.17.0** -- retry dbt v2 + DuckDB 2.0 alpha. The `line_stops` cluster that
+   caused the 2026-09-18 blowup is gone since 1.12.0, so the retry starts from a
+   much smaller pipeline than the one that failed.
+9. **1.15.0** -- TfL Unified API ingest for London.
 
 **Decided, 2026-09-23:** keep the ingest bounding box GB-wide (see "Known issues"
 below).
