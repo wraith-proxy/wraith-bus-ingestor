@@ -24,9 +24,19 @@ and the GTFS timetable are live. Priority order, owner-set 2026-09-23:
    `feed_direction` verbatim. Measured first: 68.1% coverage, 53.9% disagreement
    with the retired heuristic where both existed (chance level).
 
-**Batch 2:**
-4. The 1.12.0 "Not done / unproven" list.
-5. DuckDB's per-run memory growth (the nightly swap cleanup only hides it).
+**Batch 2 -- triaged 2026-09-23:**
+4. The 1.12.0 "Not done / unproven" list. Two items closed outright (the
+   scheduled-nightly watch was already done elsewhere; the stale bullet is
+   removed). Three genuinely still need dedicated work, not attempted here:
+   re-measuring tiebreak production accuracy (no truth-set script exists to
+   rerun), rightsizing the API's `mem_limit` (blocked on the same page-cache
+   nuance this list already flagged), and the GTFS refresh timer (blocked on
+   the calendar -- first run is Monday 2026-09-28, nothing to do until then).
+5. ~~DuckDB's per-run memory growth.~~ Measured, not fixed: 5 nights of
+   `precleanup.log` plus live `free`/`docker stats` show swap peaking under
+   800 MiB of 19-23 GiB available and fully reclaimed nightly -- real, but not
+   currently a threat on this 31 GiB host. Root cause still unidentified;
+   downgraded from "still open" to "monitor, not chase."
 
 **Fast-followers, in this order:**
 6. **1.13.0** -- the timetable-backed ETA rung (Phase 2). Unblocked.
@@ -475,11 +485,15 @@ because TfL publishes no aimed arrival.
 
 **Not done / unproven:**
 - The tiebreak's production accuracy was not re-measured (77.8% is the offline
-  figure on one snapshot; the 3 m margin was tuned on that snapshot).
-- The nightly on the reduced build: a forced run of the real unit on 2026-09-21 took
-  15 m 33 s and succeeded (22 m 37 s before), see
-  [ADR-0009](adr/0009-fast-nightly-build.md). It was one daytime run; the first
-  *scheduled* 03:00 on the reduced build (2026-09-22) is still to be watched.
+  figure on one snapshot; the 3 m margin was tuned on that snapshot). Checked
+  2026-09-23: no truth-set script exists in the repo to rerun -- the original
+  measurement built its truth set (buses with an aimed departure today that
+  match exactly one trip) as a one-off analysis, not a committed tool.
+  Re-measuring properly means rebuilding that methodology, not one query;
+  still needs a dedicated pass, not attempted here.
+- ~~The nightly on the reduced build~~: watched and resolved -- see 1.14.0. The
+  first *scheduled* 03:00 on the reduced build ran 2026-09-22 (22 min 27 s,
+  success); the nightly is fast enough now and this is no longer tracked here.
 - The weekly GTFS refresh timer is installed and enabled (2026-09-21; next run Monday
   2026-09-28 01:00) but **has never run end to end**, so the first run is unproven.
   The served alias table is still the first build's 631 rows (604 TfL, none of which
@@ -487,7 +501,11 @@ because TfL publishes no aimed arrival.
 - `/buses` now builds in about 1.15 s (2.6 s before the 2026-09-21 optimisation, 0.6 s
   originally) and one build serves every request inside a 5 s window. The tiebreak
   scoring is still pure Python. `docker-compose.yml` still gives the API `mem_limit: 6g`
-  though it now sits near 0.5 GiB.
+  though `docker stats` shows it sitting around 750 MiB (RSS). Checked 2026-09-23:
+  not shrunk here on purpose -- this section's own note above about the 1.1 GB GTFS
+  file's page cache being charged against this same limit under cgroup v2 means a
+  safe number needs the same measured-under-real-load treatment `memory_limit` got
+  for dbt (ADR-0009), not a guess. Still open.
 - The build warehouse was compacted 2026-09-21 (8.9 GB to 3.5 GB, orphaned tables
   gone) and `profiles.yml` `memory_limit` re-tuned to 4 GB (see ADR-0009); the unused
   `lat_cell`/`lon_cell` columns were dropped from the naptan staging model.
@@ -753,7 +771,17 @@ prune. Soft-fail throughout; a skipped or failed step never blocks the
 03:00 build. See `ops/precleanup.sh` and
 `ops/systemd/wraith-bus-precleanup.service`/`.timer`.
 
-**DuckDB's memory use still grows between runs; the nightly swap cleanup only
-hides it.** The underlying buffer creep is still unaddressed -- a nightly
-swap reclaim resets the symptom, not the cause. It'll climb again over
-days. Still open.
+**DuckDB's memory use still grows between runs -- measured 2026-09-23, and it's
+smaller than this section used to suggest.** `precleanup.log`'s last 5 nights:
+swap used at 02:00, before reclaim -- 09-19 0, 09-20 0, 09-21 630 MiB, 09-22
+762 MiB, 09-23 463 MiB. Noisy, not a monotonic climb, and fully reclaimed every
+night; live right now (18:49) total swap in use across both swapfiles is
+398 MiB of 19 GiB available, `free -h` shows 19 GiB "available", and no
+container is near its `mem_limit` (`docker stats`: questdb 5.7/8 GiB, ollama
+2.8/12 GiB, ghost-backend 757 MiB/6 GiB, everything else under 1 GiB). The
+host is 31 GiB now, not the 15 GiB box this concern was originally written
+against during the reverted dbt v2 alpha rehearsal (ADR-0005) -- that
+context is probably why this read as a growing crisis. The underlying
+buffer creep itself is still unidentified and still not root-caused, but on
+current hardware it is not currently a threat: downgraded from "still open"
+to "monitor, not chase" until evidence says otherwise.
