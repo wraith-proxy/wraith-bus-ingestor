@@ -13,10 +13,16 @@ drift apart by design and neither is wrong.
 Everything through 1.12.0 and 1.14.0 is delivered and on `main`; the API, the marts
 and the GTFS timetable are live. Priority order, owner-set 2026-09-23:
 
-**Batch 1 (pick up first):**
-1. **1.18.0** -- macro-ize three repeated SQL expressions.
-2. **1.16.0** -- alert on the API's `marts_state`.
-3. **1.2.0** -- retire the direction heuristic.
+**Batch 1 -- delivered 2026-09-23:**
+1. ~~1.18.0 -- macro-ize three repeated SQL expressions.~~ Done: `avg_speed_kmh`,
+   `no_operator_sentinel`, `in_gb_bbox`.
+2. ~~1.16.0 -- alert on the API's `marts_state`.~~ Done: `ops/publish_marts_state.py`
+   + `wraith-marts-state.timer` (not yet enabled -- needs a human
+   `systemctl enable --now`) + a new Grafana rule. Unproven until it has actually
+   fired once.
+3. ~~1.2.0 -- retire the direction heuristic.~~ Done: `direction` is now
+   `feed_direction` verbatim. Measured first: 68.1% coverage, 53.9% disagreement
+   with the retired heuristic where both existed (chance level).
 
 **Batch 2:**
 4. The 1.12.0 "Not done / unproven" list.
@@ -131,14 +137,31 @@ Also done as a direct result of this incident, outside git (QuestDB's own
 unset (defaulting to 90% of host RAM, ~14.9GB observed -- effectively no
 real ceiling on a 15GB host) and is now capped at 8GB explicitly.
 
-## 1.2.0 -- retire the direction heuristic
+## 1.2.0 -- retire the direction heuristic -- delivered 2026-09-23
 
-Planned (owner confirmed 2026-09-23): retire it, not just simplify it.
-`DirectionRef` started arriving in the real feed on 2026-09-12.
-`int_journeys_shaped_and_directed`'s bearing/shoelace inference exists only
-for historical data and feed gaps -- once enough real `DirectionRef`-backed
-data has accumulated, measure how often the heuristic and the real field
-actually disagree, then retire the heuristic.
+Measured against the build warehouse before touching anything:
+`feed_direction` now covers 68.1% of journeys (2,316,604 in the current
+retention window), and where both it and the heuristic's own
+`direction_inferred` existed, they disagreed 53.9% of the time -- chance
+level, because the heuristic's inbound/outbound split was picked per line by
+which bearing bin had more journeys, never tied to the feed's own
+convention. The feed also already reports `clockwise`/`anticlockwise`
+directly for loop routes, which the heuristic's shoelace-formula loop logic
+was reinventing less reliably.
+
+`direction` in `int_journeys_shaped_and_directed` is now `feed_direction`,
+unmodified. Dropped: the bearing/shoelace CTEs, the `bearing_deg`/
+`bearing_delta` macros (no other consumer), and 6 dead output columns
+(`direction_inferred`, `is_circular_line`, `line_median_linearity`,
+`signed_area_2`, `journey_bearing`, `reference_bearing`). `direction` is
+NULL on the 31.9% of journeys the feed didn't tag -- accepted, not patched
+over. Checked before shipping: nothing downstream requires it non-null.
+`eta_models` and `line_punctuality` both group on `direction` among other
+columns, so a NULL forms its own grain like any other value, and
+`pick_model()` in `backend/app.py` already falls through to a coarser grain
+on a miss -- it was already designed to tolerate a live bus's direction not
+matching a training-set label. Fixed the `not_null` tests on `direction`
+across 3 yml files that this makes newly false.
 
 ## 1.3.0 -- incident recovery: upserts, replay, drift guards
 
@@ -583,12 +606,23 @@ rest of the country. The cost is real: it would be a second timetable source to
 keep reconciled against the live feed, on top of GTFS, not a drop-in extension
 of it.
 
-## 1.16.0 -- alert on the API's `marts_state`
+## 1.16.0 -- alert on the API's `marts_state` -- delivered 2026-09-23, unproven
 
-Planned, not started. Nothing today pages when the API reports its marts as
-unreadable or stale -- see the ADR-0005 aftermath under "Known issues" for the
-~26 hours that went unnoticed on 2026-09-19. Needs a Grafana rule alongside the
-existing feed-stale, build-missing-or-failed and dbt-test rules from 1.4.0.
+Nothing paged when the API reported its marts as unreadable or stale -- see
+the ADR-0005 aftermath under "Known issues" for the ~26 hours that went
+unnoticed on 2026-09-19. `ops/publish_marts_state.py` polls `GET
+/api/model-info` every 5 minutes (`ops/systemd/wraith-marts-state.timer`) and
+writes one row (`state`, `n_models`) to QuestDB over ILP, matching
+`dbt/publish_run_results.py`'s existing pattern rather than adding a new
+transport. A new Grafana rule (severity critical, matching `wraith-feed-stale`
+and `wraith-nightly-build`) pages when `last(state) != 'ok'` over the last 30
+minutes, or when nothing has published in that window at all.
+
+**Not done:** the timer is not enabled -- needs a human to run
+`sudo systemctl enable --now wraith-marts-state.timer`. Until then this rule
+sits in `health=error` (no `marts_state` table yet), the same cold-start state
+the other first-run-dependent rules in this file already document. Unproven:
+it has never actually fired.
 
 ## 1.17.0 -- retry dbt v2 + DuckDB 2.0 alpha migration
 
@@ -602,18 +636,30 @@ smaller pipeline than the one that failed. Per 1.9.0's own takeaway: rehearse
 under the real `systemctl`-triggered nightly conditions and `MemoryMax` cap
 before trusting it, not just an isolated `dbt run`/`dbt test` pass.
 
-## 1.18.0 -- macro-ize three repeated SQL expressions
+## 1.18.0 -- macro-ize three repeated SQL expressions -- delivered 2026-09-23
 
-Planned, not started. Found writing the Learn dbt walkthrough:
-`path_km / (duration_secs / 3600.0)` (a bus's average speed) appears 3x in
-`int_journeys_shaped_and_directed.sql` -- once as `mean_speed_kmh`, twice more
-in its own plausibility filter. `coalesce(operator, '~none~')` (the
-pre-2026-09-12, no-operator sentinel) appears 3x across that file and
-`int_pings_segmented_to_journeys.sql`. `lat between 49.8 and 61.0 and lon
-between -8.7 and 2.0` (the GB bounding box) appears 2x, once each in
-`stg_bods__vehicle_pings.sql` and `stg_naptan__stops.sql`. `date_diff('second',
-...)` also repeats (5x) but with different argument pairs each time -- the same
-SQL shape, not the same rule, so not a macro case.
+Found writing the Learn dbt walkthrough. Three new macros replace the
+repeats: `avg_speed_kmh(path_km, duration_secs)` (was
+`path_km / (duration_secs / 3600.0)`, 3x in
+`int_journeys_shaped_and_directed.sql`); `no_operator_sentinel(operator_expr)`
+(was `coalesce(operator, '~none~')`, 2x in `int_pings_segmented_to_journeys.sql`
+by the time this landed -- 1.2.0's heuristic retirement removed the other
+file's 2 occurrences along with the CTEs that held them); `in_gb_bbox(lat_expr,
+lon_expr)` (was the GB bounding box filter, once each in
+`stg_bods__vehicle_pings.sql` and `stg_naptan__stops.sql`). The dead
+`bearing_deg`/`bearing_delta` macros were deleted alongside the heuristic they
+existed only for.
+
+One bug found in verification, not by `dbt compile` (which exits 0 either
+way): a Jinja `{% set %}` held a macro call as a quoted literal string rather
+than calling it, so the compiled SQL contained the literal text
+`{{ no_operator_sentinel('operator') }}` instead of its expansion. Only
+reading the compiled output caught it. Fixed by calling the macro directly
+and concatenating with `~` instead of embedding it in a string.
+
+`date_diff('second', ...)` also repeats (5x) but with different argument
+pairs each time -- the same SQL shape, not the same rule, so not a macro
+case, and left alone.
 
 ## Known issues -- raised, not yet actioned
 
