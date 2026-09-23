@@ -8,25 +8,23 @@ tags `cz` cuts on every merge to `main` are an independent sequence --
 `.gitea/workflows/release.yml` bumps them per merge, so the two numbers
 drift apart by design and neither is wrong.
 
-## Where to pick up (as of 2026-09-22)
+## Where to pick up (as of 2026-09-23)
 
 Everything through 1.12.0 and 1.14.0 is delivered and on `main`; the API, the marts
 and the GTFS timetable are live. In order:
 
-1. **The first scheduled 03:00 on the reduced build passed (2026-09-22): 22 min 27 s,
-   success**, though segmentation alone ran about 3x the forced run's time for
-   reasons not yet established (see 1.14.0). Still to watch: the first end-to-end
-   GTFS refresh (timer enabled; Monday 2026-09-28 01:00), which also swaps in the
-   reviewed alias table.
-2. **1.13.0, the timetable-backed ETA rung (Phase 2)** is the only planned,
-   not-landed item. It is unblocked.
-3. **Open, unscheduled:** the ingest bounding-box decision; the TfL Unified API
-   ingest for London; two unexplained runtime swings (`eta_models` 6 s to 433 s;
-   segmentation 81.5 s to 437 s on 2026-09-22); alerting on the API's `marts_state`;
-   the unexplained host freeze (RAM cleared, PSU and thermal untested); and the
-   1.12.0 "Not done / unproven" list.
-4. **Not next:** WF-S (1.14.0) is only for a nightly that is still too slow, and it is
-   now 15.5 minutes, about 10.5 of them extraction.
+1. **1.13.0, the timetable-backed ETA rung (Phase 2)** is the only planned,
+   not-landed item currently unblocked.
+2. **1.17.0, retrying dbt v2 + DuckDB 2.0 alpha**, is planned. The `line_stops`
+   cluster that caused the 2026-09-18 blowup is gone since 1.12.0, so the retry
+   starts from a much smaller pipeline than the one that failed.
+3. **Open, unscheduled:** the TfL Unified API ingest for London (1.15.0); alerting
+   on the API's `marts_state` (1.16.0); DuckDB's per-run memory growth (the nightly
+   swap cleanup only hides it); macro-izing three repeated SQL expressions (1.18.0);
+   and the 1.12.0 "Not done / unproven" list.
+
+**Decided, 2026-09-23:** keep the ingest bounding box GB-wide (see "Known issues"
+below).
 
 ## 1.0.0 -- single-NAS deployment, data owned
 
@@ -102,6 +100,9 @@ already at `2.0.0` from the September restructure -- 1.0.0 was a
 commitment to no more breaking changes without a major bump, not a
 version reset, and that commitment stands regardless of this gap.
 
+Deliberately deprioritized (owner's call, 2026-09-23): not worth the added CI
+time right now. Left open, not scheduled.
+
 ## 1.1.1 -- line_stops' unbounded memory
 
 Root cause, every fix attempted (including the ones that didn't work and
@@ -109,11 +110,6 @@ why), and the measured data behind the final design are now written up in
 [ADR-0001](adr/0001-line-stops-memory-and-batching.md) and
 [ADR-0002](adr/0002-line-stops-final-assembly.md) rather than repeated
 here -- this section tracks only what's still open.
-
-**Remaining:**
-- No cold-cache validation -- one observed cold/warm swing (588 MiB vs
-  131 MiB, identical query) means the true worst case for a genuinely
-  fresh 3am run isn't fully confirmed.
 
 The systemd timer under `ops/systemd/` replaced cron 2026-09-15 (`sudo
 systemctl enable --now wraith-bus-build.timer`, crontab entry removed) --
@@ -130,11 +126,12 @@ real ceiling on a 15GB host) and is now capped at 8GB explicitly.
 
 ## 1.2.0 -- retire the direction heuristic
 
+Planned (owner confirmed 2026-09-23): retire it, not just simplify it.
 `DirectionRef` started arriving in the real feed on 2026-09-12.
 `int_journeys_shaped_and_directed`'s bearing/shoelace inference exists only
 for historical data and feed gaps -- once enough real `DirectionRef`-backed
 data has accumulated, measure how often the heuristic and the real field
-actually disagree, and simplify or retire whichever side loses.
+actually disagree, then retire the heuristic.
 
 ## 1.3.0 -- incident recovery: upserts, replay, drift guards
 
@@ -368,9 +365,9 @@ is where this one hid.
 - `pages.yml`'s `dbt docs generate` could move off `ubuntu-latest` onto
   `ghost-runner` now that the platforms match; not done as part of this
   migration.
-- dbt v2 / DuckDB 2.0 alpha themselves: not retried until DuckDB 2.0
-  reaches a real GA with production mileage elsewhere, and only with the
-  full-scale rehearsal above included from the start.
+- dbt v2 / DuckDB 2.0 alpha themselves: the owner wants another attempt (see
+  1.17.0 below), regardless of GA status -- only with the full-scale rehearsal
+  above included from the start.
 
 ## 1.10.0 -- bus_positions schema optimisation
 
@@ -554,43 +551,64 @@ about 11 GB). It was one daytime run.
 
 **The first scheduled 03:00 on the reduced build (2026-09-22): 22 min 27 s, success.**
 Extract about 11 min 25 s, `dbt run` 8 min 5 s (8/8), `dbt test` 164 s (88/88), 40/0
-on the contract gate, `/model-info` `ok` at 130,539 models. Slower than the forced
-run because segmentation alone took 437 s against that run's 81.5 s -- nearly 3x, and
-the reason is not established (more genuinely new data in the window, a colder page
-cache overnight, and contention from something else running at 03:00 are all
-plausible; none has been checked). This is now the second unexplained runtime swing
-in this build, alongside `eta_models`' 6-433 s -- both filed under "Known issues"
-rather than chased, since nothing failed and nothing is stale.
+on the contract gate, `/model-info` `ok` at 130,539 models. The nightly is fast
+enough now (owner's call, 2026-09-23) -- WF-S is dropped, not just deprioritized.
+ADR-0008's Phase 1 (the API rewire and the deletion of the 89 models) was
+delivered 2026-09-21 (see 1.12.0).
 
-**Remaining:** WF-S, the narrower
-sort payload and fewer window passes (much of the segmentation cost is disk-bound:
-iowait 46 to 76% on the DRAM-less root SSD), is now a smaller prize and should only
-be picked up if the nightly is still too slow; ADR-0008's Phase 1 (the API rewire
-and the deletion of the 89 models) was delivered 2026-09-21 (see 1.12.0). Also open: why `eta_models` varies from 6 s to 433 s across runs.
+## 1.15.0 -- TfL Unified API ingest for London
 
-## Known issues -- raised, not yet actioned
+Planned, not started. Operator `TFLO` is 7,365 live vehicles, 34.8% of the keyed
+fleet, and has zero rows in the BODS GTFS `agency` table -- TfL does not publish
+timetables to BODS at all, so 1.12.0's GTFS work does nothing for it and 1.13.0's
+timetable-pinned ETA rung cannot reach it either. The owner decided, 2026-09-20,
+to keep London in the live fleet on the existing regression path rather than
+exclude it -- an accepted, deliberate regression relative to the rest of GB, not
+a gap awaiting a fix. Since Phase 1 (2026-09-21) that regression is concrete:
+London buses keep their position, regression ETA and live listing (the
+destination position comes from NaPTAN, which covers London) but have no route
+overlay, last or next stop, or line list in place search, and never had a
+schedule delay (TfL sends no aimed arrival).
 
-**Three repeated SQL expressions, found writing the Learn dbt walkthrough, are
-macro candidates.** Not acted on; flagged for whoever next touches these models.
+TfL's own Unified API is the way to close it: a second ingest, with its own
+schema and its own refresh cadence, that would bring London to parity with the
+rest of the country. The cost is real: it would be a second timetable source to
+keep reconciled against the live feed, on top of GTFS, not a drop-in extension
+of it.
+
+## 1.16.0 -- alert on the API's `marts_state`
+
+Planned, not started. Nothing today pages when the API reports its marts as
+unreadable or stale -- see the ADR-0005 aftermath under "Known issues" for the
+~26 hours that went unnoticed on 2026-09-19. Needs a Grafana rule alongside the
+existing feed-stale, build-missing-or-failed and dbt-test rules from 1.4.0.
+
+## 1.17.0 -- retry dbt v2 + DuckDB 2.0 alpha migration
+
+Planned (owner's call, 2026-09-23): retry it. 1.9.0 tried this 2026-09-17 and
+reverted it 2026-09-18 after production-load memory blowups -- DuckDB 2.0
+alpha's bundled engine couldn't stay under 12GB on this pipeline's `line_stops`
+phase (see [ADR-0005](adr/0005-dbt-v2-duckdb-alpha-migration.md)). Since then,
+ADR-0008 Phase 1 deleted the `line_stops` cluster (the phase that blew up
+memory) along with 88 other models, so a retry today starts from a much
+smaller pipeline than the one that failed. Per 1.9.0's own takeaway: rehearse
+under the real `systemctl`-triggered nightly conditions and `MemoryMax` cap
+before trusting it, not just an isolated `dbt run`/`dbt test` pass.
+
+## 1.18.0 -- macro-ize three repeated SQL expressions
+
+Planned, not started. Found writing the Learn dbt walkthrough:
 `path_km / (duration_secs / 3600.0)` (a bus's average speed) appears 3x in
-`int_journeys_shaped_and_directed.sql` -- once as `mean_speed_kmh`, twice more in
-its own plausibility filter. `coalesce(operator, '~none~')` (the pre-2026-09-12,
-no-operator sentinel) appears 3x across that file and
-`int_pings_segmented_to_journeys.sql`. `lat between 49.8 and 61.0 and lon between
--8.7 and 2.0` (the GB bounding box) appears 2x, once each in
+`int_journeys_shaped_and_directed.sql` -- once as `mean_speed_kmh`, twice more
+in its own plausibility filter. `coalesce(operator, '~none~')` (the
+pre-2026-09-12, no-operator sentinel) appears 3x across that file and
+`int_pings_segmented_to_journeys.sql`. `lat between 49.8 and 61.0 and lon
+between -8.7 and 2.0` (the GB bounding box) appears 2x, once each in
 `stg_bods__vehicle_pings.sql` and `stg_naptan__stops.sql`. `date_diff('second',
 ...)` also repeats (5x) but with different argument pairs each time -- the same
 SQL shape, not the same rule, so not a macro case.
 
-**Segmentation ran 3x slower on the first scheduled 03:00 of the reduced build
-(2026-09-22).** 437 s against 81.5 s in the forced run two days earlier, on the
-same model with the same 4 GB `memory_limit`; the rest of the build (extract,
-the other 7 models, `dbt test`, the contract gate, publish) ran at the expected
-times and the build succeeded (22 min 27 s total). No cause has been checked --
-candidates are more genuinely new data in that night's window, a colder page
-cache overnight, or contention from something else running at 03:00. Filed
-alongside the `eta_models` 6-433 s swing below as a variance to watch, not
-chased, since nothing failed and the marts published on time.
+## Known issues -- raised, not yet actioned
 
 **The live map hid about 3% of vehicles (fixed 2026-09-20, deployed 2026-09-21).**
 `backend/app.py` selected the newest row per vehicle with `LATEST ON timestamp
@@ -609,37 +627,14 @@ Android app, which lives in its own repository, should be unaffected (the route 
 backward compatible; the app itself was not run against it) and should start
 sending `operator`.
 
-**Open decision: the ingest bounding box.** It was widened from the
-north-west of England to all of mainland GB on 2026-09-12 (4.72x the
+**Decided, 2026-09-23 -- keep the ingest bounding box GB-wide.** It was widened
+from the north-west of England to all of mainland GB on 2026-09-12 (4.72x the
 vehicles; rows/day ~3M -> ~13M). Every capacity number in this repo that
 predates that (`memory_limit`, `MemoryMax`, QuestDB disk, nightly runtime)
 was sized for the old volume -- see the GOTCHA in `docs/operations.md`.
-Deliberately left undecided (2026-09-19): keep GB-wide and retune upwards,
-or narrow back to the area actually watched. Narrowing would shrink disk,
-memory and runtime at the source. The owner explicitly chose, 2026-09-20,
-to keep London in the live fleet rather than narrow the bounding box to
-exclude it (see the TfL Unified API entry below) -- that choice does not
-answer this bounding-box question, which stays open on its own terms.
-
-**Raised, not scheduled: a TfL Unified API ingest for London.** Operator
-`TFLO` is 7,365 live vehicles, 34.8% of the keyed fleet, and has zero rows
-in the BODS GTFS `agency` table -- TfL does not publish timetables to
-BODS at all, so 1.12.0's GTFS work does nothing for it and 1.13.0's
-timetable-pinned ETA rung cannot reach it either. The owner decided,
-2026-09-20, to keep London in the live fleet on the existing regression
-path rather than exclude it (see 1.13.0 above and the bounding-box entry
-above) -- this is an accepted, deliberate regression relative to the rest
-of GB, not a gap awaiting a fix. Since Phase 1 (2026-09-21) that regression is
-concrete: London buses keep their position, regression ETA and live listing (the
-destination position comes from NaPTAN, which covers London) but have no route
-overlay, last or next stop, or line list in place search, and never had a schedule
-delay (TfL sends no aimed arrival). TfL's own Unified API is a plausible way
-to close it: a second ingest, with its own schema and its own refresh
-cadence, that would bring London to parity with the rest of the country.
-The cost is real and is why this stays unscheduled -- it would be a second
-timetable source to keep reconciled against the live feed, on top of
-GTFS, not a drop-in extension of it. Raised and plausible; not scheduled
-and not decided.
+Settled: no narrowing back to a smaller watched area; capacity keeps being
+retuned upwards as needed instead. Consistent with the owner's 2026-09-20
+choice to keep London in the live fleet (see 1.15.0 above).
 
 **The 2026-09-19 03:00 nightly failed, and the marts were unreadable: fixed and
 proven (TJP-19090).** DuckDB's own 4GB `memory_limit` was exhausted in
@@ -665,8 +660,7 @@ headroom, not a measured need. The trade is real: on a 15.4GB host with
 `MemorySwapMax=0`, a run that actually used it would squeeze QuestDB (up to
 8g), the ingestor and ollama/immich, which the unit does not stop. The unit
 file in the repo and the installed one in `/etc/systemd/system/` are both 13000M now
-(checked 2026-09-21), and the runs since have passed under it. Still open: nothing
-alerts on the API's `marts_state`.
+(checked 2026-09-21), and the runs since have passed under it.
 
 **2026-09-20 (TJP-20090): the "fixed" nightly failed again, and a manual run took
 the host down.** The 03:00 build hit DuckDB's 4GB `memory_limit` in
@@ -675,17 +669,7 @@ was a coin flip, not a fix; `memory_limit` was raised to 6GB (see the GOTCHA in
 `docs/operations.md`); the 2026-09-21 03:00 run then passed, and once the cluster
 that needed the headroom was deleted it was lowered to 4GB, measured (see 1.14.0). It looked fine because the API
 kept serving the previous marts and nothing alerted for 26h: a failed run now
-records itself and alerts within ~10 minutes. Separately, the 32GB host hard-froze
-at ~16:21 on 2026-09-19, mid-run of `ops/verify_build.sh` Run 1 (`last -x`: `crash`,
-no shutdown, no OOM or kernel log; the build was in the small line_stops batch
-models at the time, not the memory-heavy one). Sep 14 also ended as a `crash`
-under dbt load, on the old 15GB RAM. **Cause still unknown, and the leading
-suspect has been eliminated**: `memtest86+` came back clean on 2026-09-20, so
-the RAM is not it. That lifts the gate on heavy runs but explains nothing --
-PSU and thermal are now the untested candidates, and `dmidecode` still reports
-four sticks of three different models, non-ECC, rated 3200 and running at 2400.
-Watch the next full `ops/verify_build.sh` rather than assuming the problem
-went away with the theory.
+records itself and alerts within ~10 minutes.
 
 **The archiver jam on an already-archived day is fixed (TJP-19090).** A
 restored day colliding with its own archive copy used to stop the whole run
@@ -716,6 +700,7 @@ prune. Soft-fail throughout; a skipped or failed step never blocks the
 03:00 build. See `ops/precleanup.sh` and
 `ops/systemd/wraith-bus-precleanup.service`/`.timer`.
 
-The underlying DuckDB buffer creep is still unaddressed -- a nightly
+**DuckDB's memory use still grows between runs; the nightly swap cleanup only
+hides it.** The underlying buffer creep is still unaddressed -- a nightly
 swap reclaim resets the symptom, not the cause. It'll climb again over
 days. Still open.
