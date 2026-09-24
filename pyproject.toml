@@ -82,6 +82,16 @@ Repository = "https://git.thomaspeoples.com/thomaspeoples/wraith-bus-ingestor.gi
 [tool.uv]
 package = false
 
+# 2026-09-24: poe's default "auto" executor detects uv.lock and shells out
+# to `uv run` regardless of how poe itself was invoked -- confirmed by
+# running `poe docs-api` directly on ghost-runner's baked, no-.venv image
+# and watching it silently download a whole new CPython + venv rather than
+# use the interpreter already on PATH. "simple" runs every task with
+# whatever's already active (baked --system on CI, the dev's own venv or
+# shell locally if one is active) and never invokes uv on its own.
+[tool.poe.executor]
+type = "simple"
+
 [tool.poe.tasks]
 test = "pytest"
 test-ci = "pytest --cov=backend --cov-report=term-missing --cov-fail-under=80"
