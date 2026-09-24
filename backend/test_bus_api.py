@@ -249,6 +249,26 @@ def test_time_helpers():
     assert app.epoch_from_qdb_timestamp('rubbish') is None
 
 
+def test_openapi_spec_covers_every_route_with_no_duplicate_schema_names():
+    """flask-smorest/apispec setup, not a route's own logic: every real route
+    must appear in the generated spec (this is the entire point of using
+    decorator-generated docs instead of a hand-maintained file -- it cannot
+    silently drift), and apispec must not have silently renamed a schema
+    (schemas.ApiErrorSchema colliding with flask-smorest's own built-in
+    'Error' schema did exactly this once, 2026-09-24 -- see app.py's own
+    comment on why it isn't named ErrorSchema)."""
+    with app.app.test_request_context():
+        spec = app.api.spec.to_dict()
+    real_routes = {r.rule for r in app.app.url_map.iter_rules()
+                  if r.rule.startswith(('/bus', '/route', '/search', '/model-info', '/metrics'))}
+    spec_paths = {p.replace('{bus_id}', '<bus_id>') for p in spec['paths']}
+    assert real_routes == spec_paths
+    # apispec appends a digit (Error1, Error2, ...) to a name it can't tell
+    # apart from an existing one -- never legitimate for a hand-named schema.
+    schema_names = list(spec['components']['schemas'])
+    assert not any(n[-1].isdigit() for n in schema_names), schema_names
+
+
 def test_bus_id_whitelist():
     for good in ('ABC-1', 'SCMN_1234', 'bus.42', 'a:b'):
         assert app.BUS_ID_RE.match(good), good

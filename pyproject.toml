@@ -20,6 +20,10 @@ dependencies = [
     "tzdata",
     "requests",
     "pyyaml",
+    # OpenAPI/Swagger, generated from the route decorators themselves (2026-09-24)
+    # so it can't drift from the real routes the way a hand-maintained spec would.
+    # Pulls in apispec + marshmallow.
+    "flask-smorest",
 ]
 
 [project.optional-dependencies]
