@@ -7,30 +7,26 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    # Moved off ubuntu-latest 2026-09-24 (ROADMAP.md had flagged this as
+    # possible independently of any dbt version since 1.5.0's Debian
+    # switch, just never done). ghost-runner (see ci-images) now bakes this
+    # repo's own deps -- mkdocs, genbadge, pydoc-markdown, poethepoet,
+    # pytest, dbt-core/dbt-duckdb, all of it -- so this job needs no
+    # "install uv" or "install dependencies" step at all, unlike the old
+    # ubuntu-latest run which resolved and installed everything fresh every
+    # time. Rebuild ci-images when pyproject.toml changes.
+    runs-on: ghost-runner
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
-        with:
-          version: "latest"
-
-      - name: Install dependencies
-        # --all-extras, not --extra dev: this job needs the dbt extra to
-        # generate dbt docs. ghost-runner (test.yml) can install --all-extras
-        # too now (Debian/glibc since 2026-09-17, see ci-images) -- this job
-        # still runs on ubuntu-latest regardless, unrelated to that.
-        run: uv sync --all-extras
-
       - name: Run Tests & Coverage
-        run: uv run pytest --cov=backend --cov-report=xml
+        run: pytest --cov=backend --cov-report=xml
 
       - name: Generate Coverage Badge
-        run: uv run genbadge coverage -i coverage.xml -o docs/coverage.svg
+        run: genbadge coverage -i coverage.xml -o docs/coverage.svg
 
       - name: Generate Python API docs
-        run: uv run poe docs-api
+        run: poe docs-api
 
       - name: Generate dbt docs
         # dbt docs are generated LOCALLY, against real live data, and
@@ -43,11 +39,11 @@ jobs:
           if [ -f docs/dbt/index.html ]; then
             echo "docs/dbt/index.html already committed -- skipping regeneration"
           else
-            uv run poe docs-dbt
+            poe docs-dbt
           fi
 
       - name: Build Documentation
-        run: uv run mkdocs build
+        run: mkdocs build
 
       - name: Sync to Main Website Repo
         env:
