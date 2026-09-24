@@ -37,11 +37,17 @@ rm -rf "$DEST"
 mkdir -p "$DEST/data"
 
 # the project itself: models, macros, tests, config -- but no warehouses,
-# logs, old build output or (real, gitignored) data
-rsync -a \
-  --exclude='*.duckdb' --exclude='*.duckdb.wal' --exclude='data/' --exclude='target/' \
-  --exclude='logs/' --exclude='__pycache__' --exclude='*.log' \
-  "$REPO/dbt/" "$DEST/"
+# logs, old build output or (real, gitignored) data. tar, not rsync: the
+# CI runner's image has no rsync (caught 2026-09-24 when the CI job this
+# script now backs failed with "rsync: command not found"), and tar's
+# --exclude is honoured while READING the source, so dbt/data/'s real
+# (gitignored, possibly multi-GB) parquet is never even opened -- a
+# copy-then-delete with cp would read it first and defeat the point of
+# "this script never touches dbt/data/" above.
+tar -C "$REPO/dbt" \
+  --exclude='*.duckdb' --exclude='*.duckdb.wal' --exclude='data' --exclude='target' \
+  --exclude='logs' --exclude='__pycache__' --exclude='*.log' \
+  -cf - . | tar -C "$DEST" -xf -
 
 # the fixtures, turned into a sandbox's worth of data
 cp "$FIXTURES/sandbox_naptan_stops.csv" "$DEST/data/naptan_stops.csv"
