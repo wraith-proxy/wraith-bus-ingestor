@@ -46,8 +46,15 @@ mkdir -p "$DEST/data"
 # "this script never touches dbt/data/" above.
 tar -C "$REPO/dbt" \
   --exclude='*.duckdb' --exclude='*.duckdb.wal' --exclude='data' --exclude='target' \
-  --exclude='logs' --exclude='__pycache__' --exclude='*.log' \
+  --exclude='logs' --exclude='__pycache__' --exclude='*.log' --exclude='dbt_packages' \
   -cf - . | tar -C "$DEST" -xf -
+
+# dbt_packages is excluded above and installed fresh here rather than
+# copied, so the sandbox never depends on $REPO/dbt already having run
+# `dbt deps` -- caught 2026-09-24 when this passed on a dev box that
+# happened to have dbt_packages installed already, then failed in CI's
+# fresh checkout ("dbt expects 2 package(s)... found only 0").
+"$REPO/.venv/bin/dbt" deps --project-dir "$DEST" --profiles-dir "$DEST"
 
 # the fixtures, turned into a sandbox's worth of data
 cp "$FIXTURES/sandbox_naptan_stops.csv" "$DEST/data/naptan_stops.csv"
