@@ -4,8 +4,7 @@
 Not real data -- there is none to ship, and rightly so; live bus positions
 belong to QuestDB, not to git. This script invents a handful of journeys with
 the same column shape extract.py produces, so every real model in this project
-(the segmentation, the direction inference, the ETA regression) has enough to
-do something real with.
+(the segmentation, the ETA regression) has enough to do something real with.
 
 Why a script and not a committed data file: the freshness source test wants
 the newest row to be recent (`error_after: 5 days`), so the timestamps have to
@@ -41,10 +40,9 @@ TRAIL_PINGS = 15     # stationary pings after the day's LAST journey, so ITS end
 # pings at 3-minute spacing is around two hours and, at these coordinates, about
 # 20 km/h -- comfortably inside every plausibility filter in
 # int_journeys_shaped_and_directed.sql (n_pings>=5, path_km>=0.5,
-# 240s<=duration<=5h, 1<=avg speed<=90 km/h). Two journeys per line run
-# opposite ways, which is what lets that same model's own bearing inference
-# call one of them 'inbound' without being told -- nobody sets `direction`
-# here, on purpose, the same way the real feed didn't before 2026-09-12.
+# 240s<=duration<=5h, 1<=avg speed<=90 km/h). Nobody sets `direction` here, on
+# purpose, the same way the real feed doesn't for every journey -- these rows
+# surface as direction = NULL, same as a real untagged journey would.
 JOURNEYS = [
     ("DEMO", "1", "BUS001", (53.262, -2.628), (53.102, -2.288), 40,
      "99000001", "Duckville Interchange", "99000023", "Sandopolis Square"),

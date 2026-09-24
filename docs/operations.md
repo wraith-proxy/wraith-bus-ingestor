@@ -48,6 +48,22 @@ sudo systemctl status wraith-bus-precleanup.timer
 journalctl -u wraith-bus-precleanup.service
 ```
 
+### marts_state, every 5 minutes
+
+`ops/systemd/wraith-marts-state.{service,timer}` (1.16.0, `docs/ROADMAP.md`)
+runs `ops/publish_marts_state.py` every 5 minutes: polls the API's own
+`GET /api/model-info` and writes one row to QuestDB (`state`, `n_models`),
+feeding the "marts state not ok" Grafana rule described below. Not root, not
+in the build's stop/start window -- it only does HTTP GET/POST. **Not yet
+enabled** (`sudo systemctl enable --now wraith-marts-state.timer`), so it
+sits in the same cold-start `health=error` state the other first-run-
+dependent rules already document until it has run once.
+
+```
+sudo systemctl status wraith-marts-state.timer
+journalctl -u wraith-marts-state.service
+```
+
 ### The three-file handoff
 
 `build.sh` never lets dbt build the file Flask has open. DuckDB holds an
@@ -668,7 +684,7 @@ and the stock ntfy Android app — subscribed to the same topic — raises the
 notification on the phone. No SMTP hop, no mail account, no third-party push
 service in the middle.
 
-Three rules are provisioned today:
+Six rules are provisioned today (all in `ops/grafana/provisioning/alerting/rules.yaml`):
 
 - **feed stale** — nothing written to `bus_positions` for 15 minutes, which
   never happens during service hours. `NoData` counts as alerting here: a
@@ -685,6 +701,21 @@ Three rules are provisioned today:
   build green and publishes anyway, so before this rule existed it
   reached nothing but `build.log` — this is the alert that closes that
   gap, not just the outright failures.
+- **archiver has not run cleanly** and **archiver needs attention** (1.11.0)
+  — the two rules over `archiver_runs` described just above.
+- **marts state not ok** (1.16.0, `docs/ROADMAP.md`) — `last(state) != 'ok'`
+  in `marts_state` over the last 30 minutes, or nothing published there at
+  all in that window. `state` comes from polling the API's own
+  `GET /api/model-info` (`'ok'` / `'locked'` / `'missing'` / `'unreadable'` /
+  `'no_driver'`, or `'unreachable'` if the poll itself failed) every 5
+  minutes (`ops/publish_marts_state.py`, `wraith-marts-state.timer`) and
+  writing one row to QuestDB — the same reuse-the-ILP-transport pattern as
+  `dbt/publish_run_results.py`, not a new dependency. Closes the gap that let
+  the marts sit `unreadable` for about 26 hours on 2026-09-19 (the abandoned
+  dbt v2 alpha's storage format, ADR-0005's aftermath, see `docs/ROADMAP.md`
+  "Known issues") with nothing alerting on it. The timer is not yet enabled
+  on the host (`sudo systemctl enable --now wraith-marts-state.timer`) and
+  this rule is unproven until it has actually fired once.
 
 ### The topic name is the credential
 

@@ -2,6 +2,8 @@
 # to health=ok against live QuestDB. dbt_build_runs is created by the first
 # dbt/publish_run_results.py run, so these rules sit in health=error until a
 # build has happened -- that is the expected cold-start state, not a fault.
+# The same is true of marts_state, created by ops/publish_marts_state.py's
+# first run.
 #
 # Each rule computes its own threshold in SQL and hands a single number to a
 # __expr__ condition, because the time window belongs in the query where it is
@@ -241,3 +243,58 @@ groups:
             rows disagree, or an export failed verification) or the run errored.
             Nothing has been dropped that was not proven. Read archive.log on
             the archive drive for the day and the reason.
+
+      - uid: wraith-marts-state
+        title: marts state not ok
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: questdb
+            relativeTimeRange:
+              from: 1800
+              to: 0
+            model:
+              refId: A
+              format: table
+              rawQuery: true
+              # 30 minutes -- six publish cycles at the publisher's 5-minute
+              # interval, so one or two missed/slow publishes don't page.
+              # last() follows the designated timestamp, so this is the most
+              # recent reading.
+              rawSql: >-
+                select case when last(state) != 'ok' then 1 else 0 end
+                from marts_state
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        # Unlike the archiver rules above, NoData here means marts_state has
+        # had nothing published in 30 minutes, which means the publisher
+        # itself is down or the API is fully unreachable -- that must page
+        # rather than sit silent, the same reasoning as wraith-feed-stale and
+        # wraith-nightly-build.
+        noDataState: Alerting
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The API's marts_state is not ok, or nothing has published in 30 minutes."
+          description: >-
+            marts_state comes from GET /api/model-info ('ok', 'locked',
+            'missing', 'unreadable' or 'no_driver' -- or 'unreachable' if the
+            publisher itself couldn't reach the API), published to QuestDB
+            every 5 minutes by ops/publish_marts_state.py
+            (ops/systemd/wraith-marts-state.timer). Closes ROADMAP.md 1.16.0:
+            on 2026-09-19 the served marts were unreadable for about 26 hours
+            with nothing alerting on it, because the marts had been written by
+            the abandoned dbt v2 alpha (DuckDB storage version 999) and the
+            API reported `unreadable` the whole time (see docs/ROADMAP.md
+            "Known issues", the ADR-0005 aftermath paragraph).

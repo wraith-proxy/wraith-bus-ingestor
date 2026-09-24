@@ -12,7 +12,7 @@ apiVersion: v3.2.0
 kind: DataContract
 id: 2b7d1e64-9a03-4f18-8c52-1d7e6b4a9f30
 name: wraith_bus_ingestor_positions
-version: 3.0.0
+version: 3.1.0
 status: active
 domain: transit
 tenant: ghost-stack
@@ -181,6 +181,8 @@ schema:
         enum:
           - value: inbound
           - value: outbound
+          - value: clockwise
+          - value: anticlockwise
       - id: pos_journey_ref
         name: journey_ref
         businessName: Dated journey reference

@@ -1,6 +1,6 @@
 # ADR 0008: Published timetables (BODS GTFS) replace inferred route shape; London stays inferred
 
-**Status:** Accepted 2026-09-20. **Phase 1 delivered 2026-09-21 -- see "Amendment 2026-09-21: Phase 1 delivered" at the end; the amendments before it describe the state as it was, when nothing had been deleted.** Phase 1 (delete `line_stops`/`line_localities`, adopt GTFS route shape) and Phase 2 (add a timetable-pinned ETA rung) are both scoped here. *Amended again 2026-09-20 (see "(h) The API rewire specification"): the alias policy is now an allowlist and the NCTR rule is built; the position-based tiebreak is specified from a measurement but not built.* *Amended 2026-09-20:* the Phase 1 GTFS build now exists and has been run against the real feed (see "Amendment 2026-09-20"), but nothing has been deleted and the API still reads `line_stops`; Phase 2 has not been started. `memtest86+` came back clean on 2026-09-20, so the build gate that previously held this is lifted -- see "Before any of this is built."
+**Status:** Accepted 2026-09-20. **Phase 1 delivered 2026-09-21, Phase 2 delivered 2026-09-23 -- see the two "Amendment" sections at the end; everything before them describes the state as it was when this ADR was first written, with nothing yet built.** Phase 1 (delete `line_stops`/`line_localities`, adopt GTFS route shape) and Phase 2 (add a timetable-pinned ETA rung) are both scoped here. *Amended again 2026-09-20 (see "(h) The API rewire specification"): the alias policy is now an allowlist and the NCTR rule is built; the position-based tiebreak is specified from a measurement but not built.* *Amended 2026-09-20:* the Phase 1 GTFS build now exists and has been run against the real feed (see "Amendment 2026-09-20"), but nothing has been deleted and the API still reads `line_stops`; Phase 2 has not been started. `memtest86+` came back clean on 2026-09-20, so the build gate that previously held this is lifted -- see "Before any of this is built."
 **Date:** 2026-09-20
 **Related:** [ADR-0001](0001-line-stops-memory-and-batching.md), [ADR-0002](0002-line-stops-final-assembly.md), [docs/ROADMAP.md](../ROADMAP.md), `dbt/models/marts/line_stops.sql`, `dbt/models/marts/line_localities.sql`, `dbt/models/intermediate/int_pings_matched_to_stops.sql`, `dbt/build.sh`, `backend/app.py`
 
@@ -781,6 +781,49 @@ The weekly refresh timer is **not installed**, so the timetable will age; the fe
 runs to 2027-12-07 so nothing breaks soon. The `gtfs_line_alias` table served today
 is the first build's. The nightly's effect is recorded in
 [ADR-0009](0009-fast-nightly-build.md); the Android app should send `?operator=`.
+
+## Amendment 2026-09-23: Phase 2 delivered
+
+The timetable-pinned ETA rung is built, deployed and measured. `gtfs.pin_trip`
+pins a vehicle's journey to one specific GTFS trip by join variant A -- noc
+dropped makes no difference, per the join-variant table above -- exact
+operator, line, origin stop and departure time, unambiguous only. Batched per
+poll the same way `candidates()`/`line_route()` already are
+(`gtfs.prime_pins`, called from `prefetch_timetable`). `backend/app.py`'s
+`predict()` tries the pinned trip's own scheduled arrival ahead of the
+regression, exactly as planned above -- a new top rung, purely additive,
+nothing below it reordered or weakened. `next_stop.aimed_iso`, null since the
+field existed, is now filled from the pinned trip for every stop along it,
+not just origin and destination.
+
+**Measured live, 2026-09-23: 84.1% of 17,661 distinct non-TfL (operator, line,
+origin, departure) keys pinned to a trip -- well above the ~49% plateau this
+ADR measured on 2026-09-20.** Spot-checked correct across 6 different
+operators (each pin's origin stop lands at position 0 of the matched trip, as
+it must; no bug found that would explain the gap, and the same rate holds with
+the GTFS past-midnight handling disabled). The gap against this ADR's own
+number is not reconciled -- the 2026-09-20 snapshot no longer exists to diff
+against row-for-row, and whether it is genuine improvement in GTFS coverage,
+a difference in time-of-day/day-of-week composition between the two
+snapshots, or something neither pass caught is an open question for whoever
+next has reason to touch this rung. Treat 84.1% as the current real number,
+not the 49% above, but treat neither as fully understood.
+
+A real defect was found and fixed only by checking the formal contract, not
+by the first pass of tests: `direction` is `required`/`primaryKey` in
+`bus-marts.odcs.yaml`, and `eta_models`/`line_punctuality` would have started
+publishing a NULL there the first time a real build ran after
+[ROADMAP.md 1.2.0](../ROADMAP.md) retired the direction-inference heuristic
+(a journey the feed doesn't tag now has a genuinely NULL `direction` at the
+intermediate layer). Fixed with the same guard `eta_models` already had for
+`operator`: a direction-grained rung excludes an untagged journey rather than
+publish it with a NULL, and `line_punctuality` (no `'*'`-direction fallback)
+excludes it outright. Verified against the real 7.4GB build warehouse, not
+just a small fixture: 31.9% of journeys are NULL-direction at the
+intermediate layer, and both marts still publish zero NULL-direction rows.
+`bus-marts.odcs.yaml` and `bus-positions.odcs.yaml` also had their `direction`
+enum widened to include `clockwise`/`anticlockwise`, which the live feed has
+sent all along but neither contract declared.
 
 ## Roadmap
 

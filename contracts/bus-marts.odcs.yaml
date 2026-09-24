@@ -15,7 +15,7 @@ apiVersion: v3.2.0
 kind: DataContract
 id: 9f2c4b10-5d6e-4a33-b0c1-6e8a5d3f1c47
 name: wraith_bus_ingestor_marts
-version: 3.0.0
+version: 3.1.0
 status: draft
 domain: transit
 tenant: ghost-stack
@@ -147,14 +147,22 @@ schema:
         primaryKey: true
         primaryKeyPosition: 3
         description: >-
-          Direction of travel. Inferred from journey geometry for historical
-          pings that predate the feed's DirectionRef, so the label is a
-          heuristic and a line's 'outbound' may not match the feed's.
+          Direction of travel, straight from the feed's DirectionRef. Never
+          NULL: a journey the feed didn't tag is excluded from a
+          direction-grained rung rather than published with one, the same way
+          a journey with no operator is excluded from an operator-grained
+          rung (see the `null_guards` comment in eta_models.sql). Inferred
+          from journey geometry until 2026-09-23, when that heuristic was
+          measured against the feed's own value and retired -- see
+          docs/ROADMAP.md 1.2.0.
         enum:
           - value: inbound
           - value: outbound
+          - value: clockwise
+            description: Loop route, reported directly by the feed -- GTFS has no equivalent, so route shape (Phase 1) cannot supply this.
+          - value: anticlockwise
           - value: '*'
-            description: Fallback grain, fitted across both directions.
+            description: Fallback grain, fitted across every direction.
       - id: eta_day_type
         name: day_type
         businessName: Day type

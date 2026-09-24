@@ -33,9 +33,14 @@ models:
         tests: [not_null]
       - name: direction
         description: >
-          Journey direction, or '*' meaning "this fit pools both directions".
-          Part of the primary key. '*' appears ONLY as a fallback grain here --
-          a real journey always has a real direction.
+          Journey direction, straight from the feed's DirectionRef, or '*'
+          meaning "this fit pools both directions". Part of the primary key.
+          Never NULL: since the direction-inference heuristic was retired
+          (2026-09-23, ROADMAP.md 1.2.0) a direction-grained rung excludes any
+          journey the feed didn't tag, the same way an operator-grained rung
+          already excluded a journey with no operator -- see the `null_guards`
+          comment in eta_models.sql. Such a journey still reaches the '*'
+          rungs, where direction isn't part of the grouping at all.
         tests:
           - not_null
           - accepted_values:
@@ -151,7 +156,12 @@ models:
         description: Service number. Part of the primary key.
         tests: [not_null]
       - name: direction
-        description: Journey direction, observed or inferred.
+        description: >
+          Journey direction, straight from the feed's DirectionRef. Never
+          NULL: this mart has no '*'-direction fallback grain the way
+          eta_models does, so a journey the feed didn't tag is excluded
+          entirely rather than published as a NULL (2026-09-23, ROADMAP.md
+          1.2.0's direction-inference-heuristic retirement).
         tests:
           - not_null
           - accepted_values:

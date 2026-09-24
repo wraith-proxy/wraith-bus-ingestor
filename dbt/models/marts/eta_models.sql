@@ -104,10 +104,19 @@ stacked as (
         regr_r2(remaining_secs, remaining_km)        as r2,
         regr_count(remaining_secs, remaining_km)     as n_obs
     from training
-    -- A NULL-operator "operator-specific" grain would never be looked up (a
-    -- live bus with no operator skips straight to the '*'-operator rungs), so
-    -- exclude it rather than waste a rung on a fit nothing will ever match.
-    {% if 'operator' in grain %}where operator is not null{% endif %}
+    -- A NULL-keyed "operator-specific" or "direction-specific" grain would
+    -- never be looked up: a live bus with no operator skips straight to the
+    -- '*'-operator rungs, and one with no DirectionRef (31.9% of journeys
+    -- since the heuristic that used to fill this gap was retired, ROADMAP.md
+    -- 1.2.0) skips straight to the '*'-direction rungs. Exclude both rather
+    -- than waste a rung on a fit nothing will ever match -- and rather than
+    -- publish a NULL in `direction`, which is `required`/`primaryKey` in
+    -- bus-marts.odcs.yaml precisely because every OTHER rung's `direction`
+    -- is either a real value or the literal '*', never NULL.
+    {% set null_guards = [] %}
+    {% if 'operator' in grain %}{% do null_guards.append('operator is not null') %}{% endif %}
+    {% if 'direction' in grain %}{% do null_guards.append('direction is not null') %}{% endif %}
+    {% if null_guards %}where {{ null_guards | join(' and ') }}{% endif %}
     {% if grain %}group by {{ grain | join(', ') }}{% endif %}
 
 {% if not loop.last %}    union all

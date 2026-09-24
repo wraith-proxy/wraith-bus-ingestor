@@ -55,8 +55,7 @@ final as (
     -- hundred NaPTAN rows carry blank or non-numeric Easting/Northing.
     where lat is not null
       and lon is not null
-      and lat between 49.8 and 61.0
-      and lon between -8.7 and 2.0
+      and {{ in_gb_bbox('lat', 'lon') }}
       and locality is not null
 
 )

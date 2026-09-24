@@ -37,11 +37,24 @@ rm -rf "$DEST"
 mkdir -p "$DEST/data"
 
 # the project itself: models, macros, tests, config -- but no warehouses,
-# logs, old build output or (real, gitignored) data
-rsync -a \
-  --exclude='*.duckdb' --exclude='*.duckdb.wal' --exclude='data/' --exclude='target/' \
-  --exclude='logs/' --exclude='__pycache__' --exclude='*.log' \
-  "$REPO/dbt/" "$DEST/"
+# logs, old build output or (real, gitignored) data. tar, not rsync: the
+# CI runner's image has no rsync (caught 2026-09-24 when the CI job this
+# script now backs failed with "rsync: command not found"), and tar's
+# --exclude is honoured while READING the source, so dbt/data/'s real
+# (gitignored, possibly multi-GB) parquet is never even opened -- a
+# copy-then-delete with cp would read it first and defeat the point of
+# "this script never touches dbt/data/" above.
+tar -C "$REPO/dbt" \
+  --exclude='*.duckdb' --exclude='*.duckdb.wal' --exclude='data' --exclude='target' \
+  --exclude='logs' --exclude='__pycache__' --exclude='*.log' --exclude='dbt_packages' \
+  -cf - . | tar -C "$DEST" -xf -
+
+# dbt_packages is excluded above and installed fresh here rather than
+# copied, so the sandbox never depends on $REPO/dbt already having run
+# `dbt deps` -- caught 2026-09-24 when this passed on a dev box that
+# happened to have dbt_packages installed already, then failed in CI's
+# fresh checkout ("dbt expects 2 package(s)... found only 0").
+"$REPO/.venv/bin/dbt" deps --project-dir "$DEST" --profiles-dir "$DEST"
 
 # the fixtures, turned into a sandbox's worth of data
 cp "$FIXTURES/sandbox_naptan_stops.csv" "$DEST/data/naptan_stops.csv"

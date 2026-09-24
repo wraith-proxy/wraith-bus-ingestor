@@ -210,16 +210,18 @@ drops the loop-back share to 16% and makes the median journey a plausible
 pings are often the bus standing still. Trimming the journey to its first and
 last genuinely-moving ping moved the regression's r² from 0.52 to 0.69.
 
-**There is no direction in the data (mostly).** The feed's `DirectionRef`
-only began arriving on 2026-09-12, so it is NULL for almost the entire
-training set — and a stop sequence without a direction is useless, because
-the outbound and inbound orders interleave into one meaningless list.
-`int_journeys_shaped_and_directed` therefore *infers* a direction from each
-journey's first-to-last compass bearing, split against the line's modal
-bearing. It is a heuristic, it is labelled as one throughout, and it will
-bucket circular routes badly. It also retires itself: the feed's real
-direction always wins where it exists, so the heuristic fades out as
-post-patch data accumulates.
+**Direction used to be inferred; it no longer is (retired 2026-09-23, see
+`docs/ROADMAP.md` 1.2.0).** `int_journeys_shaped_and_directed` used to infer a
+direction from each journey's first-to-last compass bearing (linear routes) or
+the sign of its enclosed area (circular routes, shoelace formula) whenever the
+feed's `DirectionRef` was NULL -- true of almost every row when this was
+written, since the feed only started sending it 2026-09-12. Measured against
+the build warehouse before retiring it: the feed now tags 68.1% of journeys,
+and where both existed the heuristic disagreed with it 53.9% of the time --
+chance level, because the heuristic's inbound/outbound split was picked per
+line by which bearing bin had more journeys, never actually tied to the
+feed's own convention. `direction` is now `feed_direction`, unmodified; NULL
+on the rest, which nothing downstream requires non-null.
 
 **Historical -- `line_stops` was removed by ADR-0008; kept because the finding
 is why.** **The stop sequence is not a next-stop oracle, and I measured how far
@@ -449,11 +451,14 @@ dbt/
 ├── macros/
 │   ├── _macros.yml                documents every macro below
 │   ├── haversine.sql              great-circle km between two lat/lon pairs
-│   ├── bearing.sql                compass bearing, and angle between two bearings
+│   ├── speed.sql                  avg_speed_kmh: path_km over duration_secs
+│   ├── operator_key.sql           no_operator_sentinel: the pre-2026-09-12 coalesce
+│   ├── gb_bbox.sql                in_gb_bbox: the GB ingest bounding box filter
 │   ├── hour_band.sql              LOCAL hour -> traffic regime (FROZEN vs backend/)
 │   ├── day_type.sql               LOCAL date -> weekday/sat/sun (FROZEN vs backend/)
 │   ├── locality_norm.sql          the search-key normalisation (FROZEN vs backend/)
-│   └── ping_columns.sql           compile-time probe for the schedule columns
+│   ├── ping_columns.sql           compile-time probe for the schedule columns
+│   └── retention_days.sql         single source of truth for the incremental window
 ├── models/
 │   ├── staging/
 │   │   ├── bods/                  _bods__sources.yml, _bods__models.yml, stg_bods__vehicle_pings

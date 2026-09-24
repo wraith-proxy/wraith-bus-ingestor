@@ -6,49 +6,32 @@
   here, so everything downstream can take this table at face value.
 
   ---------------------------------------------------------------------------
-  Direction, and why there are two ways of deciding it
+  Direction: the heuristic is retired (ROADMAP.md 1.2.0, 2026-09-23)
   ---------------------------------------------------------------------------
-  The feed's DirectionRef is NULL for essentially the whole training set, and a
-  stop sequence without a direction is useless -- the outbound and inbound
-  orders interleave into one meaningless list. So direction is inferred, by one
-  of two methods depending on the shape of the route.
+  This used to also INFER a direction from journey geometry (first-to-last
+  compass bearing for linear routes, shoelace-formula circulation sense for
+  loops) whenever the feed's own DirectionRef was NULL -- which, at the time
+  that heuristic was written, was true for essentially every row. Measured
+  against the build warehouse on 2026-09-23, once real DirectionRef data had
+  accumulated: feed_direction is now present on 68.1% of journeys (of
+  2,316,604 in the current retention window), and where BOTH values exist
+  they disagree 53.9% of the time -- indistinguishable from chance. The
+  heuristic's own inbound/outbound split is arbitrary per line (whichever
+  bearing bin happens to have more journeys), so it was never trying to match
+  the feed's convention in the first place; near-50% disagreement is exactly
+  what that predicts, not evidence the feed is wrong. The feed also already
+  reports 'clockwise'/'anticlockwise' directly for loop routes (18,831 rows),
+  which the loop heuristic was reinventing less reliably.
 
-  LINEAR ROUTES (A to B and back). Take each journey's compass bearing from
-  first ping to last, find the line's modal 45-degree bearing bin, and split
-  journeys on whether they lie within 90 degrees of it. Works well: the two
-  directions of a linear route point roughly opposite ways.
-
-  CIRCULAR ROUTES (Liverpool ONE, Queen Square, airport circulars). The same
-  method is worse than useless here. A loop ends within a few hundred metres of
-  where it started, so its first-to-last bearing is GPS noise, and journeys
-  running the identical loop get scattered at random between 'inbound' and
-  'outbound' -- producing two half-populated, incoherent stop sequences instead
-  of one good one. Since the API now falls back to the stop sequence for
-  exactly these routes (it refuses to estimate them geometrically, because
-  origin and destination are the same stop), that scattering is the thing
-  standing between ~340 circular-route vehicles and a usable ETA.
-
-  For a loop, the meaningful question is not "which way is it pointing" but
-  "which way round is it going". That is the SIGN OF THE ENCLOSED AREA, via the
-  shoelace formula summed in int_pings_segmented_to_journeys: positive is anticlockwise,
-  negative is clockwise. It is exact, it needs no reference bearing, and two
-  buses running the same loop the same way always agree.
-
-  A line is treated as circular when the median of straight_km / path_km across
-  its journeys is below 0.35 -- i.e. the typical journey ends up much nearer its
-  start than the distance it covered. Ceiling: 0.35. Per line rather than per
-  journey, so that one short-turn working on a loop route does not get bucketed
-  by a different rule than the rest of its line.
-
-  Note the circulation sense is mapped onto the SAME 'outbound'/'inbound'
-  tokens the rest of the system uses (anticlockwise -> 'outbound'), rather than
-  introducing 'clockwise'/'anticlockwise' values. The names are arbitrary for a
-  loop, and inventing new tokens would break every direction lookup in the API
-  for no gain. What matters is that the bucketing is CONSISTENT, not what it is
-  called.
-
-  In all cases a real DirectionRef from the feed wins, so both heuristics
-  retire themselves as post-2026-09-12 data accumulates.
+  `direction` is now feed_direction, unmodified. It is NULL for the 31.9% of
+  journeys the feed did not tag -- accepted, not patched over. Nothing
+  downstream requires it non-null: eta_models and line_punctuality both group
+  by direction among other columns, so a NULL forms its own grain like any
+  other value, and pick_model() in backend/app.py already falls through to a
+  coarser grain on a miss (it was already designed to tolerate the live
+  feed's direction not matching a training-set label -- see that function's
+  own docstring). A live bus with no DirectionRef was never run through a
+  heuristic either: backend/app.py reads direction straight off the ping.
 #}
 
 with pings as (
@@ -94,7 +77,6 @@ per_journey as (
         min(cum_km)                             as start_cum_km,
         min(ping_seq)                           as start_ping_seq,
         max(ping_seq)                           as end_ping_seq,
-        sum(shoelace_term)                      as shoelace_sum,
         -- The band and the day the journey STARTED in. A journey is short
         -- enough that using one value per journey keeps it inside one grain of
         -- the journey-level aggregates.
@@ -110,11 +92,7 @@ shaped as (
     select
         *,
         {{ haversine_km('start_lat', 'start_lon', 'end_lat', 'end_lon') }} as straight_km,
-        date_diff('second', start_ts, end_ts)                             as duration_secs,
-        {{ bearing_deg('start_lat', 'start_lon', 'end_lat', 'end_lon') }}  as journey_bearing,
-        -- Close the polygon: the shoelace sum covers ping 1..n, this adds the
-        -- edge from ping n back to ping 1. Twice the signed enclosed area.
-        shoelace_sum + ((end_lon * start_lat) - (start_lon * end_lat))    as signed_area_2
+        date_diff('second', start_ts, end_ts)                             as duration_secs
     from per_journey
 
 ),
@@ -123,15 +101,15 @@ plausible as (
 
     select
         *,
-        path_km / (duration_secs / 3600.0) as mean_speed_kmh
+        {{ avg_speed_kmh('path_km', 'duration_secs') }} as mean_speed_kmh
     from shaped
     -- Every filter below exists to keep a non-journey out of the regression.
     where n_pings >= 5                          -- fewer than ~15 min of observations: not enough shape to fit anything
       and path_km >= 0.5                        -- under 500 m the vehicle never left the stand; all "distance remaining" is GPS jitter
       and duration_secs >= 240                  -- under 4 min is a fragment left over from a break, not a service run
       and duration_secs <= 5 * 3600             -- over 5 h means the segmentation failed to find a layover; keep it out rather than trust it
-      and path_km / (duration_secs / 3600.0) <= 90   -- faster than 90 km/h average is a vehicle-ref collision we failed to split
-      and path_km / (duration_secs / 3600.0) >= 1    -- slower than 1 km/h is a parked bus with drifting GPS
+      and {{ avg_speed_kmh('path_km', 'duration_secs') }} <= 90   -- faster than 90 km/h average is a vehicle-ref collision we failed to split
+      and {{ avg_speed_kmh('path_km', 'duration_secs') }} >= 1    -- slower than 1 km/h is a parked bus with drifting GPS
 
 ),
 
@@ -193,106 +171,6 @@ observed_to_completion as (
 
 ),
 
--- ---------------------------------------------------------------------------
--- Direction inference
--- ---------------------------------------------------------------------------
-
-line_shape as (
-
-    -- How loop-like is this line? straight_km / path_km near 1 is an A-to-B
-    -- run; near 0 is a circuit that comes back to where it started.
-    --
-    -- Grained on operator too, not just line: '88' is a genuinely different
-    -- route per operator, and pooling them the way this used to would (and,
-    -- for historical data, still does) treat a Sheffield cross-city route and
-    -- a Wilmslow-Hale route as one shape. operator is coalesced to a sentinel
-    -- rather than left NULL because SQL joins never match NULL to NULL --
-    -- see the coalesce(operator, '~none~') partition in int_pings_segmented_to_journeys for the same trick. Every row
-    -- before 2026-09-12 has operator_key = '~none~' for everything, so this
-    -- is a no-op on historical data: it only starts disambiguating once the
-    -- feed actually supplies an operator.
-    select
-        coalesce(operator, '~none~') as operator_key,
-        line,
-        median(straight_km / path_km) as median_linearity,
-        count(*)                      as n_journeys
-    from observed_to_completion
-    group by operator_key, line
-
-),
-
-line_is_circular as (
-
-    select
-        operator_key,
-        line,
-        median_linearity,
-        median_linearity < 0.35 as is_circular_line
-    from line_shape
-
-),
-
-line_bearing_bins as (
-
-    -- 45-degree bins. Coarse on purpose: we only need to know which of two
-    -- opposed halves of the compass a journey belongs to, and coarse bins are
-    -- far more stable against a few wandering journeys than a mean would be.
-    select
-        coalesce(operator, '~none~')                 as operator_key,
-        line,
-        cast(floor(journey_bearing / 45) as integer) as bearing_bin,
-        count(*)                                     as n_journeys,
-        -- Circular mean of the bearings in the bin. Averaging 350 and 10
-        -- arithmetically gives 180 (due south); via sin/cos it gives 0 (north).
-        (degrees(atan2(avg(sin(radians(journey_bearing))),
-                       avg(cos(radians(journey_bearing))))) + 360) % 360 as bin_mean_bearing
-    from observed_to_completion
-    group by operator_key, line, bearing_bin
-
-),
-
-line_reference_bearing as (
-
-    select
-        operator_key,
-        line,
-        bin_mean_bearing as reference_bearing
-    from line_bearing_bins
-    -- Tie-break on bearing_bin so the choice is deterministic across rebuilds;
-    -- otherwise two equally-busy bins could swap 'outbound' and 'inbound'
-    -- between runs and the API's stop sequences would flip.
-    qualify row_number() over (partition by operator_key, line order by n_journeys desc, bearing_bin) = 1
-
-),
-
-directed as (
-
-    select
-        p.*,
-        r.reference_bearing,
-        coalesce(c.is_circular_line, false) as is_circular_line,
-        c.median_linearity                  as line_median_linearity,
-        case
-            -- Circular route: which way ROUND, from the sign of the enclosed area.
-            when coalesce(c.is_circular_line, false) then
-                case when p.signed_area_2 >= 0 then 'outbound' else 'inbound' end
-            -- Linear route: which way ALONG, from the bearing against the line's axis.
-            when r.reference_bearing is null then 'outbound'   -- defensive; cannot happen while the line has journeys
-            when {{ bearing_delta('p.journey_bearing', 'r.reference_bearing') }} < 90 then 'outbound'
-            else 'inbound'
-        end as direction_inferred
-    -- Explicit null-safe join rather than `using`: p.operator is genuinely
-    -- NULL for all pre-2026-09-12 journeys, and `using`/`=` never matches
-    -- NULL to NULL, which would silently drop the reference bearing for
-    -- every historical journey.
-    from observed_to_completion p
-    left join line_reference_bearing r
-        on r.operator_key = coalesce(p.operator, '~none~') and r.line = p.line
-    left join line_is_circular c
-        on c.operator_key = coalesce(p.operator, '~none~') and c.line = p.line
-
-),
-
 final as (
 
     select
@@ -300,14 +178,9 @@ final as (
         bus_id,
         line,
         feed_direction,
-        -- The feed always wins when it has an opinion; the heuristics only fill
-        -- the gap. Never '*' -- '*' means "the fallback grain of the model",
-        -- not "a bus travelling in an unknown direction".
-        coalesce(feed_direction, direction_inferred) as direction,
-        direction_inferred,
-        is_circular_line,
-        line_median_linearity,
-        signed_area_2,
+        -- The feed is now the only source -- see the header. NULL when the
+        -- feed didn't tag this journey; nothing downstream requires non-null.
+        feed_direction as direction,
         operator,
         journey_ref,
         origin_ref,
@@ -329,10 +202,8 @@ final as (
         straight_km,
         path_km,
         duration_secs,
-        mean_speed_kmh,
-        journey_bearing,
-        reference_bearing
-    from directed
+        mean_speed_kmh
+    from observed_to_completion
 
 )
 
