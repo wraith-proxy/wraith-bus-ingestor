@@ -862,6 +862,12 @@ def pinned_eta(row, now_s):
     predicted = schedule_epoch_s(aimed * 1000.0, now_s, MAX_SCHEDULE_AGE_S, MAX_SCHEDULE_AHEAD_S)
     if predicted is None:
         return None, None
+    # A running-late bus's own pinned schedule can already be in the past --
+    # that is what "late" means -- but showing a past instant as a live
+    # PREDICTION reads as "arrived before it left". `now` is the honest floor
+    # for a bus this function has no delay figure for (see predict()'s own
+    # timetable_delay/timetable_raw rungs for the same floor and why).
+    predicted = max(now_s, predicted)
     return predicted, iso_from_epoch_s(predicted)
 
 
@@ -883,34 +889,48 @@ def predict(row, marts, now_s):
     day = day_type(local)
     model = pick_model(marts['eta'], operator, line, direction, day, hour_band(local))
 
+    # Moved ahead of any ETA computation (was computed after, and only used
+    # to gate delay_s below): the regression's own intercept is ~750s+
+    # because it is fitted to the last ping of a journey, not the arrival --
+    # with remaining_km near zero that intercept is almost the WHOLE
+    # prediction, so a bus already at its destination came out "still 20+
+    # minutes away" (caught 2026-09-25 on live TfL buses under 100m from
+    # their destination -- remaining_km as low as 0.009 km). The geometric
+    # method applies the same rail to its own distance-to-terminus, but the
+    # stop-sequence method measures progress in median seconds rather than
+    # metres, so it can still be short of ARRIVED_FRACTION while physically
+    # parked at the terminus. Catch it here, once, for both delay AND eta.
+    arrived = straight_km is not None and straight_km <= ARRIVED_KM
+
     eta_iso = None
     eta_source = None
     predicted = None
-    # ROADMAP.md 1.13.0 / ADR-0008 Phase 2: a vehicle whose trip pins
-    # unambiguously to a GTFS timetable entry uses that published schedule
-    # instead of the regression -- the new top rung, ahead of everything
-    # below. Purely additive: a vehicle that does not pin (still true of
-    # roughly half of non-TfL buses, and all of TfL, which has no GTFS
-    # timetable at all) computes the regression exactly as it always has.
-    predicted, eta_iso = pinned_eta(row, now_s)
-    if eta_iso is not None:
-        eta_source = 'timetable_pinned'
-    elif remaining_km is not None and model and remaining_km <= MAX_REMAINING_KM:
-        secs = max(0.0, (model['slope_s_per_km'] or 0.0) * remaining_km
-                   + (model['intercept_s'] or 0.0))
-        if secs <= MAX_REMAINING_S:
-            predicted = now_s + secs
-            eta_iso = iso_from_epoch_s(predicted)
-            eta_source = 'regression'
-
-    # Whichever method produces it, a delay is refused outright once the bus is
-    # essentially at its destination: the journey is over, so elapsed-versus-
-    # schedule just charges it for standing on the stand. The geometric method
-    # applies the same rail to its own distance-to-terminus, but the
-    # stop-sequence method measures progress in median seconds rather than
-    # metres, so it can still be short of ARRIVED_FRACTION while physically
-    # parked at the terminus. Catch it here, once, for both.
-    arrived = straight_km is not None and straight_km <= ARRIVED_KM
+    if arrived:
+        # The journey is over. There is nothing left to predict, and both
+        # the regression (see above) and a stale timetable aimed time below
+        # would claim otherwise for the same underlying reason -- neither
+        # knows the journey already ended. `now` is the honest answer.
+        predicted = now_s
+        eta_iso = iso_from_epoch_s(predicted)
+        eta_source = 'arrived'
+    else:
+        # ROADMAP.md 1.13.0 / ADR-0008 Phase 2: a vehicle whose trip pins
+        # unambiguously to a GTFS timetable entry uses that published
+        # schedule instead of the regression -- the new top rung, ahead of
+        # everything below. Purely additive: a vehicle that does not pin
+        # (still true of roughly half of non-TfL buses, and all of TfL,
+        # which has no GTFS timetable at all) computes the regression
+        # exactly as it always has.
+        predicted, eta_iso = pinned_eta(row, now_s)
+        if eta_iso is not None:
+            eta_source = 'timetable_pinned'
+        elif remaining_km is not None and model and remaining_km <= MAX_REMAINING_KM:
+            secs = max(0.0, (model['slope_s_per_km'] or 0.0) * remaining_km
+                       + (model['intercept_s'] or 0.0))
+            if secs <= MAX_REMAINING_S:
+                predicted = now_s + secs
+                eta_iso = iso_from_epoch_s(predicted)
+                eta_source = 'regression'
 
     # Delay comes from schedule adherence only. The regression is deliberately
     # NOT used for it: its intercept is ~750 s because it is fitted to the last
@@ -936,7 +956,11 @@ def predict(row, marts, now_s):
     aimed = schedule_epoch_s(row.get('dest_aimed_arr'), now_s,
                              MAX_SCHEDULE_AGE_S, MAX_SCHEDULE_AHEAD_S)
     if delay_s is not None and aimed is not None:
-        predicted = aimed + delay_s
+        # max(now_s, ...): a bus already running behind schedule has an
+        # aimed-plus-delay instant that can itself already be in the past --
+        # that's what "late" means -- but it is still live and not there
+        # yet, so the prediction shown must not read as already arrived.
+        predicted = max(now_s, aimed + delay_s)
         eta_iso = iso_from_epoch_s(predicted)
         eta_source = 'timetable_delay'
 
@@ -950,7 +974,12 @@ def predict(row, marts, now_s):
     bus_id = row.get('bus_id')
     vehicle = (operator, bus_id)
     if eta_iso is None and aimed is not None:
-        predicted = aimed
+        # max(now_s, ...): "no delay applied, since we have none" must not
+        # mean "show the aimed time even when it's already 30 minutes in the
+        # past" -- caught 2026-09-25 live (timetable_raw predictions up to
+        # 34 minutes stale). A bus this far behind schedule with no delay
+        # figure to correct it is exactly the case this floor is for.
+        predicted = max(now_s, aimed)
         eta_iso = iso_from_epoch_s(predicted)
         eta_source = 'timetable_raw'
     if eta_iso is None and bus_id is not None:
