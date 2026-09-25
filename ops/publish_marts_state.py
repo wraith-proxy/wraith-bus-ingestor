@@ -36,9 +36,19 @@ def esc_tag(val):
 
 def fetch_state():
     """Return (state, n_models). Any failure degrades to ("unreachable", 0)
-    rather than raising, since the API being down is itself worth a row."""
+    rather than raising, since the API being down is itself worth a row --
+    but the real exception is printed first (see main()'s caller), because
+    silently collapsing every failure into "unreachable" hid a real bug: no
+    User-Agent header meant a bare `python3 ops/publish_marts_state.py` got
+    a 403 from whatever's in front of the public URL (Cloudflare or nginx
+    treating urllib's default `Python-urllib/x.y` UA as a bot), while a
+    plain `curl` to the exact same URL passed -- caught 2026-09-24, after
+    the timer had been "working" (publishing a row every 5 minutes, just
+    always the wrong one) since it was first enabled."""
     try:
-        req = urllib.request.Request(MARTS_STATE_URL, method="GET")
+        req = urllib.request.Request(
+            MARTS_STATE_URL, method="GET",
+            headers={"User-Agent": "wraith-bus-ingestor-marts-state-publisher"})
         with urllib.request.urlopen(req, timeout=15) as response:
             if response.status != 200:
                 return "unreachable", 0
@@ -46,7 +56,8 @@ def fetch_state():
         state = payload["marts_state"]
         n_models = int(payload.get("n_models") or 0)
         return state, n_models
-    except Exception:
+    except Exception as exc:
+        print(f"WARN: could not fetch {MARTS_STATE_URL}: {exc}", file=sys.stderr)
         return "unreachable", 0
 
 

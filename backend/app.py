@@ -25,8 +25,10 @@ except ImportError:  # pragma: no cover
 import tiebreak
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from flask_smorest import Api, Blueprint
 
 import gtfs
+import schemas
 
 try:  # duckdb is optional at import time so a missing driver degrades, not crashes
     import duckdb
@@ -35,6 +37,32 @@ except ImportError:  # pragma: no cover
 
 app = Flask(__name__)
 CORS(app)
+
+# OpenAPI/Swagger, generated from the route decorators below rather than
+# hand-maintained -- see docs/api.md's own note on why a hand-written spec
+# was rejected for this repo (7 routes, but they were judged likely to
+# churn enough that "always matches the real routes" was worth the
+# refactor). Swagger UI at /api/docs; raw spec at /api/openapi.json.
+app.config['API_TITLE'] = 'wraith-bus-ingestor API'
+app.config['API_VERSION'] = 'v1'
+app.config['OPENAPI_VERSION'] = '3.0.2'
+app.config['OPENAPI_URL_PREFIX'] = '/api'
+app.config['OPENAPI_SWAGGER_UI_PATH'] = '/docs'
+app.config['OPENAPI_SWAGGER_UI_URL'] = 'https://cdn.jsdelivr.net/npm/swagger-ui-dist/'
+api = Api(app)
+# schemas.ApiErrorSchema, not ErrorSchema: flask-smorest already registers its
+# OWN built-in schema named 'Error' (for its default 422 validation-failure
+# response) -- naming ours the same collided with it (DuplicateComponentNameError
+# outright when pre-registered by hand, or a silently renamed 'Error1' in the
+# spec otherwise). Named ours something that can't collide instead of fighting
+# the framework's own registration.
+
+buses_blp = Blueprint('buses', __name__, url_prefix='',
+                       description='Live vehicle positions, detail, and route geometry.')
+search_blp = Blueprint('search', __name__, url_prefix='',
+                        description='Locality/line search for the map search box.')
+system_blp = Blueprint('system', __name__, url_prefix='',
+                        description='Marts health and dashboard metrics.')
 
 QUESTDB_URL = os.getenv('QUESTDB_URL', '')
 QUESTDB_TIMEOUT = 8          # seconds; keeps any request under the ~10s budget
@@ -862,6 +890,12 @@ def pinned_eta(row, now_s):
     predicted = schedule_epoch_s(aimed * 1000.0, now_s, MAX_SCHEDULE_AGE_S, MAX_SCHEDULE_AHEAD_S)
     if predicted is None:
         return None, None
+    # A running-late bus's own pinned schedule can already be in the past --
+    # that is what "late" means -- but showing a past instant as a live
+    # PREDICTION reads as "arrived before it left". `now` is the honest floor
+    # for a bus this function has no delay figure for (see predict()'s own
+    # timetable_delay/timetable_raw rungs for the same floor and why).
+    predicted = max(now_s, predicted)
     return predicted, iso_from_epoch_s(predicted)
 
 
@@ -883,34 +917,48 @@ def predict(row, marts, now_s):
     day = day_type(local)
     model = pick_model(marts['eta'], operator, line, direction, day, hour_band(local))
 
+    # Moved ahead of any ETA computation (was computed after, and only used
+    # to gate delay_s below): the regression's own intercept is ~750s+
+    # because it is fitted to the last ping of a journey, not the arrival --
+    # with remaining_km near zero that intercept is almost the WHOLE
+    # prediction, so a bus already at its destination came out "still 20+
+    # minutes away" (caught 2026-09-25 on live TfL buses under 100m from
+    # their destination -- remaining_km as low as 0.009 km). The geometric
+    # method applies the same rail to its own distance-to-terminus, but the
+    # stop-sequence method measures progress in median seconds rather than
+    # metres, so it can still be short of ARRIVED_FRACTION while physically
+    # parked at the terminus. Catch it here, once, for both delay AND eta.
+    arrived = straight_km is not None and straight_km <= ARRIVED_KM
+
     eta_iso = None
     eta_source = None
     predicted = None
-    # ROADMAP.md 1.13.0 / ADR-0008 Phase 2: a vehicle whose trip pins
-    # unambiguously to a GTFS timetable entry uses that published schedule
-    # instead of the regression -- the new top rung, ahead of everything
-    # below. Purely additive: a vehicle that does not pin (still true of
-    # roughly half of non-TfL buses, and all of TfL, which has no GTFS
-    # timetable at all) computes the regression exactly as it always has.
-    predicted, eta_iso = pinned_eta(row, now_s)
-    if eta_iso is not None:
-        eta_source = 'timetable_pinned'
-    elif remaining_km is not None and model and remaining_km <= MAX_REMAINING_KM:
-        secs = max(0.0, (model['slope_s_per_km'] or 0.0) * remaining_km
-                   + (model['intercept_s'] or 0.0))
-        if secs <= MAX_REMAINING_S:
-            predicted = now_s + secs
-            eta_iso = iso_from_epoch_s(predicted)
-            eta_source = 'regression'
-
-    # Whichever method produces it, a delay is refused outright once the bus is
-    # essentially at its destination: the journey is over, so elapsed-versus-
-    # schedule just charges it for standing on the stand. The geometric method
-    # applies the same rail to its own distance-to-terminus, but the
-    # stop-sequence method measures progress in median seconds rather than
-    # metres, so it can still be short of ARRIVED_FRACTION while physically
-    # parked at the terminus. Catch it here, once, for both.
-    arrived = straight_km is not None and straight_km <= ARRIVED_KM
+    if arrived:
+        # The journey is over. There is nothing left to predict, and both
+        # the regression (see above) and a stale timetable aimed time below
+        # would claim otherwise for the same underlying reason -- neither
+        # knows the journey already ended. `now` is the honest answer.
+        predicted = now_s
+        eta_iso = iso_from_epoch_s(predicted)
+        eta_source = 'arrived'
+    else:
+        # ROADMAP.md 1.13.0 / ADR-0008 Phase 2: a vehicle whose trip pins
+        # unambiguously to a GTFS timetable entry uses that published
+        # schedule instead of the regression -- the new top rung, ahead of
+        # everything below. Purely additive: a vehicle that does not pin
+        # (still true of roughly half of non-TfL buses, and all of TfL,
+        # which has no GTFS timetable at all) computes the regression
+        # exactly as it always has.
+        predicted, eta_iso = pinned_eta(row, now_s)
+        if eta_iso is not None:
+            eta_source = 'timetable_pinned'
+        elif remaining_km is not None and model and remaining_km <= MAX_REMAINING_KM:
+            secs = max(0.0, (model['slope_s_per_km'] or 0.0) * remaining_km
+                       + (model['intercept_s'] or 0.0))
+            if secs <= MAX_REMAINING_S:
+                predicted = now_s + secs
+                eta_iso = iso_from_epoch_s(predicted)
+                eta_source = 'regression'
 
     # Delay comes from schedule adherence only. The regression is deliberately
     # NOT used for it: its intercept is ~750 s because it is fitted to the last
@@ -936,7 +984,11 @@ def predict(row, marts, now_s):
     aimed = schedule_epoch_s(row.get('dest_aimed_arr'), now_s,
                              MAX_SCHEDULE_AGE_S, MAX_SCHEDULE_AHEAD_S)
     if delay_s is not None and aimed is not None:
-        predicted = aimed + delay_s
+        # max(now_s, ...): a bus already running behind schedule has an
+        # aimed-plus-delay instant that can itself already be in the past --
+        # that's what "late" means -- but it is still live and not there
+        # yet, so the prediction shown must not read as already arrived.
+        predicted = max(now_s, aimed + delay_s)
         eta_iso = iso_from_epoch_s(predicted)
         eta_source = 'timetable_delay'
 
@@ -950,7 +1002,12 @@ def predict(row, marts, now_s):
     bus_id = row.get('bus_id')
     vehicle = (operator, bus_id)
     if eta_iso is None and aimed is not None:
-        predicted = aimed
+        # max(now_s, ...): "no delay applied, since we have none" must not
+        # mean "show the aimed time even when it's already 30 minutes in the
+        # past" -- caught 2026-09-25 live (timetable_raw predictions up to
+        # 34 minutes stale). A bus this far behind schedule with no delay
+        # figure to correct it is exactly the case this floor is for.
+        predicted = max(now_s, aimed)
         eta_iso = iso_from_epoch_s(predicted)
         eta_source = 'timetable_raw'
     if eta_iso is None and bus_id is not None:
@@ -1159,7 +1216,20 @@ def _build_buses():
     return jsonify({"type": "FeatureCollection", "features": features}).get_data()
 
 
-@app.route('/buses', methods=['GET'])
+@buses_blp.route('/buses')
+@buses_blp.doc(
+    summary='Every live bus, as GeoJSON',
+    description='Rebuilt at most once every BUSES_TTL seconds; concurrent requests '
+                'inside that window all get the same cached body. Not schema-validated '
+                'per request -- see schemas.BusesResponseSchema and its own docstring '
+                'for why: this is a pre-rendered cached string, and running it through '
+                'marshmallow on every request would defeat the point of caching it.',
+    responses={
+        200: {'description': 'FeatureCollection of bus Point features.',
+              'content': {'application/json': {'schema': schemas.BusesResponseSchema}}},
+        503: {'description': 'No cached body yet and the upstream build failed.',
+              'content': {'application/json': {'schema': schemas.BusesResponseSchema}}},
+    })
 def buses():
     with _buses_lock:
         if _buses_cache['body'] is None or time.time() - _buses_cache['at'] >= BUSES_TTL:
@@ -1171,8 +1241,13 @@ def buses():
     return app.response_class(body, mimetype='application/json')
 
 
-@app.route('/bus/<bus_id>', methods=['GET'])
-def bus_detail(bus_id):
+@buses_blp.route('/bus/<bus_id>')
+@buses_blp.arguments(schemas.BusDetailQuerySchema, location='query')
+@buses_blp.response(200, schemas.BusDetailSchema)
+@buses_blp.alt_response(400, schema=schemas.ApiErrorSchema, description='Invalid bus_id or operator.')
+@buses_blp.alt_response(404, schema=schemas.ApiErrorSchema, description='bus_id not currently live.')
+@buses_blp.alt_response(503, schema=schemas.ApiErrorSchema, description='QuestDB unavailable.')
+def bus_detail(args, bus_id):
     """One vehicle. bus_id alone is not unique across operators, so an optional
     ?operator=<NOC> selects one namesake. Old clients send only bus_id and keep
     working: with namesakes and no operator the FRESHEST one is returned
@@ -1180,7 +1255,7 @@ def bus_detail(bus_id):
     the payload lists who else answers to that id in `same_bus_id`."""
     if not BUS_ID_RE.match(bus_id or ''):
         return jsonify({"error": "invalid bus_id"}), 400
-    operator = request.args.get('operator') or None
+    operator = args.get('operator') or None
     if operator is not None and not BUS_ID_RE.match(operator):
         return jsonify({"error": "invalid operator"}), 400
 
@@ -1280,7 +1355,7 @@ def bus_detail(bus_id):
                     'lat': nxt['lat'], 'lon': nxt['lon'],
                 }
 
-    return jsonify(props)
+    return props
 
 
 def road_snapped_geometry(stops):
@@ -1317,8 +1392,12 @@ def route_stops_for_line(operator, line, direction):
     return [], operator, direction, None, 'no_data'
 
 
-@app.route('/route', methods=['GET'])
-def route():
+@buses_blp.route('/route')
+@buses_blp.arguments(schemas.RouteQuerySchema, location='query')
+@buses_blp.response(200, schemas.RouteResponseSchema)
+@buses_blp.alt_response(400, schema=schemas.ApiErrorSchema,
+                         description='Invalid line, direction, day_type or operator.')
+def route(args):
     """GeoJSON for drawing a line on the map: its stop sequence as a dotted
     LineString, the stops themselves, and the buses currently working it.
 
@@ -1327,10 +1406,10 @@ def route():
     the live-bus filter compares in Python -- but it is still whitelisted
     up front, same discipline as bus_id, because it flows into the response
     unexamined otherwise."""
-    line = request.args.get('line', '')
-    direction = request.args.get('direction') or None
-    day = request.args.get('day_type') or None   # validated, then ignored
-    operator = request.args.get('operator') or None
+    line = args.get('line', '')
+    direction = args.get('direction') or None
+    day = args.get('day_type') or None   # validated, then ignored
+    operator = args.get('operator') or None
     if not LINE_RE.match(line):
         return jsonify({"error": "invalid line"}), 400
     if direction is not None and not DIRECTION_RE.match(direction):
@@ -1435,16 +1514,18 @@ def route():
     payload = {"type": "FeatureCollection", "features": features}
     if route_note:
         payload["properties"] = {"note": route_note}
-    return jsonify(payload)
+    return payload
 
 
-@app.route('/search', methods=['GET'])
-def search():
-    raw = request.args.get('q', '')
+@search_blp.route('/search')
+@search_blp.arguments(schemas.SearchQuerySchema, location='query')
+@search_blp.response(200, schemas.SearchResponseSchema)
+def search(args):
+    raw = args.get('q', '')
     norm = normalise_query(raw)
     empty = {"query": raw, "matches": [], "lines": [], "bus_ids": []}
     if len(norm) < 2:
-        return jsonify(empty)
+        return empty
 
     marts = get_marts()
     seen = set()
@@ -1492,7 +1573,7 @@ def search():
         wanted = set(lines)
         bus_ids = sorted({r['bus_id'] for r in live if r.get('line') in wanted})
 
-    return jsonify({"query": raw, "matches": matches, "lines": lines, "bus_ids": bus_ids})
+    return {"query": raw, "matches": matches, "lines": lines, "bus_ids": bus_ids}
 
 
 # The marts are rebuilt by a nightly dbt/build.sh. Never assume they are fresh:
@@ -1519,7 +1600,8 @@ MARTS_NOTES = {
 }
 
 
-@app.route('/model-info', methods=['GET'])
+@system_blp.route('/model-info')
+@system_blp.response(200, schemas.ModelInfoResponseSchema)
 def model_info():
     marts = get_marts()
     age = marts_age_hours(marts)
@@ -1544,7 +1626,7 @@ def model_info():
                 'the day-agnostic grain')
     else:
         note = None
-    return jsonify({
+    return {
         "built_at": marts['built_at'],
         "n_models": marts['n_models'],
         "duckdb": bool(marts['ok']),
@@ -1556,7 +1638,7 @@ def model_info():
         "age_hours": age,
         "stale": bool(age is not None and age > STALE_AFTER_HOURS) or not marts['n_models'],
         "note": note,
-    })
+    }
 
 
 # 1.5.0's Android dashboard screen deliberately does not query QuestDB or
@@ -1572,7 +1654,8 @@ def model_info():
 WORST_LINES_MIN_JOURNEYS = 50
 
 
-@app.route('/metrics/summary', methods=['GET'])
+@system_blp.route('/metrics/summary')
+@system_blp.response(200, schemas.MetricsSummaryResponseSchema)
 def metrics_summary():
     """The five headline numbers from the dashboard's top row. Each is its
     own qdb_exec call and fails independently -- a QuestDB hiccup on one
@@ -1586,7 +1669,7 @@ def metrics_summary():
             log_once(f'qdb-metrics-{key}', f'metrics query failed for {key}: {exc}')
             return None
 
-    return jsonify({
+    return {
         "feed_age_s": scalar(
             "select datediff('s', max(timestamp), now()) as v from bus_positions", 'v'),
         "buses_tracked_5m": scalar(
@@ -1599,10 +1682,12 @@ def metrics_summary():
             "select datediff('h', max(timestamp), now()) as v from dbt_build_runs", 'v'),
         "dq_issues_last_build": scalar(
             "select last(tests_failed) + last(tests_warned) as v from dbt_build_runs", 'v'),
-    })
+    }
 
 
-@app.route('/metrics/punctuality', methods=['GET'])
+@system_blp.route('/metrics/punctuality')
+@system_blp.response(200, schemas.MetricsPunctualityResponseSchema)
+@system_blp.alt_response(503, schema=schemas.ApiErrorSchema, description='QuestDB unavailable.')
 def metrics_punctuality():
     """System-wide on-time %, delay and ETA model fit, plus the worst lines
     table -- the same rollup dbt/publish_punctuality_summary.py writes into
@@ -1632,11 +1717,16 @@ def metrics_punctuality():
         log_once('qdb-punctuality', f'punctuality metrics unavailable: {exc}')
         return jsonify({"error": "upstream unavailable"}), 503
 
-    return jsonify({
+    return {
         "system": system[0] if system else None,
         "model_fit": model[0] if model else None,
         "worst_lines": worst_lines,
-    })
+    }
+
+
+api.register_blueprint(buses_blp)
+api.register_blueprint(search_blp)
+api.register_blueprint(system_blp)
 
 
 if __name__ == '__main__':

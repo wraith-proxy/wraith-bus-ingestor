@@ -10,14 +10,14 @@ drift apart by design and neither is wrong.
 
 ## Where to pick up (as of 2026-09-23)
 
-Everything is delivered and on `main` except the two items below. The API, the
+Everything is delivered and on `main` except the one item below. The API, the
 marts, the GTFS timetable, the timetable-pinned ETA rung and the dbt CI gate are
 all live.
 
-1. **1.17.0** -- retry dbt v2 + DuckDB 2.0 alpha. The `line_stops` cluster that
-   caused the 2026-09-18 blowup is gone since 1.12.0, so the retry starts from a
-   much smaller pipeline than the one that failed.
-2. **1.15.0** -- TfL Unified API ingest for London.
+1. **1.15.0** -- TfL Unified API ingest for London.
+
+**1.17.0 (retry dbt v2 + DuckDB 2.0 alpha) is killed, not just deprioritized**
+(owner's call, 2026-09-24) -- see its own heading below for why.
 
 Everything else this session touched (1.18.0, 1.16.0, 1.2.0, 1.13.0, 1.1.0, the
 GB bounding-box decision, the 1.12.0 loose ends, DuckDB's swap behaviour) is
@@ -393,12 +393,12 @@ is where this one hid.
 - ROADMAP 1.1.0 (gate dbt in CI) is unblocked by the Debian base
   regardless of dbt version, not closed -- a `dbt build`/`dbt test` job
   can run on `ghost-runner` itself now, but nothing adds that job yet.
-- `pages.yml`'s `dbt docs generate` could move off `ubuntu-latest` onto
-  `ghost-runner` now that the platforms match; not done as part of this
-  migration.
-- dbt v2 / DuckDB 2.0 alpha themselves: the owner wants another attempt (see
-  1.17.0 below), regardless of GA status -- only with the full-scale rehearsal
-  above included from the start.
+- `pages.yml` moved off `ubuntu-latest` onto `ghost-runner` 2026-09-24, as
+  part of baking this repo's deps into that image -- see the CI/ci-images
+  work that session, unrelated to dbt v2 itself.
+- dbt v2 / DuckDB 2.0 alpha themselves: retried once more as 1.17.0, killed
+  2026-09-24 -- see that heading. Not revisited unless both DuckDB 2.0 reaches
+  a real GA elsewhere and the box's CPU/cooling change, not RAM alone.
 
 ## 1.10.0 -- bus_positions schema optimisation
 
@@ -645,17 +645,21 @@ sits in `health=error` (no `marts_state` table yet), the same cold-start state
 the other first-run-dependent rules in this file already document. Unproven:
 it has never actually fired.
 
-## 1.17.0 -- retry dbt v2 + DuckDB 2.0 alpha migration
+## 1.17.0 -- retry dbt v2 + DuckDB 2.0 alpha migration -- killed 2026-09-24
 
-Planned (owner's call, 2026-09-23): retry it. 1.9.0 tried this 2026-09-17 and
-reverted it 2026-09-18 after production-load memory blowups -- DuckDB 2.0
-alpha's bundled engine couldn't stay under 12GB on this pipeline's `line_stops`
-phase (see [ADR-0005](adr/0005-dbt-v2-duckdb-alpha-migration.md)). Since then,
-ADR-0008 Phase 1 deleted the `line_stops` cluster (the phase that blew up
-memory) along with 88 other models, so a retry today starts from a much
-smaller pipeline than the one that failed. Per 1.9.0's own takeaway: rehearse
-under the real `systemctl`-triggered nightly conditions and `MemoryMax` cap
-before trusting it, not just an isolated `dbt run`/`dbt test` pass.
+Planned as of 2026-09-23 (retry it, `line_stops` -- the phase that blew up
+memory -- was gone since 1.12.0, so the retry would have started from a much
+smaller pipeline than the one that failed 2026-09-18). Reversed the next day:
+the owner has the working MVP they wanted and is stopping there, not chasing
+this further. Host RAM has doubled since the 2026-09-18 incident (15GB ->
+31GB, confirmed 2026-09-24), but the CPU (6 cores) and cooling (75W, "the fan
+ain't great") haven't changed, and those -- not RAM headroom alone -- are
+what a real retry would need confidence in before trying again. Not
+"deprioritized, maybe later": killed outright. If DuckDB 2.0 reaches a real
+GA with production mileage elsewhere and the box itself changes, that's a new
+decision on new information, not a reopening of this one. See 1.9.0 above and
+[ADR-0005](adr/0005-dbt-v2-duckdb-alpha-migration.md) for the original
+incident this closes the loop on.
 
 ## 1.18.0 -- macro-ize three repeated SQL expressions -- delivered 2026-09-23
 

@@ -32,12 +32,16 @@ dbt models (DuckDB)
   └─ Marts: three frozen tables (eta_models, line_punctuality, localities)
   ↓
 Flask API (read-only handle to wraith_bus_ingestor.duckdb, plus the GTFS timetable
-           gtfs.duckdb -- routes, next stops and line search come from the published timetable)
-  ├─ GET /buses        — live vehicle positions as GeoJSON, < 10 min old
-  ├─ GET /bus/<bus_id> — one vehicle: position, model grain used, predicted arrival
-  ├─ GET /route        — stop sequence, geometry and live buses for one line
-  ├─ GET /search       — locality search
-  └─ GET /model-info   — marts freshness, model coverage, degraded-state note
+           gtfs.duckdb -- routes, next stops and line search come from the published timetable).
+           Full OpenAPI/Swagger docs at /api/docs, generated from the route
+           decorators themselves (backend/schemas.py) so they can't drift.
+  ├─ GET /buses              — live vehicle positions as GeoJSON, < 10 min old
+  ├─ GET /bus/<bus_id>       — one vehicle: position, model grain used, predicted arrival
+  ├─ GET /route              — stop sequence, geometry and live buses for one line
+  ├─ GET /search             — locality search
+  ├─ GET /model-info         — marts freshness, model coverage, degraded-state note
+  ├─ GET /metrics/summary    — the dashboard's headline numbers
+  └─ GET /metrics/punctuality — system-wide on-time %, model fit, worst lines
   ↓
 MapLibre map on slaycoach.quest/bus-map/ (in ghost-site)
 ```

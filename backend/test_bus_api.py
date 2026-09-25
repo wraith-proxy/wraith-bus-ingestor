@@ -249,6 +249,26 @@ def test_time_helpers():
     assert app.epoch_from_qdb_timestamp('rubbish') is None
 
 
+def test_openapi_spec_covers_every_route_with_no_duplicate_schema_names():
+    """flask-smorest/apispec setup, not a route's own logic: every real route
+    must appear in the generated spec (this is the entire point of using
+    decorator-generated docs instead of a hand-maintained file -- it cannot
+    silently drift), and apispec must not have silently renamed a schema
+    (schemas.ApiErrorSchema colliding with flask-smorest's own built-in
+    'Error' schema did exactly this once, 2026-09-24 -- see app.py's own
+    comment on why it isn't named ErrorSchema)."""
+    with app.app.test_request_context():
+        spec = app.api.spec.to_dict()
+    real_routes = {r.rule for r in app.app.url_map.iter_rules()
+                  if r.rule.startswith(('/bus', '/route', '/search', '/model-info', '/metrics'))}
+    spec_paths = {p.replace('{bus_id}', '<bus_id>') for p in spec['paths']}
+    assert real_routes == spec_paths
+    # apispec appends a digit (Error1, Error2, ...) to a name it can't tell
+    # apart from an existing one -- never legitimate for a hand-named schema.
+    schema_names = list(spec['components']['schemas'])
+    assert not any(n[-1].isdigit() for n in schema_names), schema_names
+
+
 def test_bus_id_whitelist():
     for good in ('ABC-1', 'SCMN_1234', 'bus.42', 'a:b'):
         assert app.BUS_ID_RE.match(good), good
@@ -356,6 +376,26 @@ def test_predict_uses_a_pinned_trip_ahead_of_the_regression():
         assert frag2['eta_source'] == 'regression'
     finally:
         gtfs._pins.pop(key, None)
+
+
+def test_stale_aimed_time_never_predicts_the_past():
+    """2026-09-25: live buses were showing predicted arrivals up to 34
+    minutes in the past (eta_source timetable_raw) -- a bus running behind
+    schedule with no computable delay has an aimed arrival that is itself
+    already in the past (that's what 'late' means), but 'no delay applied,
+    since we have none' must not mean displaying an already-passed instant
+    as a live prediction. Same floor applies to timetable_delay and
+    pinned_eta; this test is the timetable_raw case, which is what was
+    actually observed live."""
+    now = 1789200000.0
+    marts = dict(app.EMPTY_MARTS)
+    # Far from the destination (no ARRIVED_KM short-circuit), no stops known
+    # (no progress-delay method can rate it), aimed arrival 30 minutes ago.
+    row = {'line': '88', 'direction': 'outbound', 'lat': 53.0, 'lon': -3.0,
+           'dest_ref': None, 'dest_aimed_arr': (now - 1800) * 1000}
+    frag, _m, pred = app.predict(row, marts, now)
+    assert frag['eta_source'] == 'timetable_raw'
+    assert pred == now and frag['eta_iso'] == app.iso_from_epoch_s(now)
 
 
 def test_eta_falls_back_to_last_known():
@@ -565,10 +605,15 @@ def test_arrived_vehicles_stop_accruing_delay():
               'origin_ref': 'A', 'dest_ref': 'B',
               'origin_aimed_dep': (now - 2700) * 1000,
               'dest_aimed_arr': (now - 600) * 1000}
-    frag, _model, _pred = app.predict(parked, gm, now)
+    frag, _model, pred = app.predict(parked, gm, now)
     assert frag['remaining_km'] is not None and frag['remaining_km'] <= app.ARRIVED_KM
     assert frag['delay_s'] is None and frag['delay_source'] is None
     assert frag['status'] == 'unknown'
+    # 2026-09-25: an arrived bus must get 'now', not a regression tail or a
+    # stale aimed time -- caught live on TfL buses reading 20+ minutes still
+    # to run while under 100 m from their destination.
+    assert frag['eta_source'] == 'arrived' and pred == now
+    assert frag['eta_iso'] == app.iso_from_epoch_s(now)
     # The same bus a kilometre short of the terminus, on a timetable it can
     # plausibly still be running to, is rated as normal.
     running_bus = dict(parked, lat=53.5010,
