@@ -38,18 +38,46 @@ except ImportError:  # pragma: no cover
 app = Flask(__name__)
 CORS(app)
 
+
+class _ScriptNamePrefix:
+    """Tells Flask's own url_for() that every URL it generates is reached
+    externally via /api/... , without changing which path Flask matches an
+    INCOMING request against (that's PATH_INFO, untouched here -- routes stay
+    registered at bare paths like every other one in this file).
+
+    ghost-site's nginx does `location /api/ { proxy_pass http://api/; }`
+    (trailing slash) -- strips /api/ before forwarding, the same bug class as
+    the /grafana/ redirect loop already in this repo's history. That's why
+    every route here (/buses, /model-info, ...) lives at a bare Flask path:
+    nginx has already removed the prefix by the time a request arrives.
+
+    Swagger UI is the one thing that broke from that: flask-smorest builds
+    its spec_url via url_for(), which -- with no prefix set -- produced an
+    absolute /openapi.json. That is correct for Flask's OWN routing, but the
+    BROWSER fetches it directly against the domain root, never through
+    nginx's /api/ location at all, and 404s (caught live, 2026-09-25, right
+    after deploying the fix for the previous half of this same bug). SCRIPT_NAME
+    is exactly the WSGI mechanism for "the app knows its own routes as X, but
+    the world reaches it at PREFIX+X" -- so url_for('...openapi_json') now
+    correctly comes out as /api/openapi.json, matching what nginx actually
+    exposes, while routing itself is unaffected."""
+    def __init__(self, wsgi_app, prefix):
+        self.wsgi_app = wsgi_app
+        self.prefix = prefix
+
+    def __call__(self, environ, start_response):
+        environ['SCRIPT_NAME'] = self.prefix
+        return self.wsgi_app(environ, start_response)
+
+
+app.wsgi_app = _ScriptNamePrefix(app.wsgi_app, '/api')
+
 # OpenAPI/Swagger, generated from the route decorators below rather than
 # hand-maintained -- see docs/api.md's own note on why a hand-written spec
 # was rejected for this repo (7 routes, but they were judged likely to
 # churn enough that "always matches the real routes" was worth the
-# refactor). Swagger UI at /docs; raw spec at /openapi.json -- bare paths,
-# NOT /api/docs, even though the public URL is .../api/docs. ghost-site's
-# nginx does `location /api/ { proxy_pass http://api/; }` (trailing slash),
-# which STRIPS the /api/ prefix before forwarding -- the same class of bug
-# as the /grafana/ redirect loop already in this repo's history. Every
-# other route here (/buses, /model-info, ...) already lives at a bare path
-# for exactly that reason; OPENAPI_URL_PREFIX='/api' initially missed it
-# and 404'd through the real proxy while working fine hit directly.
+# refactor). Swagger UI at /docs (Flask-side; see _ScriptNamePrefix above
+# for why the public URL .../api/docs still resolves correctly both ways).
 app.config['API_TITLE'] = 'wraith-bus-ingestor API'
 app.config['API_VERSION'] = 'v1'
 app.config['OPENAPI_VERSION'] = '3.0.2'
