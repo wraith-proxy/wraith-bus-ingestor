@@ -42,11 +42,18 @@ CORS(app)
 # hand-maintained -- see docs/api.md's own note on why a hand-written spec
 # was rejected for this repo (7 routes, but they were judged likely to
 # churn enough that "always matches the real routes" was worth the
-# refactor). Swagger UI at /api/docs; raw spec at /api/openapi.json.
+# refactor). Swagger UI at /docs; raw spec at /openapi.json -- bare paths,
+# NOT /api/docs, even though the public URL is .../api/docs. ghost-site's
+# nginx does `location /api/ { proxy_pass http://api/; }` (trailing slash),
+# which STRIPS the /api/ prefix before forwarding -- the same class of bug
+# as the /grafana/ redirect loop already in this repo's history. Every
+# other route here (/buses, /model-info, ...) already lives at a bare path
+# for exactly that reason; OPENAPI_URL_PREFIX='/api' initially missed it
+# and 404'd through the real proxy while working fine hit directly.
 app.config['API_TITLE'] = 'wraith-bus-ingestor API'
 app.config['API_VERSION'] = 'v1'
 app.config['OPENAPI_VERSION'] = '3.0.2'
-app.config['OPENAPI_URL_PREFIX'] = '/api'
+app.config['OPENAPI_URL_PREFIX'] = ''
 app.config['OPENAPI_SWAGGER_UI_PATH'] = '/docs'
 app.config['OPENAPI_SWAGGER_UI_URL'] = 'https://cdn.jsdelivr.net/npm/swagger-ui-dist/'
 api = Api(app)
