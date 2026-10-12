@@ -738,7 +738,16 @@ browser loads.
 3. `docker exec ghost-web nginx -s reload`, because recreating containers
    changes their IPs and nginx cached the old ones (see
    [Architecture](architecture.md)).
-4. Re-subscribe the phone in the ntfy app, and delete the old subscription.
+4. Enter the new topic on the phone: in the Wraith Bus app, About > Alerts, paste
+   it and Save (it restarts the listener). The app has no baked-in topic any
+   more, so there is no rebuild. If you use the stock ntfy app as well,
+   re-subscribe there and delete the old subscription.
+
+The public nginx `/ntfy/` location is an allowlist: only
+`/ntfy/<topic>/ws|json|sse` is forwarded, and the web UI, `/v1/health` and the
+GET-publish paths (`/publish`, `/send`, `/trigger`) return 404. Publishing only
+happens server-side from Grafana. A leaked topic still lets a stranger read the
+alerts.
 
 Nothing else stores it. `ntfy` creates topics on demand and keeps no
 registry, so there is nothing server-side to pre-create or to delete — the

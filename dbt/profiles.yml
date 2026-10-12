@@ -108,7 +108,16 @@ wraith_bus_ingestor:
         # ABOVE memory_limit (Run 1: 8.69GB RSS at a 4GB limit), so 6GB should
         # peak near 11GB, under the cap. Do NOT go to 8GB without raising
         # MemoryMax: ~13GB RSS would hit it. Unproven at 6GB until a real run.
-        memory_limit: '4GB'
+        #
+        # 4GB -> 6GB 2026-10-12. The 03:00 nightly failed in `dbt test` (models all
+        # built): not_null on stg_bods__vehicle_pings.ping_ts / ping_local_ts and
+        # expect_compound_columns_to_be_unique on the raw source each scan the
+        # whole 8-day parquet glob, and run concurrently with the other tests
+        # under one shared pool -- "Out of Memory Error ... (3.7 GiB/3.7 GiB
+        # used)". Those three alone peak at 4.16GB RSS against a 4GB limit, so
+        # 4GB had no margin. 6GB leaves it, and stays well under the 13000M
+        # MemoryMax (models peak ~4.5GB RSS at a 4GB limit).
+        memory_limit: '6GB'
         # DO NOT set temp_directory here. dbt-duckdb replays every `settings:`
         # entry on each new connection it opens, and DuckDB refuses to change
         # the temp directory once it has spilled to the current one -- so the
