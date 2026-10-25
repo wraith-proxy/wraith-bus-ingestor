@@ -74,9 +74,9 @@
   Incremental strategy
   ---------------------------------------------------------------------------
   This is the single most expensive model in the project (724s measured over
-  the old 22-day, ~45M-row window; retention_days() is now 8) and the one
-  three downstream models scan, so it is incremental by ping_local_date
-  rather than a full `table` rebuild every run.
+  the old 22-day, ~45M-row window; retention_days() is now 4, a 5-local-date
+  table) and the one three downstream models scan, so it is incremental by
+  ping_local_date rather than a full `table` rebuild every run.
 
   Read window vs. write window: `lag() over (partition by (operator, bus_id)
   order by <total key>)` needs real history at the edge of whatever window gets
@@ -192,16 +192,6 @@ with_step as (
         case when prev_ping_ts is null then null
              else {{ haversine_km('prev_lat', 'prev_lon', 'lat', 'lon') }}
         end as step_km,
-        -- One term of the shoelace (surveyor's) formula, treating lon as x and
-        -- lat as y. Summed over a journey it gives twice the signed area the
-        -- path encloses, and the SIGN of that is the direction of circulation:
-        -- positive anticlockwise, negative clockwise.
-        -- This is the only usable direction signal for a circular route, whose
-        -- first-to-last bearing is noise because it ends where it started.
-        -- See int_journeys_shaped_and_directed.
-        case when prev_ping_ts is null then 0.0
-             else (prev_lon * lat) - (lon * prev_lat)
-        end as shoelace_term,
         date_diff('second', prev_ping_ts, ping_ts) as step_secs,
         -- "Standing still": less than 500 m of ground covered over the previous
         -- three ping buckets, and those buckets really were consecutive (<= 15
@@ -315,7 +305,6 @@ final as (
         lat,
         lon,
         hop_km,
-        case when is_journey_start = 1 then 0.0 else shoelace_term end as shoelace_term,
         origin_aimed_dep_ts,
         dest_aimed_arr_ts,
         ping_seq,

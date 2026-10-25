@@ -34,10 +34,10 @@ parse is skipped, not fatal to the poll.
 The feed itself is considerably less trustworthy than it looks — see
 [Contracts](contracts.md) for what it does and does not guarantee.
 
-## Storage: QuestDB, 22 days hot
+## Storage: QuestDB, 3 days hot
 
 `bus_positions` is an append-only QuestDB table, partitioned by day. Hot
-retention is 22 days (`RETENTION_DAYS` in `.env`); anything older is moved,
+retention is 3 days (`RETENTION_DAYS` in `.env`, ADR-0010); anything older is moved,
 not deleted — see [Operations](operations.md#archiving-not-deleting) for
 how `archiver/archive.py` does that.
 

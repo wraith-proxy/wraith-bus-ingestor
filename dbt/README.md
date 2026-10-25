@@ -41,12 +41,12 @@ Or the steps by hand:
 ```bash
 cd dbt
 
-# 1. pull the last 8 days out of QuestDB into data/*.parquet (mainland GB, several min)
+# 1. pull the last 4 days out of QuestDB into data/*.parquet (mainland GB, several min)
 # Match dbt_project.yml's `extract_days` var (see macros/retention_days.sql)
 # and .env's RETENTION_DAYS -- all three should agree on the same window.
 # A day that already has a data/bus_positions_<day>.done marker is skipped;
 # delete the marker to pull that day again.
-QUESTDB_HTTP=http://localhost:9001 EXTRACT_DAYS=8 ../.venv/bin/python extract.py
+QUESTDB_HTTP=http://localhost:9001 EXTRACT_DAYS=4 ../.venv/bin/python extract.py
 
 # 2. build every model (into the SCRATCH file -- see "Two files", below)
 ../.venv/bin/dbt run --profiles-dir .
@@ -153,20 +153,10 @@ Five models, and this is where all the difficulty lives:
 | model | what it does |
 |---|---|
 | `int_pings_segmented_to_journeys` | cuts each vehicle's endless ping stream into individual journeys |
-| `int_journeys_shaped_and_directed` | one row per journey; drops implausible ones; decides direction |
+| `int_journeys_shaped_and_directed` | one row per journey; drops implausible ones; takes direction from the feed |
 | `int_pings_measured_to_journey_end` | the training set: for each ping, how far and how long is left |
 | `int_eta_daily_stats` | the training set reduced to per-day sufficient statistics, kept for `history_days` |
 | `int_journey_delays` | one row per journey `line_punctuality` can use, kept for `history_days` |
-
-`int_journeys_shaped_and_directed` is also where **direction** is decided, by
-one of two rules. Linear routes are split on the journey's first-to-last
-compass bearing against the line's modal bearing. Circular routes cannot be —
-a loop ends where it started, so its bearing is noise and identical loops
-would be scattered at random between the two directions — so those are split
-on the **sign of the enclosed area** (the shoelace formula), which asks "which
-way round" instead of "which way along" and always agrees between two buses
-running the same loop the same way. A line counts as circular when the median
-of `straight_km / path_km` across its journeys is below 0.35.
 
 Intermediate models are not for the API to read. They exist so that no single
 model has to be understood all at once, and so that expensive work is done

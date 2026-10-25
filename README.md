@@ -24,7 +24,7 @@ BODS SIRI-VM feed (every 60s, mainland GB bbox)
   ↓ [ingestor container]
 QuestDB (time-series, ILP)
   ├─ Live table: bus_positions (append-only, partitioned by day)
-  └─ Retention: 8 days hot on SSD, older days exported to Parquet on a separate drive
+  └─ Retention: 3 days hot on SSD, older days exported to Parquet on a separate drive
   ↓ [dbt/build.sh, nightly 03:00 via systemd timer]
 dbt models (DuckDB)
   ├─ Staging: one model per source system (bods/, naptan/), views
@@ -172,8 +172,9 @@ git commit
 ## 🧩 The Hard Decisions Baked In
 
 **Days are archived, not deleted.** QuestDB's native `SET TTL` drops
-data outright; this keeps 8 days hot on fast SSD (`RETENTION_DAYS`, cut
-from 22 on 2026-09-14 — see `docs/ROADMAP.md` 1.0.0) and exports older
+data outright; this keeps 3 days hot on fast SSD (`RETENTION_DAYS`, cut
+from 22 to 8 on 2026-09-14 — see `docs/ROADMAP.md` 1.0.0 — and to 3 by
+`docs/adr/0010`) and exports older
 days to Parquet on a separate drive, verified row for row before the live
 copy is dropped (`docs/adr/0007`). The archive is self-describing and can be
 queried in place with DuckDB.

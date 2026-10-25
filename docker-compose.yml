@@ -26,7 +26,7 @@ services:
     container_name: ${QUESTDB_CONTAINER}
     restart: unless-stopped
     # 4g OOM-killed the real java process mid-extraction, 2026-09-15
-    # (confirmed via journalctl -k, not app-level) -- extract.py's 8-day
+    # (confirmed via journalctl -k, not app-level) -- extract.py's 8-day (since cut to 4)
     # SAMPLE BY 3m aggregation query is heavier than idle/steady-state
     # ingest load. See docs/ROADMAP.md 1.1.1.
     mem_limit: 8g

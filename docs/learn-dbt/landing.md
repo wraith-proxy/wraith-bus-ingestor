@@ -6,7 +6,7 @@ You now know every piece the real project uses. Here is how they fit together at
 ## The night shift
 
 1. **Fetch.** A Python script (`extract.py`) asks QuestDB, the database that
-   collects live bus positions all day, for each of the last eight days it does
+   collects live bus positions all day, for each of the last four days it does
    not already have (normally just yesterday). It saves them as Parquet files in
    `data/`. These are the **sources** from stop 3. This used to be the slowest
    part, about ten of the fifteen minutes, when it fetched every day every night.

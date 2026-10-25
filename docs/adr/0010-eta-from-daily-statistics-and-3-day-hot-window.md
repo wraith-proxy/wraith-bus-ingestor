@@ -241,9 +241,11 @@ auto-merges on green, so **the gate is the working tree, not the merge**.
 6. **The first nightly on PR2:** success, the build file's size, five
    segmentation dates, `data/` pruned to four days.
 7. **Then the owner**, outside 00:00-05:00 UTC: `docker restart questdb`, set
-   `RETENTION_DAYS=3` in `.env`, and `docker compose up -d archiver`. The first
-   sweep exports five or six days to vault2 (~3.5G written); watch
-   `archive.log` and `docker stats questdb`. Then `uv run poe docs-dbt`
+   `RETENTION_DAYS=3` in `.env`, and `docker compose up -d --force-recreate
+   --no-deps archiver`. The sweep runs at the archiver's start time each day,
+   and one started between 00:00 and ~03:10 UTC runs ahead of that night's
+   extract. The first sweep exports five or six days to vault2 (~3.5G
+   written); watch `archive.log` and `docker stats questdb`. Then `uv run poe docs-dbt`
    (outside 01:30-05:00 UTC) to drop `shoelace_term` from the generated docs.
 
 ## Consequences

@@ -59,7 +59,8 @@ QUESTDB = os.environ.get("QUESTDB_HTTP", "http://localhost:9001")
 QUESTDB_CONTAINER = os.environ.get("QUESTDB_CONTAINER", "questdb")
 TABLE = "bus_positions"
 ARCHIVE_ROOT = os.environ.get("ARCHIVE_PATH", "/mnt/archive/wraith-bus-ingestor-archive")
-RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "8"))
+# QuestDB keeps 3 UTC days (the archiver's RETENTION_DAYS); keep in step, .env is not read here.
+RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "3"))
 
 
 def qdb_exec(query, timeout=30):

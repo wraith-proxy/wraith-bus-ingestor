@@ -108,7 +108,8 @@ The first run does the whole lot. Every later run is quick. The days the table h
 dbt show --inline "select ping_local_date, count(*) as pings from {{ ref('int_pings_segmented_to_journeys') }} group by 1 order by 1"
 ```
 
-The sandbox only has a couple of days; the real warehouse keeps eight.
+The sandbox only has a couple of days; the real warehouse keeps five dates (the
+newest and the four before it, from `extract_days: 4`).
 
 !!! info "The price of speed"
     An incremental model can *drift*: if the logic changes, the old rows still

@@ -17,7 +17,7 @@ journalctl -u wraith-bus-build.service
 ```
 
 A run does four things in order: extract each of the last `EXTRACT_DAYS`
-(default 8) of `bus_positions` that has no `data/bus_positions_<day>.done`
+(default 4) of `bus_positions` that has no `data/bus_positions_<day>.done`
 marker yet out of QuestDB into `data/*.parquet`, `dbt run`
 every model into a scratch warehouse, `dbt test` the result, and — only if
 the tests pass — publish the three marts into `wraith_bus_ingestor.duckdb`, the file
@@ -134,7 +134,35 @@ replay, drop its table by hand; the next run rebuilds it from the days
 `int_pings_segmented_to_journeys` still holds, and anything older is gone. A
 full refresh also no longer shrinks the file: dbt builds the new segmentation
 table beside the old one, and DuckDB does not shrink a file on `DROP`
-(ADR-0010 has the one-off compaction).
+(ADR-0010 has the one-off compaction, below).
+
+### One-off: compacting the scratch warehouse, `ops/compact_build_db.sh`
+
+DuckDB never shrinks a file, so `wraith_bus_ingestor_build.duckdb` sits at its
+high-water mark (10.7G on 2026-10-25, 40% of the segmentation table deleted
+rows). `ops/compact_build_db.sh` copies the three incremental tables
+(segmentation trimmed to its last five dates and without `shoelace_term`, and
+both history tables, whole) into a fresh file; the probe put the result near
+2.8G. Table models and views are not copied, and dbt rebuilds them on the next
+run. Run it by hand as your own user, never root, outside 01:30-05:00 UTC:
+
+```bash
+ops/compact_build_db.sh --check   # preflight only, writes nothing
+ops/compact_build_db.sh           # back up to vault2, build, verify, swap (~10 min)
+```
+
+The preflight refuses a build in progress, a process holding the file, too
+little space, or a history table missing or under 9 `stats_date`s (a thin
+history copied is a thin history kept). Logs go to
+`ops/logs/compact-<UTC stamp>/compact.log`. A run that fails before the swap
+leaves the old file untouched; a failure after STAGE 1 leaves a stamped ~10G
+backup in `/mnt/archive/build_db_backup/` that is safe to delete.
+
+Rollback needs both the backup restored (the `rsync` line it prints) **and**
+the pre-PR2 code checked out: the backup still has `shoelace_term` and nine
+dates, which PR2's segmentation model fails on. So check PR2 out here only
+after the compaction, never before (the working tree at 03:00 is the gate, not
+the merge).
 
 Other flags:
 
@@ -334,11 +362,11 @@ nothing else changed. Whether to keep the whole-GB box is an open decision
 ### GOTCHA: dbt reads every parquet file in `dbt/data/`, so the SSD must hold exactly the window
 
 `stg_bods__vehicle_pings` globs `data/bus_positions_*.parquet` with no date
-filter. `extract.py` keeps the last `EXTRACT_DAYS` (8) days, fetching each
+filter. `extract.py` keeps the last `EXTRACT_DAYS` (4) days, fetching each
 day once (a `data/bus_positions_<day>.done` marker records a complete day),
 but until 2026-09-19 nothing ever deleted a day that had slid out of the
 window, so the 03:00 build that night read 12 days (81.9M rows) instead of
-8. The SSD holds the 8-day window and nothing older; **SATA is the archive**
+8. The SSD holds the 4-day window and nothing older; **SATA is the archive**
 ("glacier"), not a second copy of the working set. `extract.py` now prunes
 parquet and `.done` markers older than the window, but only after a
 successful extract, so a failed run can never be the thing that deletes the
@@ -367,9 +395,38 @@ To decide one, add a row to `gtfs/alias_review.csv` with the columns `live_opera
 
 `archiver/archive.py` runs continuously in its own container, checking
 once every 24 hours (`POLL_S`) for `bus_positions` days older than
-`RETENTION_DAYS` (8, set in `.env`). QuestDB's native `SET TTL` was
-considered and rejected because TTL **drops** partitions outright; this
-box exports them to a separate cold drive first (ADR-0007).
+`RETENTION_DAYS` (3, set in `.env`; 8 until ADR-0010). QuestDB's native
+`SET TTL` was considered and rejected because TTL **drops** partitions
+outright; this box exports them to a separate cold drive first (ADR-0007).
+QuestDB therefore holds three UTC days (X-2..X) while dbt works over four
+(`extract_days` 4): the older days come from the parquet already in
+`dbt/data/` (the `.done`-marked chunks), never from QuestDB.
+
+The 24 hours count from the container's start, so the sweep runs at
+whatever time of day the archiver was last created (about 18:00 UTC since
+2026-09-19, ~30s later each day by the length of each run). Day D is dropped
+on day D+3 at that time, and the 03:00 extract still reads D that morning
+if an earlier night failed to fetch it, so create the archiver outside
+00:00-05:00 UTC. An archiver started between 00:00 and ~03:10 UTC puts its
+sweep ahead of that night's extract, which can then find a day it needs
+already dropped. A changed `.env` needs a recreate; `docker restart` keeps
+the old value.
+
+To move from 8 to 3 (ADR-0010 step 7), outside 00:00-05:00 UTC:
+
+```bash
+docker restart questdb        # QuestDB no longer restarts nightly; start from a clean memory
+# set RETENTION_DAYS=3 in .env
+docker compose up -d --force-recreate --no-deps archiver
+```
+
+The first run is immediate and archives every day already past the new
+cutoff in one go (8 -> 3: five or six days, ~33s and ~0.7GB of Parquet
+each, ~3.5GB written to the cold drive). Watch it in `archive.log` (in
+`ARCHIVE_PATH`) and watch `docker stats questdb` for the next few days: memory should settle
+well below the 8g cap. Nothing proxies to the archiver, so no nginx reload is
+needed. Afterwards run `uv run poe docs-dbt` (outside 01:30-05:00 UTC) so
+the generated dbt docs drop `shoelace_term`.
 
 **The archive is Parquet.** For each eligible day the archiver:
 

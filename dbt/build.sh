@@ -66,7 +66,7 @@ if [[ ! -x "$UV" ]]; then
     exit 1
 fi
 : "${QUESTDB_HTTP:=http://localhost:9001}"
-: "${EXTRACT_DAYS:=8}"
+: "${EXTRACT_DAYS:=4}"
 : "${SKIP_EXTRACT:=0}"
 : "${FULL_REFRESH:=0}"
 : "${REPLAY:=0}"

@@ -18,7 +18,7 @@ import urllib.request
 from datetime import date, timedelta
 
 QUESTDB = os.environ.get("QUESTDB_HTTP", "http://localhost:9001")
-DAYS = int(os.environ.get("EXTRACT_DAYS", "8"))
+DAYS = int(os.environ.get("EXTRACT_DAYS", "4"))
 SAMPLE_MINS = int(os.environ.get("EXTRACT_SAMPLE_MINS", "3"))
 # A whole day's SAMPLE BY in one query OOM-killed questdb itself (kernel
 # oom-killer, not a graceful questdb error -- ram.usage.limit.bytes doesn't
@@ -33,7 +33,7 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 # Chunking bounds each query's own group-state, but questdb's table-reader
 # pool doesn't hand its mmap'd segments back between queries fired this close
 # together (checked: lowering cairo.inactive.reader.ttl to 1s made no
-# measurable difference after 30s idle) -- so the 48 queries of a full 8-day
+# measurable difference after 30s idle) -- so the 48 queries of a full 8-day (since cut to 4)
 # run still climb cumulatively, observed peaking at ~7.8GB of an 8GB cap.
 # Restarting questdb between days resets that for free: nothing else reads
 # this table, and the cost (~6s/restart, ghost-ingestor's writes retry through
