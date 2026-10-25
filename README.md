@@ -56,6 +56,10 @@ The dbt build is split across three files by design:
   run, it silently became "full rebuild every time" (about an hour).
   Persisting it across runs is what makes the nightly a matter of minutes
   ([ADR-0009](docs/adr/0009-fast-nightly-build.md) has the measurements).
+  It also holds the only copy of the ETA and punctuality history
+  (`int_eta_daily_stats`, `int_journey_delays`), daily summaries meant to
+  outlive the raw pings, so nothing deletes it any more, `FULL_REFRESH=1`
+  included ([ADR-0010](docs/adr/0010-eta-from-daily-statistics-and-3-day-hot-window.md)).
 - **`wraith_bus_ingestor_staged.duckdb`** — fresh per-run throwaway where the three
   marts are copied after `dbt test` and the contract gate both pass.
 - **`wraith_bus_ingestor.duckdb`** — the published file the API opens read-only. Only
@@ -86,7 +90,9 @@ morning peak and 19.2 km/h at night; pooling would predict neither.
 Thin grains fall back through eleven progressively coarser rungs — drop
 band, drop day pattern, drop direction, drop line, then repeat the whole
 chain without operator, ending at the network average. Every fallback is
-refitted from the source data at that width, not averaged from finer rows.
+refitted at that width, not averaged from finer rows: the nightly keeps
+per-day sufficient statistics and pools them, which gives the fit the raw
+pings would, to rounding ([ADR-0010](docs/adr/0010-eta-from-daily-statistics-and-3-day-hot-window.md)).
 
 See [`dbt/README.md`](dbt/README.md) for the hard parts (direction inference
 from bearing, detecting journeys cut mid-stream, stop sequence limitations,
@@ -125,7 +131,7 @@ cd dbt
 ./build.sh                  # extract from QuestDB, build, test, validate contracts, publish
 
 SKIP_EXTRACT=1 ./build.sh   # reuse the parquet already in data/, skip the QuestDB pull
-FULL_REFRESH=1 ./build.sh   # rebuild from scratch (schema change, suspected drift)
+FULL_REFRESH=1 ./build.sh   # dbt run --full-refresh (schema change, suspected drift); history tables kept
 ```
 
 ### Publishing dbt docs

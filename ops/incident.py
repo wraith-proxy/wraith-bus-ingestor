@@ -163,6 +163,14 @@ def extract_day(day_obj):
     stale = os.path.join(extract.OUT, f"bus_positions_{day_obj.isoformat()}.parquet")
     if os.path.exists(stale):
         os.remove(stale)
+    # The day's .done marker goes before the re-fetch, so a re-fetch that dies
+    # midway leaves the day unmarked rather than marked over half-replaced
+    # chunks. Nothing here writes it back: if the day is still in the extract
+    # window, the next nightly fetches it again and marks it by its own rule
+    # (rows, WAL applied).
+    done = os.path.join(extract.OUT, f"bus_positions_{day_obj.isoformat()}.done")
+    if os.path.exists(done):
+        os.remove(done)
     total = 0
     for hour_start in range(0, 24, extract.CHUNK_HOURS):
         dest, n = extract.fetch(

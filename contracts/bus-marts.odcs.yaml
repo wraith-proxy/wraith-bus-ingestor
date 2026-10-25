@@ -15,7 +15,7 @@ apiVersion: v3.2.0
 kind: DataContract
 id: 9f2c4b10-5d6e-4a33-b0c1-6e8a5d3f1c47
 name: wraith_bus_ingestor_marts
-version: 3.1.0
+version: 3.1.1
 status: draft
 domain: transit
 tenant: ghost-stack
@@ -44,9 +44,11 @@ description:
     Marts refresh nightly at 03:00 via a host systemd timer (dbt/build.sh).
     The journey layer
     (int_pings_segmented_to_journeys) is incremental, reprocessing only the
-    trailing ~2 days each run; everything
-    downstream, including every mart in this contract, is still fully rebuilt
-    each run from that incrementally-maintained base.
+    trailing ~2 days each run, and so are the two daily history tables
+    eta_models and line_punctuality are built from (int_eta_daily_stats,
+    int_journey_delays, ADR-0010), which rewrite only their newest few dates
+    and keep history_days (8) of them; every mart in this contract is still
+    fully rebuilt each run from those incrementally-maintained bases.
 
 servers:
   - server: marts-prod
@@ -425,11 +427,15 @@ slaProperties:
       keeps serving predictions past this and reports staleness via
       /api/model-info rather than going dark.
   - property: retention
-    value: 21
+    value: 8
     unit: d
     element: eta_models
     driver: analytics
-    description: The fit uses a rolling 21-day window of positions, downsampled to one ping per vehicle per 3 minutes.
+    description: >-
+      The fit pools a rolling 8-day window (history_days) of per-day
+      sufficient statistics, computed from positions downsampled to one ping
+      per vehicle per 3 minutes. Pooling is exact to rounding: the
+      coefficients are the ones a fit over those pings would give (ADR-0010).
   - property: timeOfAvailability
     value: 04:00+01:00
     element: eta_models

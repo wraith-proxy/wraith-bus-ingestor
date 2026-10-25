@@ -15,9 +15,9 @@
 
   LIMITATION: bank holidays run a Sunday-ish service and are filed here as
   'weekday'. That is deliberate -- a holiday calendar is a whole extra source to
-  maintain and get wrong, and the eight affected days a year are diluted across
-  three weeks of training data. It does mean an ETA on Easter Monday will be
-  slightly pessimistic.
+  maintain and get wrong, and a holiday is one day among the eight
+  (history_days) the ETA model is fitted over. It does mean an ETA on Easter
+  Monday will be slightly pessimistic.
 #}
 {% macro day_type(local_ts_expr) -%}
 case isodow({{ local_ts_expr }})

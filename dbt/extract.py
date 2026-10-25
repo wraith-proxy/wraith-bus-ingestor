@@ -3,7 +3,8 @@
 
 QuestDB holds ~1e9 rows; dbt only needs enough to fit per-line models, so we
 downsample to one row per bus per SAMPLE_MINS and keep the last EXTRACT_DAYS
-days. One parquet file per day, so a re-run only redoes the days it is asked for.
+UTC days. Each day is fetched once, as chunk files plus a .done marker, so a
+nightly run only pulls the one day it does not have yet.
 """
 import glob
 import json
@@ -32,12 +33,13 @@ OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 # Chunking bounds each query's own group-state, but questdb's table-reader
 # pool doesn't hand its mmap'd segments back between queries fired this close
 # together (checked: lowering cairo.inactive.reader.ttl to 1s made no
-# measurable difference after 30s idle) -- so the 48 queries/run still climb
-# cumulatively, observed peaking at ~7.8GB of an 8GB cap. Restarting questdb
-# between days resets that for free: nothing else reads this table, and the
-# cost (~6s/restart, ghost-ingestor's writes retry through the gap same as
-# any other questdb blip) is cheap next to the safety margin it buys. See
-# docs/ROADMAP.md 1.1.1.
+# measurable difference after 30s idle) -- so the 48 queries of a full 8-day
+# run still climb cumulatively, observed peaking at ~7.8GB of an 8GB cap.
+# Restarting questdb between days resets that for free: nothing else reads
+# this table, and the cost (~6s/restart, ghost-ingestor's writes retry through
+# the gap same as any other questdb blip) is cheap next to the safety margin it
+# buys. Only between days a run actually fetches, though: a day skipped for its
+# .done marker sent no queries. See docs/ROADMAP.md 1.1.1.
 QUESTDB_CONTAINER = os.environ.get("QUESTDB_CONTAINER", "questdb")
 RESTART_QUESTDB_BETWEEN_DAYS = os.environ.get("EXTRACT_RESTART_QUESTDB", "1") == "1"
 
@@ -123,20 +125,56 @@ def fetch(con, day, hour_start, hour_end, select, columns):
     )
     url = f"{QUESTDB}/exp?" + urllib.parse.urlencode({"query": query})
     dest = os.path.join(OUT, f"bus_positions_{day.isoformat()}_{hour_start:02d}.parquet")
+    # Written beside dest (outside dbt's *.parquet glob) and renamed over it
+    # only once it is known to hold rows. Writing straight to dest meant a
+    # re-fetch that came back empty -- the archiver had since dropped the
+    # partition -- overwrote a good chunk and then deleted the empty result.
+    tmp = dest + ".tmp"
     # COPY ... TO takes no bind parameters, so quote the literals ourselves.
-    src, tgt = url.replace("'", "''"), dest.replace("'", "''")
+    src, tgt = url.replace("'", "''"), tmp.replace("'", "''")
     con.execute(
         f"COPY (SELECT * FROM read_csv('{src}', header=true, columns={columns})) "
         f"TO '{tgt}' (FORMAT PARQUET, COMPRESSION zstd)"
     )
-    n = con.execute("SELECT count(*) FROM read_parquet(?)", [dest]).fetchone()[0]
+    n = con.execute("SELECT count(*) FROM read_parquet(?)", [tmp]).fetchone()[0]
     if n == 0:
         # The ingestor was down that window. An empty file is worse than no
         # file: it still joins the glob and contributes nothing but a schema
-        # to argue with, so drop it and let the gap be a gap.
-        os.remove(dest)
+        # to argue with, so drop it and let the gap be a gap. Only the .tmp:
+        # an existing chunk at dest is never deleted here.
+        os.remove(tmp)
         return None, 0
+    os.replace(tmp, dest)
     return dest, n
+
+
+def wal_applied():
+    """(True, None) when QuestDB has applied every write it has accepted for
+    bus_positions, else (False, why). bus_positions is a WAL table: a commit
+    lands in the WAL first and becomes visible to queries only once the apply
+    job has written it to the table, and a suspended table stops applying
+    altogether. A day fetched while either was true can come back short, so
+    it is marked only if, once its chunks have landed, wal_tables() shows the
+    table not suspended and writerTxn caught up with sequencerTxn; otherwise
+    the next run fetches it again. Any failure to ask counts as not applied."""
+    q = urllib.parse.quote(
+        "SELECT suspended, writerTxn, sequencerTxn FROM wal_tables() "
+        "WHERE name = 'bus_positions'"
+    )
+    try:
+        with urllib.request.urlopen(f"{QUESTDB}/exec?query={q}", timeout=30) as r:
+            rows = json.load(r)["dataset"]
+    except Exception as exc:
+        return False, f"wal_tables() check failed: {exc}"
+    if len(rows) != 1:
+        return False, f"wal_tables() returned {len(rows)} rows for bus_positions"
+    suspended, writer_txn, sequencer_txn = rows[0]
+    if suspended:
+        return False, "bus_positions is suspended in wal_tables()"
+    if writer_txn != sequencer_txn:
+        return False, (f"bus_positions WAL not fully applied "
+                       f"(writerTxn {writer_txn}, sequencerTxn {sequencer_txn})")
+    return True, None
 
 
 def prune_outside_window(first_day):
@@ -144,9 +182,10 @@ def prune_outside_window(first_day):
     glob (bus_positions_*.parquet) reads every file in OUT, and nothing else
     ever removed a day that had slid out of the window -- 2026-09-19's
     nightly was reading 12 days (81.9M rows) against a 4GB memory_limit tuned
-    for 8. Only files whose date is before the window are touched."""
+    for 8. Only files whose date is before the window are touched, and a day's
+    .done marker goes with its chunks."""
     removed = []
-    for path in glob.glob(os.path.join(OUT, "bus_positions_*.parquet")):
+    for path in glob.glob(os.path.join(OUT, "bus_positions_*")):
         m = re.match(r"bus_positions_(\d{4}-\d{2}-\d{2})", os.path.basename(path))
         if m and date.fromisoformat(m.group(1)) < first_day:
             os.remove(path)
@@ -161,11 +200,29 @@ def main():
     select, columns = build_select(questdb_columns())
     con = duckdb.connect()
     con.execute("INSTALL httpfs; LOAD httpfs;")
-    total, gaps = 0, []
-    for day_num, i in enumerate(range(DAYS, 0, -1)):
-        if day_num > 0 and RESTART_QUESTDB_BETWEEN_DAYS:
-            restart_questdb()
+    total, gaps, fetched = 0, [], 0
+    for i in range(DAYS, 0, -1):
         day = date.today() - timedelta(days=i)
+        # A UTC day is fetched once. The ingestor's ILP lines carry no
+        # timestamp, so QuestDB stamps each row on arrival and nothing can be
+        # stamped into a day after it ends -- and the newest day pulled here is
+        # always yesterday (date.today() is UTC on this host). Re-pulling the
+        # whole window every night rewrote every day but the newest from rows
+        # that could not have changed, at a questdb restart apiece. The marker
+        # is written only once every chunk of the day has landed, the day had
+        # rows, and QuestDB had applied every write it accepted (wal_applied()).
+        # A run that dies mid-day, an empty day (feed down, or the partition
+        # already gone) and a lagging or suspended table all leave no marker,
+        # so the next run fetches that day again. To force a re-pull, delete
+        # the day's .done; deleting its chunks without it means the day is
+        # never fetched again.
+        done = os.path.join(OUT, f"bus_positions_{day.isoformat()}.done")
+        if os.path.exists(done):
+            print(f"{day} -> already extracted, skipped")
+            continue
+        if fetched and RESTART_QUESTDB_BETWEEN_DAYS:
+            restart_questdb()
+        fetched += 1
         # Stale whole-day file from before chunking existed -- if left in
         # place, it joins the same glob as this day's new chunk files and
         # double-counts every row.
@@ -181,18 +238,33 @@ def main():
         total += day_total
         if not chunks:
             gaps.append(day)
-            print(f"{day} -> NO DATA (ingest gap), no file written")
+            print(f"{day} -> NO DATA (ingest gap), no file written, not marked done")
         else:
             print(f"{day} -> {len(chunks)} chunk(s), {day_total:,} rows")
+            applied, why = wal_applied()
+            if applied:
+                open(done, "w").close()
+            else:
+                print(f"{day} -> not marked done, the next run fetches it again: {why}")
     con.close()
     if gaps:
         print(f"warning: {len(gaps)} day(s) with no data: "
               + ", ".join(f"{d} ({d:%a})" for d in gaps))
-    print(f"total {total:,} rows in {OUT}")
-    assert total > 0, "extract produced no rows -- is QuestDB reachable?"
+    print(f"total {total:,} rows from {fetched} day(s) fetched into {OUT}")
+    # The window, not this run: a night whose only day to fetch came back empty
+    # (or that found every day already marked) still has the days before it.
+    # An unreachable QuestDB has already raised by here, in questdb_columns()
+    # or fetch().
+    first_day = date.today() - timedelta(days=DAYS)
+    in_window = [
+        p for p in glob.glob(os.path.join(OUT, "bus_positions_*.parquet"))
+        if (m := re.match(r"bus_positions_(\d{4}-\d{2}-\d{2})", os.path.basename(p)))
+        and date.fromisoformat(m.group(1)) >= first_day
+    ]
+    assert in_window, f"no parquet in {OUT} for any day from {first_day} on -- nothing to build"
     # Only after a successful extract: a failed or empty run must never be the
     # thing that deletes the last good data.
-    pruned = prune_outside_window(date.today() - timedelta(days=DAYS))
+    pruned = prune_outside_window(first_day)
     if pruned:
         print(f"pruned {len(pruned)} file(s) outside the {DAYS}-day window "
               f"(SATA is the archive, not the SSD): {pruned[0]} .. {pruned[-1]}")

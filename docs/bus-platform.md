@@ -51,7 +51,7 @@ layers, each doing exactly one job:
   logic. `staging/bods/stg_bods__vehicle_pings` drops physically impossible
   rows and derives local-time bands; `staging/naptan/stg_naptan__stops`
   decides once what counts as a bus stop.
-- **`models/intermediate/`** — the actual work, four models:
+- **`models/intermediate/`** — the actual work, five models:
     - `int_pings_segmented_to_journeys` — cuts each vehicle's endless ping
       stream into individual journeys, breaking on 120 km/h speed jumps (a
       bus_id collision, since a real bus can't do that) and on layovers
@@ -62,13 +62,20 @@ layers, each doing exactly one job:
       below).
     - `int_pings_measured_to_journey_end` — the ETA model's training set:
       for every ping, how far and how long is left in its journey.
+    - `int_eta_daily_stats` — the training set reduced to one row of
+      sufficient statistics per cell per day, kept for `history_days` (8)
+      however long the pings themselves are kept (ADR-0010).
+    - `int_journey_delays` — one row per journey `line_punctuality` can
+      use, kept the same way.
 
   `int_pings_segmented_to_journeys` is materialized as an **incremental
   table**, not a view: the downstream models scan the journeys table, and
   recomputing window functions over the full retention window every run would
   dominate the build. Each run reprocesses only the trailing ~2 days;
-  `FULL_REFRESH=1` forces a from-scratch rebuild (see
-  [Operations](operations.md)). Stop matching and stop sequences are no longer
+  `FULL_REFRESH=1` forces it to rebuild from `data/` (see
+  [Operations](operations.md)). The two history models are incremental
+  too, and a plain `FULL_REFRESH=1` leaves them alone: only a replay
+  rebuilds them. Stop matching and stop sequences are no longer
   built here: ADR-0008 replaced them with the published GTFS timetable, read by
   the API from `gtfs.duckdb` (`contracts/gtfs-timetable.odcs.yaml`).
 - **`models/marts/`** — three tables, frozen by `contracts/bus-marts.odcs.yaml`,
@@ -108,9 +115,11 @@ coverage. Result: ~6.1M matches in about 20 seconds, median match distance
 ## The ETA model
 
 One ordinary-least-squares regression per `(operator, line, direction,
-day_type, hour_band)` grain, fitted directly in SQL with DuckDB's
-`regr_slope` / `regr_intercept` / `regr_r2` aggregates — no Python, no
-serialized model artifact, no training/serving skew:
+day_type, hour_band)` grain, fitted in SQL — no Python, no serialized model
+artifact, no training/serving skew. DuckDB's `regr_*` aggregates reduce each
+day's pings to six sufficient statistics per cell (`int_eta_daily_stats`),
+and `eta_models` pools eight days of them into the same fit the raw pings
+would give, to rounding (ADR-0010):
 
 ```
 remaining_secs = intercept_s + slope_s_per_km × remaining_km
@@ -142,8 +151,8 @@ in full:
 ('*',      '*',  '*',       '*',      '*')         always present
 ```
 
-Every fallback is refitted directly from the underlying pings at that
-width, never averaged from finer rows — averaging slopes would weight a
+Every fallback is refitted at that width from the pooled statistics,
+never averaged from finer rows — averaging slopes would weight a
 300-observation grain the same as a 300,000-observation one. A grain
 publishes only with ≥200 observations, a positive slope, and an implied
 speed between 3–90 km/h; a grain that fails the guard is simply omitted so

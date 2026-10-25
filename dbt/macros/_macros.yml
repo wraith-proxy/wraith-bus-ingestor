@@ -97,10 +97,21 @@ macros:
 
   - name: retention_days
     description: >
-      Single source of truth for how many days of history the incremental
-      models (int_pings_segmented_to_journeys, int_pings_matched_to_stops)
-      keep, and therefore the window the ETA regression trains on. Reads the
+      Single source of truth for how many days of raw pings dbt keeps: the
+      window int_pings_segmented_to_journeys' post-hook prunes to. Reads the
       `extract_days` var in dbt_project.yml -- change it there, not in the
       models. Keep it in sync with RETENTION_DAYS in .env: no point dbt
-      accumulating more history than QuestDB itself still has hot on the SSD.
-      Takes no arguments.
+      accumulating more raw history than QuestDB itself still has hot on the
+      SSD. Since ADR-0010 it is no longer the window the ETA regression trains
+      on -- see history_days. Takes no arguments.
+
+  - name: history_days
+    description: >
+      How many days the two history models (int_eta_daily_stats,
+      int_journey_delays) keep behind their newest date, and therefore the
+      window eta_models and line_punctuality are computed over. Reads the
+      `history_days` var in dbt_project.yml -- change it there, not in the
+      models. Deliberately independent of retention_days: those two tables
+      hold one row per cell or journey per day where the raw pings are ~13M
+      rows a day, so they outlive the raw window, and QuestDB's hot window on
+      the SSD, on purpose (ADR-0010). Takes no arguments.

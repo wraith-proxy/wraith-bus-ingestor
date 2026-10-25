@@ -16,8 +16,9 @@ sudo systemctl list-timers wraith-bus-build.timer
 journalctl -u wraith-bus-build.service
 ```
 
-A run does four things in order: extract the last `EXTRACT_DAYS` (default
-22) of `bus_positions` out of QuestDB into `data/*.parquet`, `dbt run`
+A run does four things in order: extract each of the last `EXTRACT_DAYS`
+(default 8) of `bus_positions` that has no `data/bus_positions_<day>.done`
+marker yet out of QuestDB into `data/*.parquet`, `dbt run`
 every model into a scratch warehouse, `dbt test` the result, and — only if
 the tests pass — publish the three marts into `wraith_bus_ingestor.duckdb`, the file
 the API reads. A failed test run leaves the previous night's marts serving
@@ -105,23 +106,42 @@ cost a 20–30 minute rebuild. The file now survives between runs by
 default; a normal night reprocesses only the trailing ~2 days for that
 model.
 
-### Forcing a from-scratch rebuild: `FULL_REFRESH=1`
+Since ADR-0010 the file is also the only place the ETA and punctuality
+history lives: `int_eta_daily_stats` and `int_journey_delays` keep daily
+summaries for `history_days` (8) however long the raw pings are kept. It is
+not backed up. If it is lost, the next run rebuilds the history from the days
+still in `data/` and the rest regrows a night at a time (the fallback rungs
+keep ETAs sane meanwhile), or a replay from the SATA archive rebuilds it
+(below).
+
+### Forcing a full rebuild: `FULL_REFRESH=1`
 
 ```bash
 cd dbt
 FULL_REFRESH=1 ./build.sh
 ```
 
-Wipes `wraith_bus_ingestor_build.duckdb` and passes `--full-refresh` to `dbt run`,
-forcing both incremental models to rebuild from nothing. Use this after a
-schema change to either model, or if incremental drift is suspected — not
-routinely, since it's the slow path the persistence above exists to avoid.
+Passes `--full-refresh` to `dbt run`, forcing `int_pings_segmented_to_journeys`
+to rebuild from the parquet in `data/`. Use this after a schema change to that
+model, or if incremental drift is suspected — not routinely, since it's the
+slow path the persistence above exists to avoid. Since ADR-0010 it no longer
+deletes `wraith_bus_ingestor_build.duckdb`, and it leaves the two history
+models, `int_eta_daily_stats` and `int_journey_delays`, alone: they keep
+days `data/` may no longer hold, so they set
+`full_refresh=var('replay', false)`, which dbt puts ahead of the flag. Only
+a replay (below) rebuilds them. To rebuild one of them on purpose without a
+replay, drop its table by hand; the next run rebuilds it from the days
+`int_pings_segmented_to_journeys` still holds, and anything older is gone. A
+full refresh also no longer shrinks the file: dbt builds the new segmentation
+table beside the old one, and DuckDB does not shrink a file on `DROP`
+(ADR-0010 has the one-off compaction).
 
 Other flags:
 
 ```bash
 SKIP_EXTRACT=1 ./build.sh   # reuse the parquet already in data/, skip the QuestDB pull
 REPLAY=1 ./build.sh         # disable the incremental models' retention post-hooks
+                            # and rebuild the two history models from data/
                             # (set by ops/incident.py — see below)
 ```
 
@@ -134,7 +154,9 @@ the newest two, about 27.5 million and 16.4 million rows (it was 40.9 and 27.5
 million before 2026-09-20, five dates and four). Two consequences to know. Late
 data for a date older than that is not re-segmented nightly: when it is suspected
 (a backfill, or a restored day) run `FULL_REFRESH=1 ./build.sh` as above, the
-slow path that recomputes every date in the window. And the rewrite reaches one
+slow path that recomputes every date in the window. Since ADR-0010 that reaches
+segmentation only: the two history tables keep what they wrote, and only a
+replay (`ops/incident.py`, below) rebuilds them. And the rewrite reaches one
 date further back than "yesterday" on purpose: in British Summer Time a 03:00 run
 sees data only about an hour past the end of the previous local date, so that
 date is rewritten again the next night with a full day behind it (ADR-0009
@@ -312,14 +334,22 @@ nothing else changed. Whether to keep the whole-GB box is an open decision
 ### GOTCHA: dbt reads every parquet file in `dbt/data/`, so the SSD must hold exactly the window
 
 `stg_bods__vehicle_pings` globs `data/bus_positions_*.parquet` with no date
-filter. `extract.py` re-extracts the last `EXTRACT_DAYS` (8) days, but until
-2026-09-19 nothing ever deleted a day that had slid out of the window, so
-the 03:00 build that night read 12 days (81.9M rows) instead of 8. The SSD
-holds the 8-day window and nothing older; **SATA is the archive** ("glacier"),
-not a second copy of the working set. `extract.py` now prunes parquet older
-than the window, but only after a successful extract, so a failed run can
-never be the thing that deletes the last good data. The parquet is derived
-data and is regenerable from QuestDB, so it is pruned rather than archived.
+filter. `extract.py` keeps the last `EXTRACT_DAYS` (8) days, fetching each
+day once (a `data/bus_positions_<day>.done` marker records a complete day),
+but until 2026-09-19 nothing ever deleted a day that had slid out of the
+window, so the 03:00 build that night read 12 days (81.9M rows) instead of
+8. The SSD holds the 8-day window and nothing older; **SATA is the archive**
+("glacier"), not a second copy of the working set. `extract.py` now prunes
+parquet and `.done` markers older than the window, but only after a
+successful extract, so a failed run can never be the thing that deletes the
+last good data. The parquet is derived data and is regenerable from QuestDB,
+so it is pruned rather than archived.
+
+If you delete a day's parquet by hand, delete its `.done` marker too.
+`extract.py` skips every day that has a marker, so a day whose parquet is gone
+but whose marker is left stays missing from every build, with no warning,
+until it slides out of the window. Deleting only the marker makes the next
+extract fetch the day again.
 
 ## Reviewing alias proposals
 
@@ -490,7 +520,10 @@ Two details in there matter more than they look:
   That whole-day filename predates the 4-hour chunking but still matches
   the glob the chunks are read back through, so one left behind by an older
   run silently double-counts the day. `extract.py`'s own `main()` does the
-  same thing for the same reason.
+  same thing for the same reason. It also deletes the day's `.done` marker
+  before re-fetching, so the nightly never skips a day on the strength of a
+  marker written for the old copy: a day still inside the window is fetched
+  and marked again by the next nightly.
 - Replay leans on `bus_positions`' `DEDUP UPSERT KEYS(bus_id, timestamp)`.
   Replaying a day that was only *partially* lost re-inserts rows that are
   already there; without dedup those land as duplicates instead of no-ops.
@@ -498,10 +531,10 @@ Two details in there matter more than they look:
 ### What `REPLAY=1` does to retention
 
 `incident.py` always sets `REPLAY=1`, which makes `build.sh` pass
-`--vars '{replay: true}'`. The incremental model
-(`int_pings_segmented_to_journeys`)
-collapses its retention `post_hook` to an empty list when that var is
-true.
+`--vars '{replay: true}'`. The three incremental models
+(`int_pings_segmented_to_journeys`, `int_eta_daily_stats`,
+`int_journey_delays`) collapse their retention `post_hook` to an empty list
+when that var is true.
 
 Without it, a replay quietly undoes itself. Those hooks prune each model to
 `max(journey_local_date)` minus the retention window, and `max` is still
@@ -509,6 +542,14 @@ today — so replaying days deliberately *older* than the window rebuilds
 exactly the rows the post-hook then deletes, in the same run, with every
 step reporting success. The var applies to that one run only; the next
 nightly prunes as normal.
+
+Since ADR-0010 the var also switches on the two history models' own
+`full_refresh` (`full_refresh=var('replay', false)`), which a plain
+`FULL_REFRESH=1` cannot. So a replay rebuilds `int_eta_daily_stats` and
+`int_journey_delays`, and `eta_models` and `line_punctuality` with them, from
+whatever is in `data/`, the same way it rebuilds segmentation. Afterwards the
+history holds only the days `data/` held for that run; any older day it had
+before is gone from it.
 
 ### The day you cannot get back
 
