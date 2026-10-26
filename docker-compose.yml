@@ -90,7 +90,13 @@ services:
   osrm:
     # Pinned: the routing graph in osrm_data/ is only readable by the OSRM
     # version that built it. Bump this and rerun osrm_data/build.sh together.
-    image: ghcr.io/project-osrm/osrm-backend:v26.10.0-debian
+    image: osrm-backend-patched:latest
+    build:
+      context: ../_patch
+      dockerfile: apt.Dockerfile
+      args:
+        BASE: ghcr.io/project-osrm/osrm-backend:v26.10.0-debian
+        RUN_USER: root
     container_name: ${OSRM_CONTAINER}
     restart: unless-stopped
     # Measured 2026-09-15: the 3g cap set here initially left ~0 headroom --
