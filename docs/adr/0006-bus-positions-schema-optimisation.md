@@ -96,7 +96,7 @@ property, so dropping it is not a contract break.
 
 The backfill needs the 44GB original and the new table at once, which the SSD
 had no room for, so the whole `questdb_data` directory was copied to
-`/mnt/archive` (SATA) and QuestDB ran from there for the migration. The whole
+`/mnt/<archive>` (SATA) and QuestDB ran from there for the migration. The whole
 data root moves, not one table: QuestDB's backup guidance offers no
 supported way to move a single table between instances, and `ATTACH
 PARTITION` between tables or instances is unsupported. The copy needed `sudo`

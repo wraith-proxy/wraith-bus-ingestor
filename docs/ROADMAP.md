@@ -66,7 +66,7 @@ so recreating containers needs an `nginx -s reload` or `/tiles/` 502s.
 `RETENTION_DAYS` cut from 22 to 8 (7 days live + 1 day buffer) -- the SSD
 was holding far more hot QuestDB history than the API actually needs.
 Everything past that window still lands on `ARCHIVE_PATH` (the SATA
-mount, `/mnt/archive`) via the existing DETACH-and-copy archiver, nothing
+mount, `/mnt/<archive>`) via the existing DETACH-and-copy archiver, nothing
 is deleted. dbt's own incremental purge window used to hardcode a second,
 independent `22` in two post_hooks; both now call a single
 `retention_days()` macro that reads `extract_days` from `dbt_project.yml`
@@ -179,7 +179,7 @@ system assumed BODS plus a live QuestDB table WAS the history:
   down 82+ days or `RETENTION_DAYS` raised without noticing the table TTL
   existed). Archiver is now the sole retention mechanism.
 - `ops/incident.py`: `restore <day>` (ATTACH a day back from
-  `/mnt/archive`, idempotent; Parquet-based since ADR-0007) and `replay <start> <end>` (restore-if-needed
+  `/mnt/<archive>`, idempotent; Parquet-based since ADR-0007) and `replay <start> <end>` (restore-if-needed
   + re-extract via `extract.py`'s own `fetch()` + `SKIP_EXTRACT=1
   FULL_REFRESH=1 build.sh`), one script per the "not two scripts a human
   has to sequence by hand" requirement. `restore` proven against a real
@@ -461,7 +461,7 @@ pings, and the 87 models behind them, are deleted (89 of 97 models; 8 remain).
 `shapes.txt` is skipped: OSRM already produces route geometry.
 
 **State:** built, tested, deployed. `backend/gtfs.py` reads
-`/mnt/archive/wraith-bus-ingestor-gtfs/gtfs.duckdb` (mounted read-only at `/gtfs`),
+`/mnt/<archive>/wraith-bus-ingestor-gtfs/gtfs.duckdb` (mounted read-only at `/gtfs`),
 per query, with nothing loaded into memory; `backend/tiebreak.py` chooses between
 patterns that share endpoints (a whole-journey trail distance, 3 m lead, prior
 fallback flagged unresolved). Stop positions come from NaPTAN, which covers London,

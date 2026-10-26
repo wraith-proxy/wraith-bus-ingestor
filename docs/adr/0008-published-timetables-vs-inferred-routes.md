@@ -401,7 +401,7 @@ file the project was never going to read from.
 
 ### Storage location and the cgroup page-cache GOTCHA
 
-The GTFS database lives on `/mnt/archive` (the SATA archive: 916G total,
+The GTFS database lives on `/mnt/<archive>` (the SATA archive: 916G total,
 844G free at measurement time; the root SSD has 218G total, 76G free and is
 not where a growing archive belongs). `ghost-backend` must open it
 read-only and query it -- it must **not** be loaded into Python the way the
