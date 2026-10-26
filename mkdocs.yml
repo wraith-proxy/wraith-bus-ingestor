@@ -28,6 +28,7 @@ nav:
       - "0002 - line_stops final assembly": adr/0002-line-stops-final-assembly.md
       - "0003 - replay verified by construction": adr/0003-replay-verified-by-construction.md
       - "0004 - api container has no deploy automation": adr/0004-api-container-has-no-deploy-automation.md
+      - "0010 - eta from daily statistics & 3-day hot window": adr/0010-eta-from-daily-statistics-and-3-day-hot-window.md
   - Python API: api.md
   - dbt Docs: dbt/index.html
   - Learn dbt:

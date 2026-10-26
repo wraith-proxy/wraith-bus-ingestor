@@ -8,8 +8,11 @@ models:
 
       There is no model artefact to ship and no Python at inference time -- the
       coefficients ARE the table, and Flask predicts with one multiply and one
-      add. Eleven grains are emitted, each refitted from the underlying pings
-      rather than averaged from the finer rows: five operator-specific grains
+      add. Eleven grains are emitted, each refitted at its own width rather
+      than averaged from the finer rows -- pooled from the per-day sufficient
+      statistics in int_eta_daily_stats over the last history_days() days,
+      which gives the line a fit over the raw pings would, to rounding
+      (ADR-0010): five operator-specific grains
       (operator joined the key 2026-09-12, since a line number alone is not a
       route) fall back to the original six line-only
       grains, from (operator, line, direction, band) all the way down to
@@ -56,9 +59,9 @@ models:
           the API walks its fallback chain.
           LIMITATION: bank holidays run a Sunday-ish service but are filed here
           as 'weekday'. Deliberate -- a holiday calendar is a whole extra source
-          to maintain, and the eight affected days a year are diluted across
-          three weeks of training data. An ETA on Easter Monday will be a little
-          pessimistic.
+          to maintain, and a holiday is one day among the eight
+          (history_days) the model is fitted over. An ETA on Easter Monday will
+          be a little pessimistic.
         tests:
           - not_null
           - accepted_values:
@@ -137,15 +140,9 @@ models:
       into the RAG colours, using the thresholds in backend/app.py -- this mart
       reports the distribution and does not decide what counts as late.
 
-      EXPECT ZERO ROWS TODAY, AND THAT IS CORRECT. dest_aimed_arr only began
-      arriving in the feed on 2026-09-12, minutes before the extract window
-      closed, and the seven extracted days precede it. Worse, the moment
-      journey_ref switches from NULL to a value it triggers a journey break, so
-      the few pings that do carry a schedule sit in freshly-started journeys too
-      short to survive the plausibility filters. Both effects disappear on their
-      own once a full post-patch day has been extracted. The model is written to
-      build and return zero rows rather than error. If it is still empty after a
-      week of post-patch data, the problem is in the ingestor, not here.
+      Reads int_journey_delays (ADR-0010): one row per usable journey, kept
+      for history_days() days, so the window is the history window rather
+      than the raw-ping window.
 
       Caveat for when the numbers do appear: "actual arrival" is the last moving
       ping of the journey, which is where the bus stopped rather than

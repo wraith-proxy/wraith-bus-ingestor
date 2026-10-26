@@ -66,7 +66,7 @@ never loads its raw data into a table first. The "source" is literally a file in
 
 ## The family tree
 
-This project has 8 models. Here is the whole map (dbt calls it the **DAG**, a
+This project has 10 models. Here is the whole map (dbt calls it the **DAG**, a
 "directed acyclic graph", which just means arrows that never loop back):
 
 ```mermaid
@@ -77,8 +77,11 @@ flowchart LR
     I1 --> I2[int_journeys_shaped_and_directed]
     I1 --> I3[int_pings_measured_to_journey_end]
     I2 --> I3
-    I2 --> M2[line_punctuality]
-    I3 --> M3[eta_models]
+    I2 --> I4[int_eta_daily_stats]
+    I3 --> I4
+    I2 --> I5[int_journey_delays]
+    I5 --> M2[line_punctuality]
+    I4 --> M3[eta_models]
     S2 --> M1[localities]
 ```
 

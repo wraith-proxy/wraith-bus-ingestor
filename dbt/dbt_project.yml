@@ -6,16 +6,29 @@ config-version: 2
 # Flask later opens READ-ONLY. The most expensive intermediate model
 # (int_pings_segmented_to_journeys) is incremental -- see its file header --
 # so the scratch warehouse persists across runs on purpose; a normal nightly
-# run only reprocesses the last couple of days for it. Everything else here is
-# still cheap enough to rebuild from scratch every time, and does.
+# run only reprocesses the last couple of days for it. The two history models
+# (int_eta_daily_stats, int_journey_delays) are incremental too, and a plain
+# FULL_REFRESH=1 keeps them: they are the only copy of anything older than
+# the extract window, so only an ops/incident.py replay rebuilds them, from
+# whatever is in data/ (ADR-0010). Everything else here is still cheap enough
+# to rebuild from scratch every time, and does.
 profile: wraith_bus_ingestor
 
-# Single source of truth for how much history the incremental models keep --
-# see macros/retention_days.sql. Matches RETENTION_DAYS in .env (7 days live
-# on the SSD + 1 day buffer): no point accumulating more dbt-side history
-# than QuestDB itself still has hot.
+# Single source of truth for how many days of raw pings the incremental
+# segmentation model keeps -- see macros/retention_days.sql. 4 so segmentation's
+# carry-in (it reads >= max-2 local days) is fully present in GMT as well as BST.
+# QuestDB keeps only 3 UTC days (RETENTION_DAYS in .env), so the 4th day comes
+# from parquet already on disk (the .done-marked chunks), never from QuestDB.
 vars:
-  extract_days: 8
+  extract_days: 4
+  # How many days the two history models (int_eta_daily_stats,
+  # int_journey_delays) keep behind their newest date, and so the window
+  # eta_models and line_punctuality are computed over -- see
+  # macros/history_days.sql. Deliberately not extract_days: those tables hold
+  # small per-day summaries that outlive the raw pings behind them, so the ETA
+  # fit and the punctuality figures can remember longer than the SSD keeps raw
+  # data. 8 is the same window eta_models trained on before ADR-0010.
+  history_days: 8
 
 model-paths: ["models"]
 macro-paths: ["macros"]

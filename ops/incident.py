@@ -59,7 +59,8 @@ QUESTDB = os.environ.get("QUESTDB_HTTP", "http://localhost:9001")
 QUESTDB_CONTAINER = os.environ.get("QUESTDB_CONTAINER", "questdb")
 TABLE = "bus_positions"
 ARCHIVE_ROOT = os.environ.get("ARCHIVE_PATH", "/mnt/archive/wraith-bus-ingestor-archive")
-RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "8"))
+# QuestDB keeps 3 UTC days (the archiver's RETENTION_DAYS); keep in step, .env is not read here.
+RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "3"))
 
 
 def qdb_exec(query, timeout=30):
@@ -163,6 +164,14 @@ def extract_day(day_obj):
     stale = os.path.join(extract.OUT, f"bus_positions_{day_obj.isoformat()}.parquet")
     if os.path.exists(stale):
         os.remove(stale)
+    # The day's .done marker goes before the re-fetch, so a re-fetch that dies
+    # midway leaves the day unmarked rather than marked over half-replaced
+    # chunks. Nothing here writes it back: if the day is still in the extract
+    # window, the next nightly fetches it again and marks it by its own rule
+    # (rows, WAL applied).
+    done = os.path.join(extract.OUT, f"bus_positions_{day_obj.isoformat()}.done")
+    if os.path.exists(done):
+        os.remove(done)
     total = 0
     for hour_start in range(0, 24, extract.CHUNK_HOURS):
         dest, n = extract.fetch(

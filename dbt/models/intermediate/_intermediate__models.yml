@@ -122,7 +122,7 @@ models:
       - name: mean_speed_kmh
         description: path_km over duration. Constrained to 1..90 km/h -- below is a parked bus with drifting GPS, above is a vehicle-ref collision the segmentation failed to split.
       - name: dest_aimed_arr_ts
-        description: Scheduled arrival, when the feed gave one. The sole input to line_punctuality and currently NULL on every surviving journey.
+        description: Scheduled arrival, when the feed gave one. The sole input to int_journey_delays, and through it line_punctuality.
 
   - name: int_pings_measured_to_journey_end
     description: >
@@ -130,8 +130,10 @@ models:
       journey, how far and how long was left to run.
 
       This is the whole modelling idea in one table. remaining_km is the
-      independent variable, remaining_secs the dependent one, and
-      eta_models is eleven GROUP BYs over it.
+      independent variable, remaining_secs the dependent one.
+      int_eta_daily_stats boils it down to six numbers per cell per date, and
+      eta_models pools those at eleven widths (ADR-0010) -- the same fit as
+      eleven GROUP BYs over this table would give.
     columns:
       - name: journey_key
         description: The journey this training row came from. With ping_seq, the primary key.
@@ -170,4 +172,113 @@ models:
         tests: [not_null]
       - name: remaining_secs
         description: Seconds from this ping to the journey's final ping. The regression target.
+        tests: [not_null]
+
+  - name: int_eta_daily_stats
+    description: >
+      The ETA regression's training set reduced to its sufficient statistics:
+      one row per (stats_date, operator, line, direction, day_type, hour_band)
+      -- eta_models' finest grain plus the date -- holding the six numbers an
+      ordinary least-squares fit of remaining_secs on remaining_km actually
+      needs: the cell's count, means, and centred sums of squares and
+      products. Those add up across days and cells exactly (the pooled, or
+      Chan, formulas in eta_models.sql), so a fit over pooled rows is the line
+      regr_slope() would draw through the raw pings.
+      tests/assert_eta_stats_match_raw_fit.sql checks that against the raw
+      pings on the dates they still cover, and checks eta_models' own pooling
+      of this table.
+
+      Why it exists (ADR-0010): one row per cell per day where the raw pings
+      are ~13M rows a day, so it keeps history_days() of evidence after the
+      pings themselves have aged out of the SSD. Incremental by stats_date: a
+      run rewrites every date from two days before the newest one the table
+      already held (the model header says why two), and the post-hook drops
+      anything more than history_days() older than the newest. A missed night
+      heals on the next run, as long as the raw window still holds its dates.
+      full_refresh follows the `replay` var: a plain FULL_REFRESH=1 keeps this
+      table, because it is the only copy of anything older than the extract
+      window, and only an ops/incident.py replay rebuilds it, from whatever is
+      in data/.
+    columns:
+      - name: stats_date
+        description: >
+          Europe/London local date of the journey's END, for every training
+          ping of that journey: a journey across midnight belongs whole to the
+          later date. The incremental key -- see the model description for
+          which dates a run rewrites and which the post-hook drops.
+        tests: [not_null]
+      - name: operator
+        description: National Operator Code, as int_pings_measured_to_journey_end has it. NULL is its own group; eta_models' null guards decide which rungs may use it.
+      - name: line
+        description: Service number, one of the grain columns of the fitted model.
+        tests: [not_null]
+      - name: direction
+        description: As int_pings_measured_to_journey_end has it, straight from the feed's DirectionRef. NULL forms its own group, exactly as it did in the raw fit.
+      - name: day_type
+        description: The day pattern of each training PING, from local time, as in int_pings_measured_to_journey_end -- not of the journey, and not of stats_date.
+        tests: [not_null]
+      - name: hour_band
+        description: The band of each training PING, as in int_pings_measured_to_journey_end.
+        tests: [not_null]
+      - name: n_obs
+        description: Training pings in this cell on this date (regr_count). At least 1 by construction.
+        tests: [not_null]
+      - name: avg_km
+        description: Mean remaining_km of those pings (regr_avgx).
+      - name: avg_secs
+        description: Mean remaining_secs of those pings (regr_avgy).
+      - name: sxx
+        description: Sum of squared deviations of remaining_km from avg_km (regr_sxx). Centred, not a raw sum of squares -- see the model header for why.
+      - name: sxy
+        description: Sum of the products of the remaining_km and remaining_secs deviations (regr_sxy).
+      - name: syy
+        description: Sum of squared deviations of remaining_secs from avg_secs (regr_syy).
+
+  - name: int_journey_delays
+    description: >
+      One row per journey line_punctuality aggregates: how late it finished
+      against its scheduled arrival, filed under the local date it finished
+      on. The three filters on which journeys count -- a scheduled arrival, a
+      feed-tagged direction, a delay inside plus or minus two hours -- are the
+      ones line_punctuality applied to int_journeys_shaped_and_directed before
+      ADR-0010, now applied here.
+
+      Kept for history_days() by stats_date, for the same reason as
+      int_eta_daily_stats: the journeys it comes from are pruned along with
+      their pings, which only go back extract_days. Incremental exactly as
+      int_eta_daily_stats is: each run rewrites every date from two days
+      before the newest one the table already held, older dates stay as they
+      were last written, and the post-hook keeps history_days() of them. A
+      plain FULL_REFRESH=1 keeps it; an ops/incident.py replay rebuilds it
+      from data/. The model header has the rewrite arithmetic; ADR-0010 has
+      the why.
+    columns:
+      - name: stats_date
+        description: >
+          Europe/London local date of the journey's trimmed end -- the
+          ping_local_date of its last moving ping. The incremental key,
+          rewritten and pruned exactly as int_eta_daily_stats.stats_date. It
+          decides which night a row is written on, not a grain: day_type and
+          hour_band are still the journey's own, from where it started.
+        tests: [not_null]
+      - name: journey_key
+        description: Primary key, as int_journeys_shaped_and_directed.journey_key. One row per journey across every retained stats_date.
+        tests: [not_null, unique]
+      - name: line
+        description: Service number.
+        tests: [not_null]
+      - name: direction
+        description: feed_direction, never NULL here -- an untagged journey is excluded, as line_punctuality has always excluded it; see line_punctuality.direction for why.
+        tests: [not_null]
+      - name: day_type
+        description: The service pattern of the local date the journey set off on, as int_journeys_shaped_and_directed has it. One value per journey.
+        tests: [not_null]
+      - name: hour_band
+        description: The band the journey started in, from local time.
+        tests: [not_null]
+      - name: delay_s
+        description: >
+          Scheduled arrival to the journey's last moving ping, in seconds,
+          positive late. Within plus or minus 7200 by construction; beyond
+          that it is a mis-joined schedule, not a late bus.
         tests: [not_null]

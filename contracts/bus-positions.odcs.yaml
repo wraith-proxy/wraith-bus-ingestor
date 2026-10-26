@@ -12,7 +12,7 @@ apiVersion: v3.2.0
 kind: DataContract
 id: 2b7d1e64-9a03-4f18-8c52-1d7e6b4a9f30
 name: wraith_bus_ingestor_positions
-version: 3.1.0
+version: 3.2.0
 status: active
 domain: transit
 tenant: ghost-stack
@@ -25,7 +25,7 @@ description:
     retained as a time series.
   usage: >-
     Two consumers with different needs. The API reads only the newest row per
-    vehicle within a five-minute window. dbt extracts a rolling 8-day window
+    vehicle within a five-minute window. dbt extracts a rolling 4-day window
     (EXTRACT_DAYS), downsampled to one row per vehicle and line per three-minute
     bucket, grouped by (bus_id, operator, line) so that vehicles of different
     operators sharing a bus_id are never merged, and carrying recorded_at; it
@@ -270,11 +270,11 @@ slaProperties:
       Maximum age of recorded_at for a vehicle to count as live. Beyond this the
       consuming API drops the vehicle entirely rather than drawing a frozen bus.
   - property: retention
-    value: 8
+    value: 3
     unit: d
     driver: analytics
     description: >-
-      Archived, not deleted. The SSD holds an 8-day window (RETENTION_DAYS); the
+      Archived, not deleted. The SSD holds a 3-day window (RETENTION_DAYS); the
       archiver service (archiver/archive.py) exports any day older than that to
       Parquet on a separate drive (ARCHIVE_PATH, a 3.5" SATA disk at
       /mnt/archive, the "glacier"), reads the file back and checks it against

@@ -6,10 +6,11 @@ You now know every piece the real project uses. Here is how they fit together at
 ## The night shift
 
 1. **Fetch.** A Python script (`extract.py`) asks QuestDB, the database that
-   collects live bus positions all day, for the last eight days. It saves them as
-   Parquet files in `data/`. These are the **sources** from stop 3. This is the
-   slowest part: about ten of the fifteen minutes.
-2. **Build.** `dbt run`: all 8 models, in dependency order (stop 3), each as the
+   collects live bus positions all day, for each of the last four days it does
+   not already have (normally just yesterday). It saves them as Parquet files in
+   `data/`. These are the **sources** from stop 3. This used to be the slowest
+   part, about ten of the fifteen minutes, when it fetched every day every night.
+2. **Build.** `dbt run`: all 10 models, in dependency order (stop 3), each as the
    view, table or incremental table it is configured to be (stop 5). About two
    minutes.
 3. **Check.** `dbt test`: all 88 tests (stop 4). If **any** fail, the build stops
@@ -83,7 +84,7 @@ Try these in the sandbox. Answers are hidden in the boxes.
     cannot publish an empty table either.
 
 ??? question "3. Predict before you run: what does `dbt ls --resource-type model --select +line_punctuality` show?"
-    `line_punctuality`, `int_journeys_shaped_and_directed`,
+    `line_punctuality`, `int_journey_delays`, `int_journeys_shaped_and_directed`,
     `int_pings_segmented_to_journeys` and `stg_bods__vehicle_pings`: the mart and
     everything upstream of it, back to the staging model. Then check with `dbt ls`.
 

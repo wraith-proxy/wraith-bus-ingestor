@@ -5,9 +5,10 @@
 #
 #   ./build.sh                  extract, build, test, publish
 #   SKIP_EXTRACT=1 ./build.sh   reuse whatever is already in data/
-#   FULL_REFRESH=1 ./build.sh   wipe the scratch warehouse and rebuild every
-#                               incremental model from scratch (schema change,
-#                               suspected drift -- not needed routinely)
+#   FULL_REFRESH=1 ./build.sh   rebuild every model from scratch (schema
+#                               change, suspected drift -- not needed
+#                               routinely), except the two history models,
+#                               which keep their days (see RUN_FLAGS below)
 #   REPLAY=1 ./build.sh         skip the incremental models' retention
 #                               post-hooks -- for ops/incident.py replay only
 #
@@ -33,7 +34,8 @@
 #     mean "full rebuild every time"
 #     anyway, which is exactly what happened until 2026-09-13 and is why
 #     fixing one stale test used to cost a 20-30 min rebuild. FULL_REFRESH=1
-#     is the deliberate escape hatch back to from-scratch.
+#     is the deliberate escape hatch back to from-scratch, and even that no
+#     longer deletes this file.
 #
 # It also runs the whole thing at low priority: DuckDB will happily take every
 # core on the box, and the API shares it.
@@ -64,7 +66,7 @@ if [[ ! -x "$UV" ]]; then
     exit 1
 fi
 : "${QUESTDB_HTTP:=http://localhost:9001}"
-: "${EXTRACT_DAYS:=8}"
+: "${EXTRACT_DAYS:=4}"
 : "${SKIP_EXTRACT:=0}"
 : "${FULL_REFRESH:=0}"
 : "${REPLAY:=0}"
@@ -104,7 +106,7 @@ started=$(date +%s)
 if [[ "$SKIP_EXTRACT" == "1" ]]; then
     echo "==> skipping extract (SKIP_EXTRACT=1)"
 else
-    echo "==> extracting ${EXTRACT_DAYS} days from ${QUESTDB_HTTP}"
+    echo "==> extracting any of the last ${EXTRACT_DAYS} days not yet in data/ (${QUESTDB_HTTP})"
     "${NICE[@]}" "$PY" extract.py
 fi
 
@@ -131,9 +133,9 @@ if [[ -f packages.yml ]]; then
 fi
 
 # $STAGED is always a fresh per-run throwaway. $BUILD is now the persistent
-# incremental warehouse and is left alone unless FULL_REFRESH=1: dbt's
-# incremental models only take their fast path when the target table already
-# exists, so deleting this every run would make "incremental" a no-op.
+# incremental warehouse and is never deleted here, FULL_REFRESH=1 included:
+# dbt's incremental models only take their fast path when the target table
+# already exists, so deleting this every run would make "incremental" a no-op.
 rm -f "$STAGED" "$STAGED.wal"
 
 # One-off migration guard (2026-09-20). int_pings_segmented_to_journeys changed
@@ -149,7 +151,7 @@ rm -f "$STAGED" "$STAGED.wal"
 # The check opens the warehouse READ-ONLY in its own short-lived process, which
 # has exited before dbt starts, so it cannot leave a lock behind. If it cannot
 # read the file (locked, corrupt) it says so and does not force: a wrong "no"
-# costs one mixed night, a wrong "yes" would wipe a good warehouse.
+# costs one mixed night, a wrong "yes" one needless from-scratch rebuild.
 if [[ "$FULL_REFRESH" != "1" && -f "$BUILD" ]]; then
     legacy=$("$PY" - "$BUILD" <<'PYEOF' || true
 import sys
@@ -174,9 +176,18 @@ PYEOF
 fi
 
 RUN_FLAGS=("${DBT_VARS[@]}")
+# FULL_REFRESH=1 used to rm $BUILD first, and must not any more (ADR-0010):
+# int_eta_daily_stats and int_journey_delays are the only copy this build has
+# of days that have aged out of data/, and deleting the file would delete them.
+# Both set full_refresh = var('replay', false), which dbt's should_full_refresh()
+# puts ahead of the --full-refresh flag. So a plain FULL_REFRESH=1 rebuilds
+# every other model from scratch while those two take their normal incremental
+# path, and only a replay (REPLAY=1, as ops/incident.py runs it) rebuilds them
+# too, from whatever days are in data/. The cost is disk: --full-refresh builds
+# the new segmentation table beside the old one before dropping it, and DuckDB
+# never hands the freed blocks back to the filesystem.
 if [[ "$FULL_REFRESH" == "1" ]]; then
-    echo "==> FULL_REFRESH=1: wiping $BUILD and forcing a from-scratch rebuild"
-    rm -f "$BUILD" "$BUILD.wal"
+    echo "==> FULL_REFRESH=1: rebuilding every model from scratch (the two history tables only if REPLAY=1)"
     RUN_FLAGS+=(--full-refresh)
 fi
 

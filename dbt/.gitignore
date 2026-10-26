@@ -1,5 +1,6 @@
 .venv/
 data/*.parquet
+data/*.done
 data/naptan_stops.csv
 wraith_bus_ingestor.duckdb*
 wraith_bus_ingestor_build.duckdb*

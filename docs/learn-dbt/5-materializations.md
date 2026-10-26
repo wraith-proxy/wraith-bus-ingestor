@@ -108,13 +108,18 @@ The first run does the whole lot. Every later run is quick. The days the table h
 dbt show --inline "select ping_local_date, count(*) as pings from {{ ref('int_pings_segmented_to_journeys') }} group by 1 order by 1"
 ```
 
-The sandbox only has a couple of days; the real warehouse keeps eight.
+The sandbox only has a couple of days; the real warehouse keeps five dates (the
+newest and the four before it, from `extract_days: 4`).
 
 !!! info "The price of speed"
     An incremental model can *drift*: if the logic changes, the old rows still
     hold the old answer. The escape hatch is `dbt run --full-refresh`, which
-    throws the table away and rebuilds it from scratch. The real nightly uses this
-    only when it has to (for example after a change to how journeys are keyed).
+    throws the table away and rebuilds it from scratch. Not always: a model can
+    set `full_refresh` in its own config, and that wins over the flag. This
+    project's two history tables set it to false (except during a replay),
+    because they keep days after the raw data behind them is deleted. The real
+    nightly uses this only when it has to (for example after a change to how
+    journeys are keyed).
 
 ## The numbers, for real
 
@@ -130,8 +135,9 @@ The whole `dbt run` is now about two minutes. The full story is in
 !!! tip "Opinion"
     - **Views for staging. Tables for marts.** Set it once, in `dbt_project.yml`.
     - **Incremental is a last resort.** Use it only when a full rebuild is too slow,
-      because it is harder to get right and it can drift. This project has exactly
-      one, and it earned it.
+      because it is harder to get right and it can drift. This project has three:
+      segmentation, which earned it on speed, and two small history tables, which
+      earned it by keeping a daily summary after the raw pings are deleted.
     - **Measure first.** The build got fast because someone timed every model and
       found one of them was 85% of the cost.
 

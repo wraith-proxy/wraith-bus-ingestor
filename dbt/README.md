@@ -33,7 +33,7 @@ for why this isn't dbt v2 + DuckDB 2.0 -- tried, rolled back the same day.
 cd dbt
 ./build.sh                    # extract, build, test, validate contracts, publish. This is the one to use.
 SKIP_EXTRACT=1 ./build.sh     # rebuild from the parquet already in data/
-FULL_REFRESH=1 ./build.sh     # wipe the incremental warehouse and rebuild everything from scratch
+FULL_REFRESH=1 ./build.sh     # dbt run --full-refresh: rebuild segmentation from data/, keep the two history tables
 ```
 
 Or the steps by hand:
@@ -41,10 +41,12 @@ Or the steps by hand:
 ```bash
 cd dbt
 
-# 1. pull the last 8 days out of QuestDB into data/*.parquet (mainland GB, several min)
+# 1. pull the last 4 days out of QuestDB into data/*.parquet (mainland GB, several min)
 # Match dbt_project.yml's `extract_days` var (see macros/retention_days.sql)
 # and .env's RETENTION_DAYS -- all three should agree on the same window.
-QUESTDB_HTTP=http://localhost:9001 EXTRACT_DAYS=8 ../.venv/bin/python extract.py
+# A day that already has a data/bus_positions_<day>.done marker is skipped;
+# delete the marker to pull that day again.
+QUESTDB_HTTP=http://localhost:9001 EXTRACT_DAYS=4 ../.venv/bin/python extract.py
 
 # 2. build every model (into the SCRATCH file -- see "Two files", below)
 ../.venv/bin/dbt run --profiles-dir .
@@ -81,13 +83,19 @@ materialised intermediates are ~95% of the scratch warehouse, and the API
 reads none of them. DuckDB does not shrink a file on `DROP`, so copying into a
 fresh database is what actually reclaims the space.
 
-**The scratch warehouse now persists between runs.** One of the three
-intermediate models (`int_pings_segmented_to_journeys`) is incremental,
-reprocessing only the last couple of days each run instead of the full
+**The scratch warehouse now persists between runs.** Three of the five
+intermediate models are incremental. `int_pings_segmented_to_journeys`
+reprocesses only the last couple of days each run instead of the full
 retention window -- and dbt's
 `is_incremental()` only takes that fast path when the target table already
-exists. `FULL_REFRESH=1 ./build.sh` is the deliberate escape hatch back to a
-from-scratch build, for a schema change or suspected drift.
+exists. `int_eta_daily_stats` and `int_journey_delays` keep a daily summary
+for `history_days` (8) however long the raw pings are kept, so this file is
+the only place that history lives (ADR-0010). `FULL_REFRESH=1 ./build.sh`
+passes `--full-refresh`, the escape hatch for a schema change or suspected
+drift: it rebuilds segmentation from `data/` but no longer deletes the file,
+and the two history models set `full_refresh=var('replay', false)`, so it
+leaves them alone. Only a replay (`docs/operations.md`) rebuilds them, from
+whatever is in `data/`.
 
 `build.sh` also runs everything under `nice`/`ionice`. DuckDB will take every
 core it can get; at 4 threads it drove the load average past 10 on a 6-core box
@@ -140,23 +148,15 @@ model you can read top to bottom in a minute.
 
 ### `models/intermediate/` — the actual work
 
-Four models, and this is where all the difficulty lives:
+Five models, and this is where all the difficulty lives:
 
 | model | what it does |
 |---|---|
 | `int_pings_segmented_to_journeys` | cuts each vehicle's endless ping stream into individual journeys |
-| `int_journeys_shaped_and_directed` | one row per journey; drops implausible ones; decides direction |
+| `int_journeys_shaped_and_directed` | one row per journey; drops implausible ones; takes direction from the feed |
 | `int_pings_measured_to_journey_end` | the training set: for each ping, how far and how long is left |
-
-`int_journeys_shaped_and_directed` is also where **direction** is decided, by
-one of two rules. Linear routes are split on the journey's first-to-last
-compass bearing against the line's modal bearing. Circular routes cannot be —
-a loop ends where it started, so its bearing is noise and identical loops
-would be scattered at random between the two directions — so those are split
-on the **sign of the enclosed area** (the shoelace formula), which asks "which
-way round" instead of "which way along" and always agrees between two buses
-running the same loop the same way. A line counts as circular when the median
-of `straight_km / path_km` across its journeys is below 0.35.
+| `int_eta_daily_stats` | the training set reduced to per-day sufficient statistics, kept for `history_days` |
+| `int_journey_delays` | one row per journey `line_punctuality` can use, kept for `history_days` |
 
 Intermediate models are not for the API to read. They exist so that no single
 model has to be understood all at once, and so that expensive work is done
@@ -366,6 +366,17 @@ That is the entire model. No Python, no scikit-learn, no serialised artefact, no
 training/serving skew — the coefficients *are* the mart, and inference is one
 multiply and one add inside Flask.
 
+Since ADR-0010 the nightly does not run that `GROUP BY` over the raw pings.
+`int_eta_daily_stats` runs it per day instead and keeps six numbers per cell
+(`regr_count`, `regr_avgx`, `regr_avgy`, `regr_sxx`, `regr_sxy`, `regr_syy`);
+`eta_models` pools them across days and cells with the standard pooled
+formulas. That is the same line to rounding, so the raw pings no longer have
+to be kept for as long as the fit covers. `tests/assert_eta_stats_match_raw_fit.sql`
+checks both halves every run: the newest dates of `int_eta_daily_stats`,
+pooled per line and network-wide, against `regr_*` over the raw pings, and
+`eta_models`' own per-line and network rows against an independent pooling of
+every day `int_eta_daily_stats` holds.
+
 ### Why it is fitted per (operator, line, direction, day_type, hour_band)
 
 Because pace is not a property of buses in general. The 192 outbound averages
@@ -417,8 +428,9 @@ fitted from weekday data is worse than a Sunday fitted across the whole day.
 The eleven fits are generated by a Jinja loop in `eta_models.sql` rather than
 written out eleven times — each entry lists which columns are real at that
 grain and everything else becomes the literal `'*'`. **Every fallback is
-refitted from the underlying pings at that width** — not averaged from the finer
-rows. Averaging slopes would weight a 300-observation grain the same as a
+refitted at that width**, from the pooled daily statistics, which is the same
+fit the underlying pings would give — not averaged from the finer rows.
+Averaging slopes would weight a 300-observation grain the same as a
 300,000-observation one, which is exactly backwards.
 
 A grain is published only if it has ≥ 200 observations, a positive slope, and an
@@ -458,12 +470,13 @@ dbt/
 │   ├── day_type.sql               LOCAL date -> weekday/sat/sun (FROZEN vs backend/)
 │   ├── locality_norm.sql          the search-key normalisation (FROZEN vs backend/)
 │   ├── ping_columns.sql           compile-time probe for the schedule columns
-│   └── retention_days.sql         single source of truth for the incremental window
+│   ├── retention_days.sql         how many days of raw pings dbt keeps (extract_days)
+│   └── history_days.sql           how many days the two history models keep
 ├── models/
 │   ├── staging/
 │   │   ├── bods/                  _bods__sources.yml, _bods__models.yml, stg_bods__vehicle_pings
 │   │   └── naptan/                _naptan__sources.yml, _naptan__models.yml, stg_naptan__stops
-│   ├── intermediate/              journeys, shape, training set, stop match (+ _intermediate__models.yml)
+│   ├── intermediate/              journeys, shape, training set, daily ETA stats, journey delays (+ _intermediate__models.yml)
 │   └── marts/                     the five contract tables (+ _marts__models.yml)
 └── tests/                         singular assertions (composite keys, invariants)
 ```

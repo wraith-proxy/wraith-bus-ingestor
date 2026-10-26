@@ -22,7 +22,7 @@ Project-wide settings live in `dbt_project.yml`:
 
 ```yaml
 vars:
-  extract_days: 8
+  extract_days: 4
 ```
 
 and you read them with `var()`:
@@ -34,7 +34,7 @@ dbt show --inline "select {{ var('extract_days') }} as days"
 ```text
 | days |
 | ---- |
-|    8 |
+|    4 |
 ```
 
 ## Macros: a function for SQL
