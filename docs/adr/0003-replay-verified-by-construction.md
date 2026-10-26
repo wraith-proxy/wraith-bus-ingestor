@@ -7,7 +7,7 @@
 ## Context
 
 `ops/incident.py replay <start> <end>` landed in 1.3.0 as the incident
-recovery path: restore archived days from `/mnt/archive`, re-extract them,
+recovery path: restore archived days from `/mnt/<archive>`, re-extract them,
 and rebuild the marts. It shipped untested, and 1.3.0 closed with an open
 bullet saying so — "needs a synthetic 'lost N days' scenario run end to
 end before it's trusted in a real incident."

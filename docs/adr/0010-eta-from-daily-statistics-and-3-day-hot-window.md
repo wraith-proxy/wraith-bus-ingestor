@@ -134,7 +134,7 @@ title), dbt's extract to four (`extract_days=4`).
    oneshot is `activating`), while dbt, `build.sh` or `extract.py` is running,
    and unless both history tables exist with at least nine `stats_date`s, so it
    cannot run before the seeding nightly and seed the history thin. It backs
-   the build file up to `/mnt/archive` (`rsync --bwlimit=100000`), copies the
+   the build file up to `/mnt/<archive>` (`rsync --bwlimit=100000`), copies the
    three incremental tables into a fresh DuckDB file
    (`int_pings_segmented_to_journeys` trimmed to the five dates its post-hook
    keeps at `extract_days=4`, without `shoelace_term`, and both history tables

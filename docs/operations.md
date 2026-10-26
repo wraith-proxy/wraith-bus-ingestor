@@ -85,7 +85,7 @@ Instead:
 ### The API needs two read-only mounts
 
 `ghost-backend` reads `dbt/` (the marts, at `/models`) **and** the GTFS timetable
-directory (`/mnt/archive/wraith-bus-ingestor-gtfs`, at `/gtfs`, or `$GTFS_DIR`). If the
+directory (`/mnt/<archive>/wraith-bus-ingestor-gtfs`, at `/gtfs`, or `$GTFS_DIR`). If the
 GTFS mount or file is missing the API still answers, but with no stop positions: every
 bus loses its regression ETA and delay, and `/route` returns no stops. Check with
 `docker exec ghost-backend ls /gtfs`. Deploy is unchanged from ADR-0004: `docker compose
@@ -156,7 +156,7 @@ little space, or a history table missing or under 9 `stats_date`s (a thin
 history copied is a thin history kept). Logs go to
 `ops/logs/compact-<UTC stamp>/compact.log`. A run that fails before the swap
 leaves the old file untouched; a failure after STAGE 1 leaves a stamped ~10G
-backup in `/mnt/archive/build_db_backup/` that is safe to delete.
+backup in `/mnt/<archive>/build_db_backup/` that is safe to delete.
 
 Rollback needs both the backup restored (the `rsync` line it prints) **and**
 the pre-PR2 code checked out: the backup still has `shoelace_term` and nine
@@ -451,7 +451,7 @@ without restoring anything:
 
 ```bash
 duckdb -c "SELECT line, count(*) FROM read_parquet(
-  '/mnt/archive/wraith-bus-ingestor-archive/bus_positions_parquet/*.parquet',
+  '/mnt/<archive>/wraith-bus-ingestor-archive/bus_positions_parquet/*.parquet',
   union_by_name = true) GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
 ```
 
