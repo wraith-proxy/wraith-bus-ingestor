@@ -3,7 +3,13 @@ services:
   # (www/slaycoach/bus-map/). ghost-site's nginx proxies /tiles/ to this
   # container by name over ghost-net.
   tiles:
-    image: ghcr.io/maplibre/martin
+    image: martin-patched:latest
+    build:
+      context: ../_patch
+      dockerfile: apt.Dockerfile
+      args:
+        BASE: ghcr.io/maplibre/martin
+        RUN_USER: root
     container_name: ${TILES_CONTAINER}
     restart: unless-stopped
     # Caps sized off observed docker stats (2026-09-15) plus margin, not
@@ -82,7 +88,9 @@ services:
   # Graph built once from a Great-Britain OSM extract -- see osrm_data/build.sh.
   # No host port: only the api container talks to it, over ghost-net.
   osrm:
-    image: osrm/osrm-backend
+    # Pinned: the routing graph in osrm_data/ is only readable by the OSRM
+    # version that built it. Bump this and rerun osrm_data/build.sh together.
+    image: ghcr.io/project-osrm/osrm-backend:v26.10.0-debian
     container_name: ${OSRM_CONTAINER}
     restart: unless-stopped
     # Measured 2026-09-15: the 3g cap set here initially left ~0 headroom --
@@ -169,7 +177,8 @@ services:
     # just defaulted-on). 11.6.16 predates the whole apiserver-backed
     # dashboard path -- it does not exist as a toggle to fight in this
     # version at all -- and that's what actually fixed it.
-    image: grafana/grafana:11.6.16
+    image: ghost-grafana-patched:11.6.16
+    build: ./ops/grafana-image
     container_name: ${GRAFANA_CONTAINER}
     restart: unless-stopped
     mem_limit: 512m

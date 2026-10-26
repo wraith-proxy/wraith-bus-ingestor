@@ -24,13 +24,13 @@ if [ ! -f "$PBF" ]; then
     curl -Lo "$PBF" "https://download.geofabrik.de/europe/great-britain-latest.osm.pbf"
 fi
 
-docker run --rm -v "$(pwd)":/data osrm/osrm-backend \
+docker run --rm -v "$(pwd)":/data ghcr.io/project-osrm/osrm-backend:v26.10.0-debian \
     osrm-extract -p /opt/car.lua "/data/$PBF"
 
-docker run --rm -v "$(pwd)":/data osrm/osrm-backend \
+docker run --rm -v "$(pwd)":/data ghcr.io/project-osrm/osrm-backend:v26.10.0-debian \
     osrm-partition "/data/$GRAPH"
 
-docker run --rm -v "$(pwd)":/data osrm/osrm-backend \
+docker run --rm -v "$(pwd)":/data ghcr.io/project-osrm/osrm-backend:v26.10.0-debian \
     osrm-customize "/data/$GRAPH"
 
 echo "Done. Restart the osrm service: docker compose up -d osrm"
