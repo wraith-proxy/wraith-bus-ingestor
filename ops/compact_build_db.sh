@@ -62,8 +62,15 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DB="${COMPACT_DB:-$REPO/dbt/wraith_bus_ingestor_build.duckdb}"
 NEW="$DB.compact"
-ARCHIVE="${COMPACT_ARCHIVE:-/mnt/archive/wraith-bus-ingestor-archive}"   # its marker proves the mount
-BACKUP_DIR="${COMPACT_BACKUP_DIR:-/mnt/archive/build_db_backup}"
+# An exported variable wins, then the repo .env (this script does not source it).
+envget() {
+  local v="${!1-}"
+  [[ -n "$v" ]] || v="$(sed -n "s/^$1=//p" "$REPO/.env" 2>/dev/null | tail -1 | tr -d "'\"")"
+  [[ -n "$v" ]] || { echo "$1 is not set: add it to .env or export it" >&2; return 1; }
+  printf '%s' "$v"
+}
+ARCHIVE="${COMPACT_ARCHIVE:-$(envget ARCHIVE_PATH)}" || exit 1   # its marker proves the mount
+BACKUP_DIR="${COMPACT_BACKUP_DIR:-$(envget COMPACT_BACKUP_DIR)}" || exit 1
 # The environment build.sh publishes the marts with (../.venv, duckdb per uv.lock).
 PY="${COMPACT_PY:-$REPO/.venv/bin/python}"
 UNIT="wraith-bus-build.service"

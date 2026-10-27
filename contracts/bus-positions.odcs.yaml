@@ -277,7 +277,7 @@ slaProperties:
       Archived, not deleted. The SSD holds a 3-day window (RETENTION_DAYS); the
       archiver service (archiver/archive.py) exports any day older than that to
       Parquet on a separate drive (ARCHIVE_PATH, a 3.5" SATA disk at
-      /mnt/archive, the "glacier"), reads the file back and checks it against
+      ARCHIVE_PATH, the "glacier"), reads the file back and checks it against
       QuestDB row for row, and only then drops the live partition (docs/adr/0007).
       QuestDB's own DROP-based TTL was rejected for this table because it
       destroys data outright, and no TTL is set. The archive is

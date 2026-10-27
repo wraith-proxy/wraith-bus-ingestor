@@ -11,7 +11,7 @@
 # reads are described; the file also holds the raw gtfs_* tables, which are the
 # producer's private business.
 #
-# Validate with:  contracts/validate.py --gtfs /mnt/archive/wraith-bus-ingestor-gtfs/gtfs.duckdb
+# Validate with:  contracts/validate.py --gtfs "$GTFS_DB_PATH"
 ---
 apiVersion: v3.2.0
 kind: DataContract
@@ -50,7 +50,7 @@ description:
 servers:
   - server: gtfs-served
     type: duckdb
-    database: /mnt/archive/wraith-bus-ingestor-gtfs/gtfs.duckdb
+    database: ${GTFS_DB_PATH}
     schema: main
     environment: prod
     description: >-

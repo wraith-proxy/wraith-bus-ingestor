@@ -28,13 +28,13 @@ import glob
 import os
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import hostenv  # noqa: E402
+
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-ARCHIVE = os.environ.get("ARCHIVE_PATH", "/mnt/archive/wraith-bus-ingestor-archive")
-RAW = os.path.join(ARCHIVE, "bus_positions")
-OUT = os.path.join(ARCHIVE, "bus_positions_parquet")
 US_PER_DAY = 86_400 * 1_000_000
 NOTE = (
     "Numeric-only salvage. bus_id_key/line_key are raw QuestDB symbol keys whose string maps "
@@ -89,6 +89,9 @@ def salvage_day(day_dir, dest):
 
 
 def main(days):
+    archive = hostenv.get("ARCHIVE_PATH")
+    RAW = os.path.join(archive, "bus_positions")
+    OUT = os.path.join(archive, "bus_positions_parquet")
     os.makedirs(OUT, exist_ok=True)
     days = days or sorted(d for d in os.listdir(RAW) if is_legacy(os.path.join(RAW, d)))
     done = skipped = 0
