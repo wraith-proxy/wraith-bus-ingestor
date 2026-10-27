@@ -32,8 +32,10 @@ import duckdb
 
 SOURCE_URL = 'https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/all/'
 HERE = Path(__file__).resolve().parent
-DB_PATH = Path(os.environ.get('GTFS_DB_PATH', '/mnt/archive/wraith-bus-ingestor-gtfs/gtfs.duckdb'))
-WORK = Path(os.environ.get('GTFS_WORK_DIR', '/mnt/archive/wraith-bus-ingestor-gtfs/work'))
+sys.path.insert(0, str(HERE.parent))
+import hostenv  # noqa: E402
+DB_PATH = Path(hostenv.get('GTFS_DB_PATH'))
+WORK = Path(hostenv.get('GTFS_WORK_DIR'))
 NAPTAN_CSV = os.environ.get(
     'NAPTAN_CSV', str(HERE.parent / 'dbt' / 'data' / 'naptan_stops.csv'))
 # The host reaches QuestDB's HTTP port on 9001 (the container-network default,

@@ -76,7 +76,7 @@ services:
       # Served GTFS timetable (gtfs/fetch.py, ADR-0008), read-only, directory
       # mounted for the same reason -- and so a refresh that swaps the file is
       # seen without recreating the container. The API never holds it open.
-      - ${GTFS_DIR:-/mnt/archive/wraith-bus-ingestor-gtfs}:/gtfs:ro
+      - ${GTFS_DIR:?set GTFS_DIR in .env}:/gtfs:ro
     networks:
       - ghost-net
     depends_on:

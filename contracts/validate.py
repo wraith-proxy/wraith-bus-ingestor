@@ -25,9 +25,11 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+sys.path.insert(0, ROOT)
+import hostenv  # noqa: E402
 
 DEFAULT_MARTS = os.path.join(ROOT, "dbt", "wraith_bus_ingestor.duckdb")
-DEFAULT_GTFS = os.environ.get("GTFS_DB_PATH", "/mnt/archive/wraith-bus-ingestor-gtfs/gtfs.duckdb")
+DEFAULT_GTFS = hostenv.get("GTFS_DB_PATH", required=False)
 DEFAULT_QUESTDB = os.environ.get("QUESTDB_HTTP", "http://localhost:9001")
 
 # Physical types that mean the same thing to the engines we target.
@@ -421,6 +423,8 @@ def main():
     except Exception as exc:
         print(f"\033[31mmarts unavailable:\033[0m {exc}")
     try:
+        if not args.gtfs:
+            raise RuntimeError("GTFS_DB_PATH is not set")
         engines["gtfs-served"] = DuckDBEngine(args.gtfs)
     except Exception as exc:
         print(f"\033[33mgtfs unavailable:\033[0m {str(exc).splitlines()[0][:120]}")
