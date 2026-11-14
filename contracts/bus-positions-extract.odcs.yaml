@@ -1,0 +1,232 @@
+# Open Data Contract Standard v3.2.0
+#
+# PRODUCER: dbt/extract.py (nightly, 03:00)
+# CONSUMER: dbt model stg_bods__vehicle_pings (via the `bods` source)
+#
+# The contract for the downsampled Parquet files extract.py lands from QuestDB.
+# Deliberately separate from bus-positions.odcs.yaml (the ingest contract):
+# different grain, different `timestamp` meaning, fewer columns (published_line
+# and block_ref exist only at ingest).
+---
+apiVersion: v3.2.0
+kind: DataContract
+id: 7c3f9a52-1e84-4b6d-a0c7-5d2e8f419b63
+name: wraith_bus_extract_positions
+version: 1.0.0
+status: active
+domain: transit
+tenant: ghost-stack
+tags: ['transit', 'bus', 'parquet', 'extract']
+
+description:
+  purpose: >-
+    Bus positions downsampled to one row per vehicle and line per 3-minute
+    bucket, as Parquet on local disk, for dbt to read without touching QuestDB.
+  usage: >-
+    Producer is dbt/extract.py; consumer is stg_bods__vehicle_pings. Files are
+    data/bus_positions_<day>_<HH>.parquet, one per 4-hour chunk (HH is
+    00/04/08/12/16/20; EXTRACT_CHUNK_HOURS). The window is the last 4 UTC days
+    (EXTRACT_DAYS) ending yesterday, never today. Downsampling is SAMPLE BY 3m
+    grouped by (timestamp, bus_id, operator, line); other columns are last().
+    One .done marker per day is written once every chunk landed and QuestDB had
+    applied its writes; empty chunks are dropped, so an ingest gap is a gap in
+    the files. The sources yml wording 'one per day' is imprecise: it is one
+    file per 4-hour chunk.
+  limitations: >-
+    `timestamp` is the END of the 3-minute bucket, not ingest time. recorded_at
+    is NULL in any file written before 2026-09-20, when extract.py began
+    carrying it (_bods__sources.yml:112); the schedule columns are NULL in files
+    written before 2026-09-12. published_line and block_ref are not extracted.
+
+servers:
+  - server: extract-local
+    type: local
+    format: parquet
+    path: dbt/data/bus_positions_*.parquet
+    environment: prod
+    description: >-
+      Local disk next to the dbt project. Read by dbt as
+      read_parquet('data/bus_positions_*.parquet', union_by_name=true).
+
+support:
+  - channel: ghost-stack-ops
+    tool: email
+    scope: interactive
+    url: mailto:hello@thomaspeoples.com
+
+customProperties:
+  - property: externalLocation
+    value: "read_parquet('data/bus_positions_*.parquet', union_by_name=true)"
+    description: dbt source meta.external_location (_bods__sources.yml:30-41).
+  - property: loadedAtField
+    value: '"timestamp"'
+  - property: freshnessWarnAfter
+    value: 2 days
+  - property: freshnessErrorAfter
+    value: 5 days
+  - property: producer
+    value: dbt/extract.py
+  - property: consumer
+    value: stg_bods__vehicle_pings
+
+schema:
+  - id: bus_positions_extract_obj
+    name: bus_positions
+    physicalName: bus_positions_*.parquet
+    logicalType: object
+    physicalType: table
+    description: Downsampled bus positions, one row per (timestamp, bus_id, operator, line).
+    dataGranularityDescription: One row per vehicle and line per 3-minute bucket.
+    quality:
+      - id: extract_row_count
+        type: sql
+        dimension: completeness
+        severity: error
+        description: >-
+          A near-empty glob means extraction silently produced almost nothing
+          (expect_table_row_count_to_be_between, _bods__sources.yml:141-143).
+        query: |
+          SELECT count(*) FROM {object}
+        mustBeGreaterOrEqualTo: 500000
+      - id: extract_lat_bounds
+        type: sql
+        dimension: accuracy
+        severity: warning
+        description: lat within 49.8..61.0; warn only, staging filters bad fixes (_bods__sources.yml lat test).
+        query: |
+          SELECT count(*) FROM {object} WHERE lat < 49.8 OR lat > 61.0
+        mustBe: 0
+      - id: extract_lon_bounds
+        type: sql
+        dimension: accuracy
+        severity: warning
+        description: lon within -8.7..2.0; warn only (_bods__sources.yml lon test).
+        query: |
+          SELECT count(*) FROM {object} WHERE lon < -8.7 OR lon > 2.0
+        mustBe: 0
+      - id: extract_unique_key
+        type: sql
+        dimension: uniqueness
+        severity: error
+        description: (timestamp, bus_id, operator, line) is unique (expect_compound_columns_to_be_unique).
+        query: |
+          SELECT count(*) - count(DISTINCT (timestamp, bus_id, operator, line)) FROM {object}
+        mustBe: 0
+    properties:
+      - id: ex_timestamp
+        name: timestamp
+        logicalType: date
+        physicalType: TIMESTAMP WITH TIME ZONE
+        required: true
+        description: >-
+          End of the 3-minute sample bucket, UTC (TIMESTAMPTZ on disk). NOT ingest time and not the time the position was measured: extract.py's SAMPLE BY 3m labels each bucket and this is the bucket's end (_bods__sources.yml:44). Do not use it as a freshness signal for vehicles; use recorded_at.
+      - id: ex_bus_id
+        name: bus_id
+        logicalType: string
+        physicalType: VARCHAR
+        required: true
+        description: >-
+          Operator vehicle ref. Reused across journeys and across operators, so never a key on its own; with operator it identifies one vehicle.
+      - id: ex_operator
+        name: operator
+        logicalType: string
+        physicalType: VARCHAR
+        description: >-
+          OperatorRef (National Operator Code). Part of the bucket identity since 2026-09-20 so vehicles of different operators sharing a bus_id and line in one bucket stay separate rows. May be NULL.
+      - id: ex_line
+        name: line
+        logicalType: string
+        physicalType: VARCHAR
+        description: >-
+          Public-facing service number, e.g. '88'. Not unique across operators.
+      - id: ex_lat
+        name: lat
+        logicalType: number
+        physicalType: DOUBLE
+        description: >-
+          WGS84 latitude, last value in the bucket. Occasionally 0 or out of country when GPS has not fixed.
+      - id: ex_lon
+        name: lon
+        logicalType: number
+        physicalType: DOUBLE
+        description: >-
+          WGS84 longitude, same caveats as lat.
+      - id: ex_bearing
+        name: bearing
+        logicalType: number
+        physicalType: DOUBLE
+        description: >-
+          Degrees clockwise from north, last value in the bucket. 0.0 is ambiguous between north and unknown.
+      - id: ex_direction
+        name: direction
+        logicalType: string
+        physicalType: VARCHAR
+        description: >-
+          DirectionRef as published (last value in the bucket). NULL in files written before 2026-09-12.
+      - id: ex_journey_ref
+        name: journey_ref
+        logicalType: string
+        physicalType: VARCHAR
+        description: >-
+          DatedVehicleJourneyRef (last value in the bucket). NULL in files written before 2026-09-12.
+      - id: ex_origin_ref
+        name: origin_ref
+        logicalType: string
+        physicalType: VARCHAR
+        description: >-
+          Origin stop code, normally a NaPTAN ATCO code but not guaranteed to be one. NULL before 2026-09-12.
+      - id: ex_origin_name
+        name: origin_name
+        logicalType: string
+        physicalType: VARCHAR
+        description: >-
+          Origin stop name as published (underscores for spaces). NULL before 2026-09-12.
+      - id: ex_dest_ref
+        name: dest_ref
+        logicalType: string
+        physicalType: VARCHAR
+        description: >-
+          Destination stop code. NULL before 2026-09-12.
+      - id: ex_dest_name
+        name: dest_name
+        logicalType: string
+        physicalType: VARCHAR
+        description: >-
+          Destination stop name as published. NULL before 2026-09-12.
+      - id: ex_origin_aimed_dep
+        name: origin_aimed_dep
+        logicalType: integer
+        physicalType: BIGINT
+        description: >-
+          SIRI aimed departure, epoch MILLIS. NULL before 2026-09-12 and for operators that omit it. May belong to an already completed journey.
+      - id: ex_dest_aimed_arr
+        name: dest_aimed_arr
+        logicalType: integer
+        physicalType: BIGINT
+        description: >-
+          SIRI aimed arrival, epoch MILLIS. NULL before 2026-09-12 and for operators that omit it.
+      - id: ex_recorded_at
+        name: recorded_at
+        logicalType: integer
+        physicalType: BIGINT
+        description: >-
+          The feed's own per-record observation time, epoch MILLIS (last value in the bucket). Often stale: a dead record keeps its original RecordedAtTime, so it is only a sort tiebreak in int_pings_segmented_to_journeys. NULL in any file written before extract.py carried it, 2026-09-20 (_bods__sources.yml:112).
+
+slaProperties:
+  - property: frequency
+    value: 1
+    unit: d
+    element: bus_positions.timestamp
+    driver: operational
+    description: >-
+      Landing time. extract.py runs nightly and lands yesterday's day. Freshness
+      is judged on the extract window (warn 2 days, error 5 days on timestamp),
+      not on the 10-minute ingest SLA of bus-positions.odcs.yaml.
+  - property: latency
+    value: 30
+    unit: h
+    element: bus_positions.timestamp
+    driver: operational
+    description: >-
+      The newest row is always at least ~24h old on a healthy run because the
+      window ends yesterday; 30h allows for the 03:00 run. Not the ingest SLA.
