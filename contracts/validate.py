@@ -309,59 +309,58 @@ _BASE_TYPE_HOLDS = {
     "Long": {"integer"},
     "Integer": {"integer"},
     "Boolean": {"boolean"},
+    "Timestamp": {"date"},
+    "GeoPoint": {"object"},
 }
 
 
 def _check_through(link, by_alias, unvalidated, res):
     """A link's `through` join table must resolve: known contract alias, an object
-    that exists in it, and every named column present. Returns the failure count.
+    that exists in it, and every named column present.
     A contract not validated this run cannot be judged, which is not drift."""
     through = link.get("through")
     if not through or through["contract"] in unvalidated:
-        return 0
+        return
     name = link["apiName"]
     schemas = by_alias.get(through["contract"])
     if schemas is None:
         res.fail(name, f"through references unknown contract alias {through['contract']!r}")
-        return 1
+        return
     cols = schemas.get(through["object"])
     if cols is None:
         res.fail(name, f"through: contract has no object {through['object']!r}")
-        return 1
+        return
     wanted = [through.get("fromProperty"), through.get("toProperty"),
               *through.get("properties", [])]
     missing = [c for c in wanted if c and c not in cols]
     for col in missing:
         res.fail(name, f"through: {through['object']} has no property {col!r}")
-    return len(missing)
 
 
 def _check_pk_parity(obj, by_alias, unvalidated, res):
     """The columns behind an object's primaryKey must be exactly the contract
     object's primaryKey columns, for objects whose backingDatasets declare
-    `grain: row`. Returns 1 on a mismatch, else 0. Skips what it cannot judge:
+    `grain: row`. Skips what it cannot judge:
     unbound keys, keys spread over several contract objects, or a contract
     object that declares no primaryKey at all."""
     if not any(b.get("grain") == "row" for b in obj.get("backingDatasets", [])):
-        return 0  # derived view (distinct values, an aggregate): its key may differ
+        return  # derived view (distinct values, an aggregate): its key may differ
     bindings = {p["apiName"]: p.get("binding") for p in obj.get("properties", [])}
     keys = [bindings.get(k) for k in obj.get("primaryKey", [])]
     if not keys or any(b is None for b in keys):
-        return 0
+        return
     targets = {(b["contract"], b["object"]) for b in keys}
     if len(targets) != 1:
-        return 0
+        return
     alias, table = next(iter(targets))
     if alias in unvalidated or table not in by_alias.get(alias, {}):
-        return 0
+        return
     contract_pk = {n for n, p in by_alias[alias][table].items() if p.get("primaryKey")}
     onto_pk = {b["property"] for b in keys}
     if contract_pk and onto_pk != contract_pk:
         res.fail(obj["apiName"],
                  f"primaryKey maps to columns {sorted(onto_pk)} but the contract's "
                  f"{table} primaryKey is {sorted(contract_pk)}")
-        return 1
-    return 0
 
 
 def validate_ontology(path, contracts, res):
@@ -389,38 +388,32 @@ def validate_ontology(path, contracts, res):
 
     value_types = {v["apiName"]: v for v in onto.get("valueTypes", [])}
     object_types = {o["apiName"]: o for o in onto.get("objectTypes", [])}
-    bound = broken = 0
+    bound, failed_before = 0, len(res.failures)
 
     for obj in onto.get("objectTypes", []):
         for prop in obj.get("properties", []):
             ref = f"{obj['apiName']}.{prop['apiName']}"
             vt = prop.get("valueType")
-            if vt and vt not in value_types and vt not in {
-                    "String", "Integer", "Long", "Double", "Boolean", "Timestamp", "GeoPoint"}:
+            if vt and vt not in value_types and vt not in _BASE_TYPE_HOLDS:
                 res.fail(ref, f"unknown valueType {vt!r}")
-                broken += 1
             binding = prop.get("binding")
             if not binding:
                 if not prop.get("computed"):
                     res.fail(ref, "no binding and not marked computed")
-                    broken += 1
                 continue
             if binding["contract"] in unvalidated:
                 continue
             schemas = by_alias.get(binding["contract"])
             if schemas is None:
                 res.fail(ref, f"unknown contract alias {binding['contract']!r}")
-                broken += 1
                 continue
             props = schemas.get(binding["object"])
             if props is None:
                 res.fail(ref, f"contract has no object {binding['object']!r}")
-                broken += 1
                 continue
             cprop = props.get(binding["property"])
             if cprop is None:
                 res.fail(ref, f"{binding['object']} has no property {binding['property']!r}")
-                broken += 1
                 continue
             bound += 1
             # Where both sides state an enum, they must agree.
@@ -431,23 +424,19 @@ def validate_ontology(path, contracts, res):
                 if extra:
                     res.fail(ref,
                              f"valueType {vt} allows {sorted(extra)} which the contract does not")
-                    broken += 1
                 missing = c_enum - onto_enum
                 if missing:
                     res.fail(ref,
                              f"contract allows {sorted(missing)} which valueType {vt} does not")
-                    broken += 1
 
             # Nullability must agree: the contract is the truth. A primary-key column is
             # exempt (its null stream, if any, is handled by the key's own convention).
             if not cprop.get("primaryKey"):
                 if cprop.get("required") and prop.get("nullable"):
                     res.fail(ref, "marked nullable but the contract column is required")
-                    broken += 1
                 elif not cprop.get("required") and not prop.get("nullable"):
                     res.fail(ref, "contract column is not required, so the property "
                                   "must be marked `nullable: true`")
-                    broken += 1
             # The valueType's base type must be one the contract column can hold,
             # unless the binding declares `cast: true` (a deliberate conversion).
             base = value_types.get(vt, {}).get("baseType", vt)
@@ -456,7 +445,6 @@ def validate_ontology(path, contracts, res):
             if holds and logical and logical not in holds and not binding.get("cast"):
                 res.fail(ref, f"valueType {vt} ({base}) over contract logicalType "
                               f"{logical!r}; declare `cast: true` on the binding if intended")
-                broken += 1
             # Every example the contract gives must satisfy the valueType's pattern.
             pattern = (value_types.get(vt, {}).get("constraints") or {}).get("pattern")
             if pattern:
@@ -464,17 +452,14 @@ def validate_ontology(path, contracts, res):
                     if not re.search(pattern, str(ex)):
                         res.fail(ref, f"contract example {ex!r} does not match valueType "
                                       f"{vt} pattern {pattern}")
-                        broken += 1
 
         for key in obj.get("primaryKey", []):
             if key not in {p["apiName"] for p in obj.get("properties", [])}:
                 res.fail(obj["apiName"], f"primaryKey references unknown property {key!r}")
-                broken += 1
-        broken += _check_pk_parity(obj, by_alias, unvalidated, res)
+        _check_pk_parity(obj, by_alias, unvalidated, res)
         title = obj.get("titleProperty")
         if title and title not in {p["apiName"] for p in obj.get("properties", [])}:
             res.fail(obj["apiName"], f"titleProperty {title!r} is not a property")
-            broken += 1
 
     for link in onto.get("linkTypes", []):
         for side in ("from", "to"):
@@ -483,16 +468,14 @@ def validate_ontology(path, contracts, res):
             if ot is None:
                 res.fail(link["apiName"],
                          f"{side} references unknown objectType {spec['objectType']!r}")
-                broken += 1
             elif spec.get("property") and spec["property"] not in {
                     p["apiName"] for p in ot.get("properties", [])}:
                 res.fail(link["apiName"],
                          f"{side} references {spec['objectType']}.{spec['property']} "
                          "which does not exist")
-                broken += 1
-        broken += _check_through(link, by_alias, unvalidated, res)
+        _check_through(link, by_alias, unvalidated, res)
 
-    if not broken:
+    if len(res.failures) == failed_before:
         res.ok(f"{bound} ontology property bindings resolve; "
                f"{len(onto.get('linkTypes', []))} link types consistent")
     return onto
