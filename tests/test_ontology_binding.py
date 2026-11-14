@@ -239,3 +239,102 @@ def test_primary_key_column_is_exempt_from_nullability_parity(tmp_path):
     onto = ontology(["id"], {"id": "id"})
     con = contract(["id"], pk=["id"], optional=["id"])
     assert run(tmp_path, onto, con).failures == []
+
+
+# --- Ossie metrics/objects/links model (contracts/metrics.ossie.yaml) -------------------------
+
+
+def ossie_run(tmp_path, model, onto, contracts):
+    """Validate an in-memory Ossie model against an in-memory Foundry ontology + contracts."""
+    path = tmp_path / "m.ossie.yaml"
+    path.write_text(yaml.safe_dump(model))
+    res = validate.Result()
+    validate.validate_ossie_model(path, onto, contracts, res)
+    return res
+
+
+def ossie_case():
+    """Foundry ontology `o` (Thing bound to c.tbl) and a matching Ossie model + contracts."""
+    onto = ontology(["code"], {"code": "code", "n": "n"})
+    contracts = {"c.odcs.yaml": contract(["code", "n"], pk=["code"])}
+    model = {
+        "version": "0.3.0.dev0",
+        "name": "m",
+        "datasets": [
+            {
+                "name": "Thing",
+                "source": "c.tbl",
+                "primary_key": ["code"],
+                "fields": [
+                    {"name": "code", "expression": {"sql": "code"}},
+                    {"name": "n", "expression": {"sql": "n"}},
+                ],
+            }
+        ],
+        "relationships": [],
+        "metrics": [{"name": "things", "expression": {"sql": "COUNT(Thing.code)"}}],
+    }
+    return model, onto, contracts
+
+
+def test_matching_ossie_model_passes(tmp_path):
+    model, onto, contracts = ossie_case()
+    assert ossie_run(tmp_path, model, onto, contracts).failures == []
+
+
+def test_ossie_field_column_missing_from_the_contract_fails(tmp_path):
+    model, onto, contracts = ossie_case()
+    model["datasets"][0]["fields"][1]["expression"]["sql"] = "ghost"
+    res = ossie_run(tmp_path, model, onto, contracts)
+    assert any("Thing.n" in f and "'ghost'" in f for f in res.failures), res.failures
+
+
+def test_ossie_source_object_missing_from_the_contract_fails(tmp_path):
+    model, onto, contracts = ossie_case()
+    model["datasets"][0]["source"] = "c.nope"
+    res = ossie_run(tmp_path, model, onto, contracts)
+    assert any("Thing" in f and "'nope'" in f for f in res.failures), res.failures
+
+
+def test_ossie_field_disagreeing_with_the_foundry_binding_fails(tmp_path):
+    """Foundry binds n -> n; the Ossie field n reads a different (real) column."""
+    model, onto, contracts = ossie_case()
+    model["datasets"][0]["fields"][1]["expression"]["sql"] = "code"
+    res = ossie_run(tmp_path, model, onto, contracts)
+    assert any("Thing.n" in f and "binding" in f for f in res.failures), res.failures
+
+
+def test_ossie_dataset_without_a_foundry_object_type_fails(tmp_path):
+    model, onto, contracts = ossie_case()
+    model["datasets"][0]["name"] = "Other"
+    res = ossie_run(tmp_path, model, onto, contracts)
+    assert any("Other" in f and "objectType" in f for f in res.failures), res.failures
+
+
+def test_ossie_relationship_naming_an_undeclared_field_fails(tmp_path):
+    model, onto, contracts = ossie_case()
+    model["relationships"] = [
+        {"name": "r", "from": "Thing", "to": "Thing", "from_columns": ["zzz"], "to_columns": ["code"]}
+    ]
+    res = ossie_run(tmp_path, model, onto, contracts)
+    assert any("r" in f and "'zzz'" in f for f in res.failures), res.failures
+
+
+def test_ossie_metric_naming_an_undeclared_field_fails(tmp_path):
+    model, onto, contracts = ossie_case()
+    model["metrics"][0]["expression"]["sql"] = "SUM(Thing.missing)"
+    res = ossie_run(tmp_path, model, onto, contracts)
+    assert any("things" in f and "Thing.missing" in f for f in res.failures), res.failures
+
+
+def test_real_ossie_model_binds_cleanly_and_is_pinned():
+    root = Path(__file__).resolve().parent.parent / "contracts"
+    contracts = {p.name: yaml.safe_load(p.read_text()) for p in root.glob("*.odcs.yaml")}
+    onto = yaml.safe_load((root / "wraith-bus-ingestor.ontology.yaml").read_text())
+    path = root / "metrics.ossie.yaml"
+    res = validate.Result()
+    validate.validate_ossie_model(path, onto, contracts, res)
+    assert res.failures == []
+    head = "\n".join(path.read_text().splitlines()[:30])
+    assert "e53fda3c61ebe1bfb169e2c341529426fb348ee7" in head
+    assert "c6ecd781c3ec43326432b00a938e5bfe24584877" in head
