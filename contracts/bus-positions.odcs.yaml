@@ -89,7 +89,7 @@ schema:
           missing.
       - id: positions_no_vehicle_id_column
         type: text
-        dimension: validity
+        dimension: conformity
         severity: info
         description: >-
           There was briefly a `vehicle_id` SYMBOL column, dropped 2026-09-18
