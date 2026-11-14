@@ -179,6 +179,7 @@ objectTypes:
         displayName: Position measured at
         valueType: EpochMillis
         binding: {contract: positions, object: bus_positions, property: recorded_at}
+        nullable: true
       - apiName: lineId
         displayName: Working line
         valueType: ServiceNumber
@@ -253,24 +254,30 @@ objectTypes:
       - apiName: journeyRef
         valueType: String
         binding: {contract: positions, object: bus_positions, property: journey_ref}
+        nullable: true
       - apiName: lineId
         valueType: ServiceNumber
         binding: {contract: positions, object: bus_positions, property: line}
       - apiName: direction
         valueType: Direction
         binding: {contract: positions, object: bus_positions, property: direction}
+        nullable: true
       - apiName: originRef
         valueType: AtcoCode
         binding: {contract: positions, object: bus_positions, property: origin_ref}
+        nullable: true
       - apiName: destinationRef
         valueType: AtcoCode
         binding: {contract: positions, object: bus_positions, property: dest_ref}
+        nullable: true
       - apiName: originAimedDeparture
         valueType: EpochMillis
         binding: {contract: positions, object: bus_positions, property: origin_aimed_dep}
+        nullable: true
       - apiName: destinationAimedArrival
         valueType: EpochMillis
         binding: {contract: positions, object: bus_positions, property: dest_aimed_arr}
+        nullable: true
       - apiName: isCircular
         valueType: Boolean
         computed: true
@@ -335,15 +342,19 @@ objectTypes:
       - apiName: stopName
         valueType: String
         binding: {contract: gtfs, object: naptan_stops, property: CommonName}
+        nullable: true
       - apiName: localityName
         valueType: String
         binding: {contract: gtfs, object: naptan_stops, property: LocalityName}
+        nullable: true
       - apiName: latitude
         valueType: Double
         binding: {contract: gtfs, object: naptan_stops, property: Latitude, cast: true}
+        nullable: true
       - apiName: longitude
         valueType: Double
         binding: {contract: gtfs, object: naptan_stops, property: Longitude, cast: true}
+        nullable: true
 
   - apiName: LineStop
     displayName: Stop on a line
@@ -383,6 +394,7 @@ objectTypes:
       - apiName: scheduledSecondsFromOrigin
         valueType: Double
         binding: {contract: gtfs, object: gtfs_route_stops, property: sched_secs_from_origin}
+        nullable: true
         description: Scheduled, not observed. Anchored on the pattern's first stop.
 
   - apiName: Locality
@@ -412,6 +424,7 @@ objectTypes:
       - apiName: stopCount
         valueType: Long
         binding: {contract: marts, object: localities, property: n_stops}
+        nullable: true
 
   - apiName: TravelTimeModel
     displayName: Travel time model
@@ -454,12 +467,14 @@ objectTypes:
       - apiName: rSquared
         valueType: Double
         binding: {contract: marts, object: eta_models, property: r2}
+        nullable: true
       - apiName: observations
         valueType: Long
         binding: {contract: marts, object: eta_models, property: n_obs}
       - apiName: meanSpeedKmh
         valueType: Double
         binding: {contract: marts, object: eta_models, property: mean_speed_kmh}
+        nullable: true
 
   - apiName: PunctualityProfile
     displayName: Punctuality profile
@@ -491,12 +506,15 @@ objectTypes:
       - apiName: medianDelaySeconds
         valueType: DelaySecondsStat
         binding: {contract: marts, object: line_punctuality, property: median_delay_s}
+        nullable: true
       - apiName: p90DelaySeconds
         valueType: DelaySecondsStat
         binding: {contract: marts, object: line_punctuality, property: p90_delay_s}
+        nullable: true
       - apiName: journeyCount
         valueType: Long
         binding: {contract: marts, object: line_punctuality, property: n_journeys}
+        nullable: true
 
 # ---------------------------------------------------------------------------
 # Link types

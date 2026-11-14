@@ -22,10 +22,15 @@ def run(tmp_path, ontology, contract):
     return res
 
 
-def contract(columns, pk=()):
-    """columns: names. pk: names that carry primaryKey: true."""
+def contract(columns, pk=(), optional=()):
+    """columns: names. pk: names that carry primaryKey: true. optional: names not required."""
     props = [
-        {"name": c, "logicalType": "string", **({"primaryKey": True} if c in pk else {})}
+        {
+            "name": c,
+            "logicalType": "string",
+            **({"primaryKey": True} if c in pk else {}),
+            **({} if c in optional else {"required": True}),
+        }
         for c in columns
     ]
     return {"schema": [{"name": "tbl", "properties": props}]}
@@ -200,4 +205,37 @@ def test_double_base_type_over_an_integer_column_passes(tmp_path):
 
 def test_declared_cast_excuses_a_type_difference(tmp_path):
     onto, con = type_case("Double", "string", cast=True)
+    assert run(tmp_path, onto, con).failures == []
+
+
+def null_case(required, nullable):
+    """One bound, non-key property whose contract column is `required` or not."""
+    onto = ontology(["id"], {"id": "id", "code": "code"})
+    if nullable:
+        onto["objectTypes"][0]["properties"][1]["nullable"] = True
+    con = contract(["id", "code"], pk=["id"], optional=[] if required else ["code"])
+    return onto, con
+
+
+def test_optional_contract_column_needs_a_nullable_ontology_property(tmp_path):
+    onto, con = null_case(required=False, nullable=False)
+    res = run(tmp_path, onto, con)
+    assert any("Thing.code" in f and "nullable" in f for f in res.failures), res.failures
+
+
+def test_nullable_property_over_a_required_column_fails(tmp_path):
+    onto, con = null_case(required=True, nullable=True)
+    res = run(tmp_path, onto, con)
+    assert any("Thing.code" in f and "required" in f for f in res.failures), res.failures
+
+
+def test_nullability_that_agrees_passes(tmp_path):
+    for required, nullable in ((True, False), (False, True)):
+        onto, con = null_case(required, nullable)
+        assert run(tmp_path, onto, con).failures == [], (required, nullable)
+
+
+def test_primary_key_column_is_exempt_from_nullability_parity(tmp_path):
+    onto = ontology(["id"], {"id": "id"})
+    con = contract(["id"], pk=["id"], optional=["id"])
     assert run(tmp_path, onto, con).failures == []

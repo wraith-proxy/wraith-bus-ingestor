@@ -438,6 +438,16 @@ def validate_ontology(path, contracts, res):
                              f"contract allows {sorted(missing)} which valueType {vt} does not")
                     broken += 1
 
+            # Nullability must agree: the contract is the truth. A primary-key column is
+            # exempt (its null stream, if any, is handled by the key's own convention).
+            if not cprop.get("primaryKey"):
+                if cprop.get("required") and prop.get("nullable"):
+                    res.fail(ref, "marked nullable but the contract column is required")
+                    broken += 1
+                elif not cprop.get("required") and not prop.get("nullable"):
+                    res.fail(ref, "contract column is not required, so the property "
+                                  "must be marked `nullable: true`")
+                    broken += 1
             # The valueType's base type must be one the contract column can hold,
             # unless the binding declares `cast: true` (a deliberate conversion).
             base = value_types.get(vt, {}).get("baseType", vt)
