@@ -476,7 +476,7 @@ dbt/
 │   └── history_days.sql           how many days the two history models keep
 ├── models/
 │   ├── staging/
-│   │   ├── bods/                  _bods__sources.yml, _bods__models.yml, stg_bods__vehicle_pings
+│   │   ├── bods/                  _wraith_bus_extract_positions__sources.yml (generated), _bods__models.yml, stg_bods__vehicle_pings
 │   │   └── naptan/                _naptan__sources.yml, _naptan__models.yml, stg_naptan__stops
 │   ├── intermediate/              journeys, shape, training set, daily ETA stats, journey delays (+ _intermediate__models.yml)
 │   └── marts/                     the three contract tables (+ _marts__models.yml)

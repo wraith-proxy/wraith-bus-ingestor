@@ -215,8 +215,9 @@ new-shape keys and has no detector.
 **Dry runs.** `SKIP_EXTRACT=1 ./build.sh` reuses the parquet already in `dbt/data/`.
 That is fine once the new extract has run (the files then carry `recorded_at` and
 operator-keyed rows). Against parquet written by the OLD extract it still builds
-(staging types the missing column `NULL`), but the two source tests in
-`_bods__sources.yml` that pin the column set and the uniqueness key will report the
+(staging types the missing column `NULL`), but the source tests in
+`_wraith_bus_extract_positions__sources.yml` (`columns_match_set`) and the generated
+`bus_positions__extract_unique_key` test that pin the column set and the uniqueness key will report the
 old shape.
 
 ### Test results are recorded, pass or fail

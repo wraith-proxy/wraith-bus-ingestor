@@ -191,7 +191,7 @@ system assumed BODS plus a live QuestDB table WAS the history:
   turned out broken on the duckdb adapter for any table-valued-function
   source (`describe read_parquet(...)` isn't valid as a subquery) --
   confirmed by running them, not assumed, and replaced rather than
-  worked around blindly. `_bods__sources.yml`'s `bus_positions` table now
+  worked around blindly. The generated `_wraith_bus_extract_positions__sources.yml` `bus_positions` table now
   carries: source freshness (warn 2d / error 5d), not_null, per-column
   type validity, GB-bbox range warnings, compound-key
   (`timestamp, bus_id, line`) uniqueness, and a row-count floor. The
