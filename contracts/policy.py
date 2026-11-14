@@ -42,6 +42,23 @@ def _as_date(value):
     return value if value is None or isinstance(value, date) else date.fromisoformat(str(value))
 
 
+def _select_reads(sel, table, column):
+    """True if this SELECT (not its subqueries) reads table.column."""
+
+    def mine(node):
+        return node.find_ancestor(exp.Select) is sel
+
+    tables = {t.alias_or_name: t.name for t in sel.find_all(exp.Table) if mine(t)}
+    if table not in tables.values():
+        return False
+    named = any(
+        c.name == column and (not c.table or tables.get(c.table) == table)
+        for c in sel.find_all(exp.Column)
+        if mine(c) and not isinstance(c.this, exp.Star)
+    )
+    return named or any(mine(star) for star in sel.find_all(exp.Star))
+
+
 def _readers(sql_dir, table, column):
     """Compiled SQL files that read table.column, by file stem.
 
@@ -50,28 +67,16 @@ def _readers(sql_dir, table, column):
     reader. Over-reports across CTE/subquery name clashes; upgrade to sqlglot's
     optimizer.qualify if that bites.
     """
-    found = []
-    for path in sorted(Path(sql_dir).glob("*.sql")):
-        for tree in sqlglot.parse(path.read_text(), read="duckdb"):
-            for sel in tree.find_all(exp.Select) if tree else []:
-                mine = lambda n: n.find_ancestor(exp.Select) is sel  # noqa: E731
-                tables = {t.alias_or_name: t.name for t in sel.find_all(exp.Table) if mine(t)}
-                if table not in tables.values():
-                    continue
-                hit = any(
-                    c.name == column and (not c.table or tables.get(c.table) == table)
-                    for c in sel.find_all(exp.Column)
-                    if mine(c) and not isinstance(c.this, exp.Star)
-                ) or any(
-                    isinstance(star, exp.Star) and mine(star) for star in sel.find_all(exp.Star)
-                )
-                if hit:
-                    found.append(path.stem)
-                    break
-            else:
-                continue
-            break
-    return found
+    return [
+        path.stem
+        for path in sorted(Path(sql_dir).glob("*.sql"))
+        if any(
+            _select_reads(sel, table, column)
+            for tree in sqlglot.parse(path.read_text(), read="duckdb")
+            if tree
+            for sel in tree.find_all(exp.Select)
+        )
+    ]
 
 
 def _major(doc):
