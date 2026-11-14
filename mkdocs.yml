@@ -21,6 +21,7 @@ nav:
   - Architecture: architecture.md
   - Bus Platform: bus-platform.md
   - Contracts: contracts.md
+  - Glossary: GLOSSARY.md
   - Operations: operations.md
   - Roadmap: ROADMAP.md
   - Architecture Decisions:
