@@ -151,3 +151,31 @@ def test_same_column_name_on_another_table_is_not_a_reader(tmp_path):
     base, head = removal_pair(tmp_path)
     sql = compiled(tmp_path, int_other="select o.b from main.other as o")
     assert policy.check_change(base, head, today=TODAY, compiled_sql_dir=sql) == []
+
+
+def test_main_exits_1_and_prints_each_violation(tmp_path, capsys):
+    base = write(tmp_path, "base.yaml", contract({"a": "string"}))
+    head = write(tmp_path, "head.yaml", contract({"a": "string", "b": "string"}, version="1.1.0"))
+    assert policy.main([str(base), str(head)]) == 1
+    assert "expand-without-backfill" in capsys.readouterr().out
+
+
+def test_main_exits_0_and_prints_nothing_for_a_clean_change(tmp_path, capsys):
+    base = write(tmp_path, "base.yaml", contract({"a": "string"}))
+    head = write(tmp_path, "head.yaml", contract({"a": "string"}, version="1.0.1"))
+    assert policy.main([str(base), str(head)]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_script_entry_point_exits_1_on_violation(tmp_path):
+    import subprocess
+    import sys
+
+    base = write(tmp_path, "base.yaml", contract({"a": "string"}))
+    head = write(tmp_path, "head.yaml", contract({"a": "string", "b": "string"}, version="1.1.0"))
+    script = Path(__file__).resolve().parent.parent / "contracts" / "policy.py"
+    run = subprocess.run(
+        [sys.executable, str(script), str(base), str(head)], capture_output=True, text=True
+    )
+    assert run.returncode == 1
+    assert "expand-without-backfill" in run.stdout

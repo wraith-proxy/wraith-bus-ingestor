@@ -144,3 +144,17 @@ def check_change(
                 )
             )
     return violations
+
+
+def main(argv):
+    base, head = argv
+    violations = check_change(Path(base), Path(head))
+    for v in violations:
+        print(f"{v.code}: {v.message}")
+    return 1 if violations else 0
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(main(sys.argv[1:]))
