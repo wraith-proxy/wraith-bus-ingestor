@@ -396,6 +396,11 @@ def validate_ontology(path, contracts, res):
                     res.fail(ref,
                              f"valueType {vt} allows {sorted(extra)} which the contract does not")
                     broken += 1
+                missing = c_enum - onto_enum
+                if missing:
+                    res.fail(ref,
+                             f"contract allows {sorted(missing)} which valueType {vt} does not")
+                    broken += 1
 
         for key in obj.get("primaryKey", []):
             if key not in {p["apiName"] for p in obj.get("properties", [])}:

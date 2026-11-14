@@ -75,3 +75,24 @@ def test_real_ontology_binds_cleanly_to_real_contracts(tmp_path):
     res = validate.Result()
     validate.validate_ontology(root / "wraith-bus-ingestor.ontology.yaml", contracts, res)
     assert res.failures == []
+
+
+def enum_case(contract_values, onto_values):
+    """One bound property whose valueType and contract column both state an enum."""
+    onto = ontology(["code"], {"code": "code"})
+    onto["valueTypes"] = [{"apiName": "Code", "baseType": "String", "enum": onto_values}]
+    onto["objectTypes"][0]["properties"][0]["valueType"] = "Code"
+    con = contract(["code"], pk=["code"])
+    con["schema"][0]["properties"][0]["enum"] = [{"value": v} for v in contract_values]
+    return onto, con
+
+
+def test_contract_enum_value_the_ontology_forbids_fails(tmp_path):
+    onto, con = enum_case(["a", "b", "*"], ["a", "b"])
+    res = run(tmp_path, onto, con)
+    assert any("'*'" in f and "Thing.code" in f for f in res.failures), res.failures
+
+
+def test_matching_enums_pass(tmp_path):
+    onto, con = enum_case(["a", "b"], ["a", "b"])
+    assert run(tmp_path, onto, con).failures == []

@@ -77,6 +77,23 @@ valueTypes:
     description: Local-time band. night 22:00-05:59, am_peak 06:00-09:59, inter 10:00-15:59, pm_peak 16:00-18:59, evening 19:00-21:59.
     enum: ['night', 'am_peak', 'inter', 'pm_peak', 'evening']
 
+  # The pooled fallback rows of eta_models use '*' for "all". Journey and Vehicle
+  # never do, so these are separate types and the strict enums above stay strict.
+  - apiName: DirectionOrAll
+    baseType: String
+    description: Direction as above, or '*' for a model fitted across every direction.
+    enum: ['inbound', 'outbound', 'clockwise', 'anticlockwise', '*']
+
+  - apiName: DayTypeOrAll
+    baseType: String
+    description: Day type as above, or '*' for a model fitted across every day type.
+    enum: ['weekday', 'sat', 'sun', '*']
+
+  - apiName: HourBandOrAll
+    baseType: String
+    description: Hour band as above, or '*' for a model fitted across every hour band.
+    enum: ['night', 'am_peak', 'inter', 'pm_peak', 'evening', '*']
+
   - apiName: RagStatus
     baseType: String
     description: >-
@@ -410,13 +427,13 @@ objectTypes:
         valueType: ServiceNumber
         binding: {contract: marts, object: eta_models, property: line}
       - apiName: direction
-        valueType: Direction
+        valueType: DirectionOrAll
         binding: {contract: marts, object: eta_models, property: direction}
       - apiName: dayType
-        valueType: DayType
+        valueType: DayTypeOrAll
         binding: {contract: marts, object: eta_models, property: day_type}
       - apiName: hourBand
-        valueType: HourBand
+        valueType: HourBandOrAll
         binding: {contract: marts, object: eta_models, property: hour_band}
       - apiName: slopeSecondsPerKm
         valueType: Double
