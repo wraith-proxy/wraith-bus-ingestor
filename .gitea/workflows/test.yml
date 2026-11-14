@@ -38,6 +38,14 @@ jobs:
         # The gate that checks real data is dbt/build.sh, which runs this
         # same script against the live marts before every publish.
         run: python3 contracts/validate.py
+      - name: Generated files in sync (modelgen check)
+        # modelgen 0.16.0 is baked into the image. `modelgen check` fails when a
+        # generated file was hand-edited or no longer matches its contract.
+        # when check fails, validate.py --generated arbitrates: same comparison
+        # but a header-only modelgen version difference passes (check_generated).
+        run: |
+          set -euo pipefail
+          modelgen check --from-contract --diff || python3 contracts/validate.py --generated
       - name: Contract change policy (expand/contract)
         # Compares each contract changed on this branch with its version on
         # origin/main: breaking change without a major bump, removal before its
