@@ -55,6 +55,8 @@ support:
     url: mailto:hello@thomaspeoples.com
 
 customProperties:
+  - property: dbtSourceName
+    value: bods
   - property: externalLocation
     value: "read_parquet('data/bus_positions_*.parquet', union_by_name=true)"
     description: dbt source meta.external_location (_bods__sources.yml:30-41).
