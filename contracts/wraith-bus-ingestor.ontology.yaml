@@ -38,10 +38,14 @@ contracts:
 valueTypes:
   - apiName: AtcoCode
     baseType: String
-    description: NaPTAN national stop identifier. The join key between the live feed, NaPTAN and every stop-shaped mart.
+    description: >-
+      NaPTAN national stop identifier. The join key between the live feed, NaPTAN
+      and every stop-shaped mart. Deliberately loose: the live feed's origin and
+      destination refs are not guaranteed to be ATCO codes (one operator sends its
+      internal line code, e.g. 'k28'), and a miss is "unknown", never an error.
     constraints:
-      pattern: '^[0-9]{4}[A-Za-z0-9]+$'
-    examples: ['1800STIN0P1', '0600MA6154']
+      pattern: '^[A-Za-z0-9]+$'
+    examples: ['1800STIN0P1', '0600MA6154', 'k28']
 
   - apiName: ServiceNumber
     baseType: String

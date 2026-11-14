@@ -215,7 +215,7 @@ schema:
           MUST treat a failed ATCO lookup as "unknown", never as an error,
           which is exactly what happens today (the value simply misses every
           key in stop_by_atco).
-        examples: ['1800STIN0P1']
+        examples: ['1800STIN0P1', 'k28']
       - id: pos_origin_name
         name: origin_name
         logicalType: string

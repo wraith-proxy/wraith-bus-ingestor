@@ -96,3 +96,26 @@ def test_contract_enum_value_the_ontology_forbids_fails(tmp_path):
 def test_matching_enums_pass(tmp_path):
     onto, con = enum_case(["a", "b"], ["a", "b"])
     assert run(tmp_path, onto, con).failures == []
+
+
+def pattern_case(pattern, examples):
+    """One bound property whose valueType states a pattern and whose contract lists examples."""
+    onto = ontology(["code"], {"code": "code"})
+    onto["valueTypes"] = [
+        {"apiName": "Code", "baseType": "String", "constraints": {"pattern": pattern}}
+    ]
+    onto["objectTypes"][0]["properties"][0]["valueType"] = "Code"
+    con = contract(["code"], pk=["code"])
+    con["schema"][0]["properties"][0]["examples"] = examples
+    return onto, con
+
+
+def test_contract_example_the_value_type_pattern_rejects_fails(tmp_path):
+    onto, con = pattern_case("^[0-9]{4}[A-Za-z0-9]+$", ["1800STIN0P1", "k28"])
+    res = run(tmp_path, onto, con)
+    assert any("'k28'" in f and "Thing.code" in f for f in res.failures), res.failures
+
+
+def test_examples_matching_the_pattern_pass(tmp_path):
+    onto, con = pattern_case("^[0-9]{4}[A-Za-z0-9]+$", ["1800STIN0P1"])
+    assert run(tmp_path, onto, con).failures == []

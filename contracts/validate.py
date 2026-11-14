@@ -17,6 +17,7 @@ Rules whose severity is 'info', and `text` rules, are reported but never fail.
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.parse
 import urllib.request
@@ -401,6 +402,15 @@ def validate_ontology(path, contracts, res):
                     res.fail(ref,
                              f"contract allows {sorted(missing)} which valueType {vt} does not")
                     broken += 1
+
+            # Every example the contract gives must satisfy the valueType's pattern.
+            pattern = (value_types.get(vt, {}).get("constraints") or {}).get("pattern")
+            if pattern:
+                for ex in cprop.get("examples") or []:
+                    if not re.search(pattern, str(ex)):
+                        res.fail(ref, f"contract example {ex!r} does not match valueType "
+                                      f"{vt} pattern {pattern}")
+                        broken += 1
 
         for key in obj.get("primaryKey", []):
             if key not in {p["apiName"] for p in obj.get("properties", [])}:
