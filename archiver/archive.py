@@ -33,7 +33,7 @@ from datetime import UTC, datetime, timedelta
 
 QUESTDB_URL = os.environ.get('QUESTDB_URL', 'http://db:9000')
 TABLE = 'bus_positions'
-RETENTION_DAYS = int(os.environ.get('RETENTION_DAYS', '22'))
+RETENTION_DAYS = int(os.environ.get('RETENTION_DAYS', '3'))
 ARCHIVE_ROOT = '/archive'
 PARQUET_DIR = os.path.join(ARCHIVE_ROOT, 'bus_positions_parquet')
 SENTINEL = os.path.join(ARCHIVE_ROOT, '.this-is-vault2')
