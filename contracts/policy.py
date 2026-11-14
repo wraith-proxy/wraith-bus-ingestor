@@ -69,7 +69,7 @@ def _readers(sql_dir, table, column):
     """
     return [
         path.stem
-        for path in sorted(Path(sql_dir).glob("*.sql"))
+        for path in sorted(Path(sql_dir).rglob("*.sql"))
         if any(
             _select_reads(sel, table, column)
             for tree in sqlglot.parse(path.read_text(), read="duckdb")
@@ -147,8 +147,10 @@ def check_change(
 
 
 def main(argv):
-    base, head = argv
-    violations = check_change(Path(base), Path(head))
+    base, head, *rest = argv
+    violations = check_change(
+        Path(base), Path(head), compiled_sql_dir=Path(rest[0]) if rest else None
+    )
     for v in violations:
         print(f"{v.code}: {v.message}")
     return 1 if violations else 0

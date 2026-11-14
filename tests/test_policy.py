@@ -179,3 +179,20 @@ def test_script_entry_point_exits_1_on_violation(tmp_path):
     )
     assert run.returncode == 1
     assert "expand-without-backfill" in run.stdout
+
+
+def test_main_passes_compiled_dir_to_the_gate(tmp_path, capsys):
+    base, head = removal_pair(tmp_path)
+    sql = compiled(tmp_path, int_star="select * from main.t")
+    assert policy.main([str(base), str(head), str(sql)]) == 1
+    assert "removal-with-readers" in capsys.readouterr().out
+
+
+def test_reader_in_nested_compiled_directory_is_found(tmp_path):
+    base, head = removal_pair(tmp_path)
+    nested = tmp_path / "compiled" / "models" / "staging"
+    nested.mkdir(parents=True)
+    (nested / "stg_deep.sql").write_text("select * from main.t")
+    root = tmp_path / "compiled"
+    violations = policy.check_change(base, head, today=TODAY, compiled_sql_dir=root)
+    assert "stg_deep" in violations[0].message
