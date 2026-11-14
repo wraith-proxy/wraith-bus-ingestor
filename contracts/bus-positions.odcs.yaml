@@ -167,6 +167,8 @@ schema:
         name: operator
         logicalType: string
         physicalType: SYMBOL
+        primaryKey: true
+        primaryKeyPosition: 2
         description: >-
           OperatorRef, a National Operator Code. Null before 2026-09-12 (and for
           part of that day). Together with bus_id it identifies a vehicle, so

@@ -126,6 +126,7 @@ objectTypes:
     backingDatasets:
       - contract: positions
         object: bus_positions
+        grain: row
         note: >-
           The live tail only -- newest row per vehicle inside a five-minute
           ingest window, further filtered to those whose recorded_at is under
@@ -394,12 +395,17 @@ objectTypes:
     description: >-
       A fitted linear regression of remaining seconds on remaining kilometres for
       one temporal grain. The coefficients are the model; there is no artefact.
-    primaryKey: [lineId, direction, dayType, hourBand]
+    primaryKey: [operatorRef, lineId, direction, dayType, hourBand]
     titleProperty: lineId
     backingDatasets:
       - contract: marts
         object: eta_models
+        grain: row
     properties:
+      - apiName: operatorRef
+        valueType: String
+        description: The operator the model was fitted for, or '*' for the pooled fit across operators.
+        binding: {contract: marts, object: eta_models, property: operator}
       - apiName: lineId
         valueType: ServiceNumber
         binding: {contract: marts, object: eta_models, property: line}

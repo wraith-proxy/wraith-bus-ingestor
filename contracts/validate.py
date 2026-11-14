@@ -300,6 +300,34 @@ def validate_contract(path, engines, res):
     return contract
 
 
+def _check_pk_parity(obj, by_alias, unvalidated, res):
+    """The columns behind an object's primaryKey must be exactly the contract
+    object's primaryKey columns, for objects whose backingDatasets declare
+    `grain: row`. Returns 1 on a mismatch, else 0. Skips what it cannot judge:
+    unbound keys, keys spread over several contract objects, or a contract
+    object that declares no primaryKey at all."""
+    if not any(b.get("grain") == "row" for b in obj.get("backingDatasets", [])):
+        return 0  # derived view (distinct values, an aggregate): its key may differ
+    bindings = {p["apiName"]: p.get("binding") for p in obj.get("properties", [])}
+    keys = [bindings.get(k) for k in obj.get("primaryKey", [])]
+    if not keys or any(b is None for b in keys):
+        return 0
+    targets = {(b["contract"], b["object"]) for b in keys}
+    if len(targets) != 1:
+        return 0
+    alias, table = next(iter(targets))
+    if alias in unvalidated or table not in by_alias.get(alias, {}):
+        return 0
+    contract_pk = {n for n, p in by_alias[alias][table].items() if p.get("primaryKey")}
+    onto_pk = {b["property"] for b in keys}
+    if contract_pk and onto_pk != contract_pk:
+        res.fail(obj["apiName"],
+                 f"primaryKey maps to columns {sorted(onto_pk)} but the contract's "
+                 f"{table} primaryKey is {sorted(contract_pk)}")
+        return 1
+    return 0
+
+
 def validate_ontology(path, contracts, res):
     """Every ontology binding must resolve to a real contract property, and any
     enum stated in both places must agree. This is what stops the semantic layer
@@ -373,6 +401,7 @@ def validate_ontology(path, contracts, res):
             if key not in {p["apiName"] for p in obj.get("properties", [])}:
                 res.fail(obj["apiName"], f"primaryKey references unknown property {key!r}")
                 broken += 1
+        broken += _check_pk_parity(obj, by_alias, unvalidated, res)
         title = obj.get("titleProperty")
         if title and title not in {p["apiName"] for p in obj.get("properties", [])}:
             res.fail(obj["apiName"], f"titleProperty {title!r} is not a property")
