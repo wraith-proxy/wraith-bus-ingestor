@@ -119,3 +119,48 @@ def test_contract_example_the_value_type_pattern_rejects_fails(tmp_path):
 def test_examples_matching_the_pattern_pass(tmp_path):
     onto, con = pattern_case("^[0-9]{4}[A-Za-z0-9]+$", ["1800STIN0P1"])
     assert run(tmp_path, onto, con).failures == []
+
+
+def through_case(**through):
+    """A MANY_TO_MANY link Thing->Thing whose join table is contract c, object tbl."""
+    onto = ontology(["code"], {"code": "code"})
+    spec = {"contract": "c", "object": "tbl", "fromProperty": "code", "toProperty": "code"}
+    onto["linkTypes"] = [
+        {
+            "apiName": "thingLinksThing",
+            "cardinality": "MANY_TO_MANY",
+            "from": {"objectType": "Thing", "property": "code"},
+            "to": {"objectType": "Thing", "property": "code"},
+            "through": {**spec, **through},
+        }
+    ]
+    return onto, contract(["code", "n"], pk=["code"])
+
+
+def test_through_naming_a_missing_column_fails(tmp_path):
+    onto, con = through_case(toProperty="nope")
+    res = run(tmp_path, onto, con)
+    assert any("thingLinksThing" in f and "'nope'" in f for f in res.failures), res.failures
+
+
+def test_through_naming_a_missing_object_fails(tmp_path):
+    onto, con = through_case(object="ghost")
+    res = run(tmp_path, onto, con)
+    assert any("thingLinksThing" in f and "'ghost'" in f for f in res.failures), res.failures
+
+
+def test_through_naming_an_unknown_contract_alias_fails(tmp_path):
+    onto, con = through_case(contract="zzz")
+    res = run(tmp_path, onto, con)
+    assert any("thingLinksThing" in f and "'zzz'" in f for f in res.failures), res.failures
+
+
+def test_through_carried_property_must_exist(tmp_path):
+    onto, con = through_case(properties=["n", "missing"])
+    res = run(tmp_path, onto, con)
+    assert any("thingLinksThing" in f and "'missing'" in f for f in res.failures), res.failures
+
+
+def test_valid_through_passes(tmp_path):
+    onto, con = through_case(properties=["n"])
+    assert run(tmp_path, onto, con).failures == []

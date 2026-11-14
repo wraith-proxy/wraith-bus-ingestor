@@ -301,6 +301,30 @@ def validate_contract(path, engines, res):
     return contract
 
 
+def _check_through(link, by_alias, unvalidated, res):
+    """A link's `through` join table must resolve: known contract alias, an object
+    that exists in it, and every named column present. Returns the failure count.
+    A contract not validated this run cannot be judged, which is not drift."""
+    through = link.get("through")
+    if not through or through["contract"] in unvalidated:
+        return 0
+    name = link["apiName"]
+    schemas = by_alias.get(through["contract"])
+    if schemas is None:
+        res.fail(name, f"through references unknown contract alias {through['contract']!r}")
+        return 1
+    cols = schemas.get(through["object"])
+    if cols is None:
+        res.fail(name, f"through: contract has no object {through['object']!r}")
+        return 1
+    wanted = [through.get("fromProperty"), through.get("toProperty"),
+              *through.get("properties", [])]
+    missing = [c for c in wanted if c and c not in cols]
+    for col in missing:
+        res.fail(name, f"through: {through['object']} has no property {col!r}")
+    return len(missing)
+
+
 def _check_pk_parity(obj, by_alias, unvalidated, res):
     """The columns behind an object's primaryKey must be exactly the contract
     object's primaryKey columns, for objects whose backingDatasets declare
@@ -436,6 +460,7 @@ def validate_ontology(path, contracts, res):
                          f"{side} references {spec['objectType']}.{spec['property']} "
                          "which does not exist")
                 broken += 1
+        broken += _check_through(link, by_alias, unvalidated, res)
 
     if not broken:
         res.ok(f"{bound} ontology property bindings resolve; "
