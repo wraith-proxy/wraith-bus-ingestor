@@ -1,8 +1,20 @@
 # Contracts
 
-`contracts/` documents the two boundaries in the bus platform as
+`contracts/` holds six
 [Open Data Contract Standard v3.2.0](https://bitol-io.github.io/open-data-contract-standard/v3.2.0/)
-specs, plus a Foundry-style ontology layered over both. Validate all three
+specs, plus a Foundry-style ontology layered over them:
+
+| Contract | Layer |
+|---|---|
+| `bus-positions.odcs.yaml` | Raw ingest table (QuestDB) |
+| `bus-positions-extract.odcs.yaml` | Parquet extract dbt reads |
+| `bus-cdp.odcs.yaml` | Staging models |
+| `bus-fdp.odcs.yaml` | Intermediate models, incl. the two history tables |
+| `bus-marts.odcs.yaml` | Marts the API reads |
+| `gtfs-timetable.odcs.yaml` | Published timetable |
+
+The CDP and FDP contracts are derived from the dbt SQL (types inferred, each
+column's upstream `consumes` recorded) and are not enforced by dbt yet. Validate
 against live data with:
 
 ```bash
@@ -13,6 +25,23 @@ Exit code 0 means every schema, key, and quality rule holds; 1 gates a
 build or a PR. `contracts/validate.py --marts /path/to/candidate.duckdb`
 checks a not-yet-published marts file, which is how a rebuild could be
 gated before `dbt/build.sh` moves it into place.
+
+## Checks around the contracts
+
+- **Validation** (`contracts/validate.py`): every declared object and property
+  exists with a compatible type, required properties are non-null, declared keys
+  are unique, every quality rule holds, and the ontology's bindings, link
+  `through` joins and primary keys agree with the contracts. `info`-severity and
+  `text` rules are reported, never failed.
+- **Policy gate** (`contracts/policy.py`, CI step "Contract change policy"):
+  compares each changed contract with its `origin/main` version. Fails on a
+  breaking change without a major version bump, a removal without a `sunset` or
+  before its sunset date, a column removed while compiled SQL still reads it
+  (reader detection is not wired into CI yet), and a new column without a valid
+  `backfill` (`derive`, `null-before`, `replay`).
+- **SLA checks** (`ops/sla_check.py`): compares a contract's `latency`
+  `slaProperties` with the warehouse's `_meta.data_as_of` stamp. Written and
+  tested; not yet wired into `dbt/build.sh`.
 
 ## `bus-positions.odcs.yaml` — the ingest boundary
 

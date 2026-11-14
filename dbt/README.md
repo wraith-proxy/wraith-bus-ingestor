@@ -42,8 +42,10 @@ Or the steps by hand:
 cd dbt
 
 # 1. pull the last 4 days out of QuestDB into data/*.parquet (mainland GB, several min)
-# Match dbt_project.yml's `extract_days` var (see macros/retention_days.sql)
-# and .env's RETENTION_DAYS -- all three should agree on the same window.
+# EXTRACT_DAYS must match dbt_project.yml's `extract_days` var (4, see
+# macros/retention_days.sql). .env's RETENTION_DAYS (3) is a different thing:
+# how long QuestDB keeps partitions on the SSD before the archiver moves them
+# off. The two are deliberately unequal (ADR-0010); do not "align" them.
 # A day that already has a data/bus_positions_<day>.done marker is skipped;
 # delete the marker to pull that day again.
 QUESTDB_HTTP=http://localhost:9001 EXTRACT_DAYS=4 ../.venv/bin/python extract.py
@@ -64,7 +66,7 @@ QUESTDB_HTTP=http://localhost:9001 EXTRACT_DAYS=4 ../.venv/bin/python extract.py
 `dbt run` builds into **`wraith_bus_ingestor_build.duckdb`**, a scratch warehouse. Only
 once `dbt test` and the contract gate (`contracts/validate.py`, run by
 `build.sh` against the candidate marts) have both passed does `build.sh` copy
-the five marts into a fresh file and `mv` it over **`wraith_bus_ingestor.duckdb`**,
+the three marts into a fresh file and `mv` it over **`wraith_bus_ingestor.duckdb`**,
 which is the one Flask opens.
 
 This is not tidiness, it is scar tissue from real incidents:
@@ -173,7 +175,7 @@ retention window and must not be limited to a lookback slice.
 
 ### `models/marts/` — what Flask reads, tables
 
-Three tables whose names and columns are frozen in `CONTRACT.md` and
+Three tables whose names and columns are frozen in
 `contracts/bus-marts.odcs.yaml`. They are plain, wide and boring on purpose:
 all the judgement happened upstream, and a mart is just the shape the
 application wants. They are real tables, not views, because a long-lived
@@ -477,7 +479,7 @@ dbt/
 │   │   ├── bods/                  _bods__sources.yml, _bods__models.yml, stg_bods__vehicle_pings
 │   │   └── naptan/                _naptan__sources.yml, _naptan__models.yml, stg_naptan__stops
 │   ├── intermediate/              journeys, shape, training set, daily ETA stats, journey delays (+ _intermediate__models.yml)
-│   └── marts/                     the five contract tables (+ _marts__models.yml)
+│   └── marts/                     the three contract tables (+ _marts__models.yml)
 └── tests/                         singular assertions (composite keys, invariants)
 ```
 

@@ -29,6 +29,11 @@ nav:
       - "0002 - line_stops final assembly": adr/0002-line-stops-final-assembly.md
       - "0003 - replay verified by construction": adr/0003-replay-verified-by-construction.md
       - "0004 - api container has no deploy automation": adr/0004-api-container-has-no-deploy-automation.md
+      - "0005 - dbt v2 duckdb alpha migration (reverted)": adr/0005-dbt-v2-duckdb-alpha-migration.md
+      - "0006 - bus_positions schema optimisation": adr/0006-bus-positions-schema-optimisation.md
+      - "0007 - parquet archive": adr/0007-parquet-archive.md
+      - "0008 - published timetables vs inferred routes": adr/0008-published-timetables-vs-inferred-routes.md
+      - "0009 - fast nightly build": adr/0009-fast-nightly-build.md
       - "0010 - eta from daily statistics & 3-day hot window": adr/0010-eta-from-daily-statistics-and-3-day-hot-window.md
   - Python API: api.md
   - dbt Docs: dbt/index.html

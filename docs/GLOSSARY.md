@@ -41,7 +41,7 @@ An operator's working of a line on a given day, identified by the operator's jou
 _Avoid_: working, run (for the operator's concept)
 
 **Run**:
-An observed stretch of one vehicle's pings, cut out by segmentation; attributed to a journey when the feed supplies a journey reference.
+An observed stretch of one vehicle's pings, cut out by segmentation; attributed to a journey when the feed supplies a journey reference. In SQL its key is called `journey_key` (`<operator>|<bus_id>#<epoch_ms>`); that names a Run, not a Journey.
 _Avoid_: journey (for the observed stretch), segment
 
 **Published timetable**:

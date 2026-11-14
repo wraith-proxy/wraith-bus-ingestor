@@ -58,8 +58,8 @@ layers, each doing exactly one job:
       (under 500 m of movement in 9 minutes, since parked buses keep
       transmitting).
     - `int_journeys_shaped_and_directed` — one row per journey; drops
-      journeys cut off by a data-coverage edge; infers direction (see
-      below).
+      journeys cut off by a data-coverage edge; carries the feed's
+      direction (see below).
     - `int_pings_measured_to_journey_end` — the ETA model's training set:
       for every ping, how far and how long is left in its journey.
     - `int_eta_daily_stats` — the training set reduced to one row of
