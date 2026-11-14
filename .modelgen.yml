@@ -1,0 +1,5 @@
+# Contract-first dbt generation. `modelgen run` writes what the contracts
+# declare; `modelgen check` fails when the committed files have drifted.
+sources_contracts: contracts/bus-positions-extract.odcs.yaml
+sources_output: dbt/models/staging/bods
+tests_output: dbt/tests
