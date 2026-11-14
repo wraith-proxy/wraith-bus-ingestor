@@ -12,6 +12,7 @@ tree.txt
 .env
 .DS_Store
 .aider*
+PROMPT.md
 
 # Python bytecode
 __pycache__/

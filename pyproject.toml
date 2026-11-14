@@ -74,6 +74,7 @@ dev = [
     "typer",
     "genbadge[coverage]",
     "pydoc-markdown",
+    "datacontract-cli==1.2.9",
 ]
 
 [project.urls]
@@ -117,6 +118,8 @@ docs-serve = "mkdocs serve"
 # just wraps the existing entry point.
 build = { shell = "cd dbt && ./build.sh" }
 validate = "python contracts/validate.py"
+# Offline structural lint of the ODCS contracts (no database touched).
+lint-contracts = { shell = "for f in contracts/*.odcs.yaml; do datacontract lint \"$f\" || exit 1; done" }
 
 [tool.ruff]
 # 99, not a default 79: this codebase's established voice is long explanatory
@@ -143,4 +146,4 @@ addopts = [
     "--strict-markers",
 ]
 pythonpath = ["backend", "archiver", "ops"]
-testpaths = ["backend", "archiver", "ops"]
+testpaths = ["backend", "archiver", "ops", "tests"]

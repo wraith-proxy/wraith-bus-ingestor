@@ -42,10 +42,12 @@ description:
     refreshes. Times are scheduled, not observed. Direction is 'outbound' or
     'inbound' (GTFS direction_id 0/1); clockwise and anticlockwise are not
     labelled.
-  refresh: >-
-    Weekly (ops/systemd/wraith-gtfs-refresh.timer, Monday 01:00 -- not yet
-    installed). The refresh builds a staging file and renames it over the
-    served one.
+  customProperties:
+    - property: refresh
+      value: >-
+        Weekly (ops/systemd/wraith-gtfs-refresh.timer, Monday 01:00 -- not yet
+        installed). The refresh builds a staging file and renames it over the
+        served one.
 
 servers:
   - server: gtfs-served
@@ -121,7 +123,7 @@ schema:
       - {id: gp_line, name: line, logicalType: string, physicalType: VARCHAR, required: true, primaryKey: true, primaryKeyPosition: 2, description: GTFS route_short_name.}
       - {id: gp_direction, name: direction, logicalType: string, physicalType: VARCHAR, required: true, primaryKey: true, primaryKeyPosition: 3}
       - {id: gp_pattern, name: pattern_id, logicalType: integer, physicalType: BIGINT, required: true, primaryKey: true, primaryKeyPosition: 4}
-      - {id: gp_primary, name: is_primary, logicalType: boolean, physicalType: BOOLEAN, description: The most-run pattern of its (operator, line, direction).}
+      - {id: gp_primary, name: is_primary, logicalType: boolean, physicalType: BOOLEAN, description: "The most-run pattern of its (operator, line, direction)."}
       - {id: gp_trips, name: n_trips, logicalType: integer, physicalType: BIGINT}
       - {id: gp_stops, name: n_stops, logicalType: integer, physicalType: INTEGER}
       - {id: gp_first, name: first_atco, logicalType: string, physicalType: VARCHAR, required: true}
@@ -162,7 +164,7 @@ schema:
       - {id: gs_locality, name: locality, logicalType: string, physicalType: VARCHAR}
       - {id: gs_lat, name: lat, logicalType: number, physicalType: DOUBLE, required: true}
       - {id: gs_lon, name: lon, logicalType: number, physicalType: DOUBLE, required: true}
-      - {id: gs_secs, name: sched_secs_from_origin, logicalType: number, physicalType: DOUBLE, description: Scheduled, not observed. Anchored on the first stop of the pattern.}
+      - {id: gs_secs, name: sched_secs_from_origin, logicalType: number, physicalType: DOUBLE, description: "Scheduled, not observed. Anchored on the first stop of the pattern."}
 
   # ---------------------------------------------------------------------------
   - id: gtfs_line_alias_obj

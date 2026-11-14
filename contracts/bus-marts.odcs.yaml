@@ -40,15 +40,17 @@ description:
     unrelated routes in different towns, merged here. Day classification does not know about bank holidays, which are filed
     as 'weekday'. Fitted on a non-contiguous date range; a feed outage on
     2026-08-28..30 removed one weekend from the sample.
-  refresh: >-
-    Marts refresh nightly at 03:00 via a host systemd timer (dbt/build.sh).
-    The journey layer
-    (int_pings_segmented_to_journeys) is incremental, reprocessing only the
-    trailing ~2 days each run, and so are the two daily history tables
-    eta_models and line_punctuality are built from (int_eta_daily_stats,
-    int_journey_delays, ADR-0010), which rewrite only their newest few dates
-    and keep history_days (8) of them; every mart in this contract is still
-    fully rebuilt each run from those incrementally-maintained bases.
+  customProperties:
+    - property: refresh
+      value: >-
+        Marts refresh nightly at 03:00 via a host systemd timer (dbt/build.sh).
+        The journey layer
+        (int_pings_segmented_to_journeys) is incremental, reprocessing only the
+        trailing ~2 days each run, and so are the two daily history tables
+        eta_models and line_punctuality are built from (int_eta_daily_stats,
+        int_journey_delays, ADR-0010), which rewrite only their newest few dates
+        and keep history_days (8) of them; every mart in this contract is still
+        fully rebuilt each run from those incrementally-maintained bases.
 
 servers:
   - server: marts-prod

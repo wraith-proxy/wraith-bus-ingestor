@@ -1,0 +1,351 @@
+# Open Data Contract Standard v3.2.0
+#
+# CDP: the STAGING layer outputs (stg_bods__vehicle_pings, stg_naptan__stops).
+#
+# `consumes` custom properties on each schema object list exactly the upstream
+# columns the model reads, as "<contract file stem>.<table>.<column>".
+---
+apiVersion: v3.2.0
+kind: DataContract
+id: c4a1d7e2-6b3f-4e58-9a10-3d5f8e2b7c91
+name: wraith_bus_cdp
+version: 1.0.0
+status: active
+domain: transit
+tenant: ghost-stack
+tags:
+- transit
+- bus
+- staging
+- cdp
+description:
+  purpose: 'CDP layer (staging): typed, filtered, per-row-derived tables built from the extract Parquet and the NaPTAN CSV. Everything downstream joins to these, never to the raw files.'
+  usage: Producer is the dbt project's staging models (stg_bods__vehicle_pings, stg_naptan__stops). Consumers are the FDP models in bus-fdp. Each schema object lists the upstream columns it reads as `consumes` custom properties ("<contract>.<table>.<column>"; contract = the file stem under contracts/). Column types were inferred from the DuckDB expressions in the model SQL and are recorded per column in `typeInferredFrom`. Not enforced by dbt yet.
+  limitations: Types inferred from the SQL, not read from a warehouse. History tables (int_eta_daily_stats, int_journey_delays) live in bus-fdp; they are incremental and are never full-refreshed. stg_naptan__stops has no `consumes` because the raw NaPTAN CSV has no contract.
+servers:
+- server: build-warehouse
+  type: duckdb
+  database: ./dbt/wraith_bus_ingestor_build.duckdb
+  schema: main
+  environment: prod
+  description: The build warehouse the nightly dbt run writes before the atomic swap that publishes it as wraith_bus_ingestor.duckdb.
+support:
+- channel: ghost-stack-ops
+  tool: email
+  scope: interactive
+  url: mailto:hello@thomaspeoples.com
+schema:
+- id: stgb_obj
+  name: stg_bods__vehicle_pings
+  physicalName: stg_bods__vehicle_pings
+  logicalType: object
+  physicalType: view
+  description: Every usable bus position observation, one row per vehicle per 3-minute bucket. This is the grain the whole project is built on. Staging does rename, cast and per-row derivation only -- no joins and no aggregation -- so that when a number downstream looks wrong there is exactly one place where a type or a unit could have gone astray. Rows outside the Great Britain bounding box or at (0, 0) are dropped here rather than downstream, because a single unfixed-GPS ping adds thousands of kilometres to a journey's measured path.
+  dataGranularityDescription: One row per vehicle and line per 3-minute bucket.
+  customProperties:
+  - property: consumes
+    value: bus-positions-extract.bus_positions.timestamp
+  - property: consumes
+    value: bus-positions-extract.bus_positions.bus_id
+  - property: consumes
+    value: bus-positions-extract.bus_positions.line
+  - property: consumes
+    value: bus-positions-extract.bus_positions.lat
+  - property: consumes
+    value: bus-positions-extract.bus_positions.lon
+  - property: consumes
+    value: bus-positions-extract.bus_positions.bearing
+  - property: consumes
+    value: bus-positions-extract.bus_positions.direction
+  - property: consumes
+    value: bus-positions-extract.bus_positions.operator
+  - property: consumes
+    value: bus-positions-extract.bus_positions.journey_ref
+  - property: consumes
+    value: bus-positions-extract.bus_positions.origin_ref
+  - property: consumes
+    value: bus-positions-extract.bus_positions.origin_name
+  - property: consumes
+    value: bus-positions-extract.bus_positions.dest_ref
+  - property: consumes
+    value: bus-positions-extract.bus_positions.dest_name
+  - property: consumes
+    value: bus-positions-extract.bus_positions.origin_aimed_dep
+  - property: consumes
+    value: bus-positions-extract.bus_positions.dest_aimed_arr
+  - property: consumes
+    value: bus-positions-extract.bus_positions.recorded_at
+  properties:
+  - id: stgb_bus_id
+    name: bus_id
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: The operator's own vehicle reference. NOT a key and NOT globally unique -- operators mint these independently, so '3104' is fifteen different physical buses in fifteen different towns. int_pings_segmented_to_journeys has to defend against that.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:49
+  - id: stgb_line
+    name: line
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: 'Public service number as shown on the blind. Also not globally unique: dozens of operators run a route called ''1''. Treat a line here as "a service number", not "a route".'
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:50
+  - id: stgb_feed_direction
+    name: feed_direction
+    logicalType: string
+    physicalType: VARCHAR
+    description: The feed's own DirectionRef, normalised to a known token, or NULL when the feed did not give one -- which is every row collected before 2026-09-12. Deliberately left NULL rather than defaulted, so that int_journeys_shaped_and_directed can tell "the operator says inbound" apart from "we guessed inbound", and so that a coalesce to '*' cannot quietly collapse every journey into one direction bucket.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:141
+  - id: stgb_operator
+    name: operator
+    logicalType: string
+    physicalType: VARCHAR
+    description: NOC of the operating company. NULL before 2026-09-12; the only thing that could disambiguate colliding bus_ids.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:33
+  - id: stgb_recorded_at
+    name: recorded_at
+    logicalType: integer
+    physicalType: BIGINT
+    description: The feed's own per-record observation time, epoch MILLIS; often stale, used only as a sort tiebreak in int_pings_segmented_to_journeys. NULL before extract.py carried it (2026-09-20). Not described in the staging yml.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:41
+  - id: stgb_journey_ref
+    name: journey_ref
+    logicalType: string
+    physicalType: VARCHAR
+    description: DatedVehicleJourneyRef -- the operator's identifier for this specific scheduled run. When present it is the authoritative journey boundary and int_pings_segmented_to_journeys prefers it over any heuristic. NULL before 2026-09-12.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:34
+  - id: stgb_origin_ref
+    name: origin_ref
+    logicalType: string
+    physicalType: VARCHAR
+    description: NaPTAN ATCOCode of the scheduled origin stop; joins directly to stg_naptan__stops.atco_code.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:35
+  - id: stgb_origin_name
+    name: origin_name
+    logicalType: string
+    physicalType: VARCHAR
+    description: Free-text origin as the operator publishes it, for display only -- never matched on.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:36
+  - id: stgb_dest_ref
+    name: dest_ref
+    logicalType: string
+    physicalType: VARCHAR
+    description: NaPTAN ATCOCode of the scheduled destination stop.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:37
+  - id: stgb_dest_name
+    name: dest_name
+    logicalType: string
+    physicalType: VARCHAR
+    description: Free-text destination as shown on the blind, for display only.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:38
+  - id: stgb_ping_ts
+    name: ping_ts
+    logicalType: date
+    physicalType: TIMESTAMP
+    required: true
+    description: 'End of the 3-minute sample bucket in UTC, as a naive TIMESTAMP. The canonical instant: everything that is compared, differenced or published uses this. Obtained with an explicit AT TIME ZONE ''UTC'' so the build does not depend on the host''s time zone.'
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:114
+  - id: stgb_ping_local_ts
+    name: ping_local_ts
+    logicalType: date
+    physicalType: TIMESTAMP
+    required: true
+    description: 'The same instant as Europe/London wall-clock time. Exists because every temporal BUCKET has to be local: the UK runs UTC+1 from late March to late October, so bucketing on UTC puts the morning peak an hour early and files a 00:30 Saturday ping under Friday. hour_of_day, hour_band, day_type and ping_local_date all derive from this column and never from ping_ts.'
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:115
+  - id: stgb_ping_date
+    name: ping_date
+    logicalType: date
+    physicalType: DATE
+    description: Calendar date of the ping, used only for eyeballing coverage per extracted day.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:155
+  - id: stgb_ping_local_date
+    name: ping_local_date
+    logicalType: date
+    physicalType: DATE
+    description: Local calendar date. The date a passenger would call it, which is the one that matters for day_type.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:157
+  - id: stgb_hour_of_day
+    name: hour_of_day
+    logicalType: integer
+    physicalType: INTEGER
+    description: LOCAL hour 0-23. Kept alongside hour_band so an analysis can re-band without re-deriving.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:158
+  - id: stgb_hour_band
+    name: hour_band
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: Traffic-regime bucket, derived from LOCAL time. Buses behave completely differently at 08:00 and at 02:00, so the ETA regression is fitted per band rather than pooled. FROZEN to match backend/app.py -- see macros/hour_band.sql.
+    customProperties:
+    - property: typeInferredFrom
+      value: 'dbt/models/staging/bods/stg_bods__vehicle_pings.sql:159 (macros/hour_band.sql: case of string literals)'
+  - id: stgb_day_type
+    name: day_type
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: 'Service pattern of the local date: ''weekday'', ''sat'' or ''sun''. Weekend bus operation differs from Mon-Fri in frequency, stops served and traffic, so it is the third dimension of the ETA model''s grain. Bank holidays are filed as ''weekday'' -- see macros/day_type.sql. The one bank holiday inside the current extract window (2026-08-31) is excluded outright in this model rather than mislabelled.'
+    customProperties:
+    - property: typeInferredFrom
+      value: 'dbt/models/staging/bods/stg_bods__vehicle_pings.sql:160 (macros/day_type.sql: case of string literals)'
+  - id: stgb_lat
+    name: lat
+    logicalType: number
+    physicalType: DOUBLE
+    required: true
+    description: WGS84 latitude, guaranteed inside the GB bounding box.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:51
+  - id: stgb_lon
+    name: lon
+    logicalType: number
+    physicalType: DOUBLE
+    required: true
+    description: WGS84 longitude, guaranteed inside the GB bounding box.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:52
+  - id: stgb_bearing
+    name: bearing
+    logicalType: number
+    physicalType: DOUBLE
+    description: Compass heading reported by the vehicle. Carried for the map arrow only -- it is the instantaneous heading, not the direction of the journey, so it is useless for direction inference.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:53
+  - id: stgb_origin_aimed_dep_ts
+    name: origin_aimed_dep_ts
+    logicalType: date
+    physicalType: TIMESTAMP
+    description: Scheduled departure from origin, converted from the feed's epoch MILLIS. NULL before 2026-09-12.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:166
+  - id: stgb_dest_aimed_arr_ts
+    name: dest_aimed_arr_ts
+    logicalType: date
+    physicalType: TIMESTAMP
+    description: Scheduled arrival at destination, converted from epoch MILLIS. The only input to line_punctuality, and NULL before 2026-09-12.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/bods/stg_bods__vehicle_pings.sql:168
+- id: stgn_obj
+  name: stg_naptan__stops
+  physicalName: stg_naptan__stops
+  logicalType: object
+  physicalType: table
+  description: 'NaPTAN narrowed to active bus stops with usable coordinates, and typed. Everything that needs a stop joins here rather than to the raw CSV, so the "what counts as a bus stop" decision lives in exactly one place. About 344k of NaPTAN''s 435k rows survive; the rest are rail, ferry, air and metro nodes, or stops marked deleted. Reads the raw NaPTAN CSV via source(''naptan'',''stops'') (all_varchar), which has no contract yet, so this table declares no `consumes`; raw columns read: ATCOCode, CommonName, StopType, TimingStatus, Status, Latitude, Longitude, LocalityName, Town, ParentLocalityName.'
+  dataGranularityDescription: One row per active bus stop (ATCO code).
+  customProperties: []
+  properties:
+  - id: stgn_atco_code
+    name: atco_code
+    logicalType: string
+    physicalType: VARCHAR
+    primaryKey: true
+    primaryKeyPosition: 1
+    required: true
+    unique: true
+    description: National stop identifier. The join key to the feed's origin_ref and dest_ref, and the primary key here.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/naptan/stg_naptan__stops.sql:15
+  - id: stgn_stop_name
+    name: stop_name
+    logicalType: string
+    physicalType: VARCHAR
+    description: CommonName as published. Not unique -- both sides of a road share a name and differ only by ATCOCode.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/naptan/stg_naptan__stops.sql:16
+  - id: stgn_stop_type
+    name: stop_type
+    logicalType: string
+    physicalType: VARCHAR
+    description: NaPTAN StopType, constrained to the four bus varieties. Kept so a future filter change is auditable against what was actually let through.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/naptan/stg_naptan__stops.sql:17
+  - id: stgn_timing_status
+    name: timing_status
+    logicalType: string
+    physicalType: VARCHAR
+    description: Whether the stop is a timing point on the published timetable. Not used yet; the natural input if stop sequences ever need anchoring to real schedule times.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/naptan/stg_naptan__stops.sql:18
+  - id: stgn_status
+    name: status
+    logicalType: string
+    physicalType: VARCHAR
+    description: NaPTAN lifecycle status, always 'active' here by construction.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/naptan/stg_naptan__stops.sql:19
+  - id: stgn_lat
+    name: lat
+    logicalType: number
+    physicalType: DOUBLE
+    required: true
+    description: WGS84 latitude, non-null and inside the GB bounding box.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/naptan/stg_naptan__stops.sql:20
+  - id: stgn_lon
+    name: lon
+    logicalType: number
+    physicalType: DOUBLE
+    required: true
+    description: WGS84 longitude, non-null and inside the GB bounding box.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/naptan/stg_naptan__stops.sql:21
+  - id: stgn_locality
+    name: locality
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: 'Human-readable place, coalesced down NaPTAN''s three-level locality hierarchy (LocalityName, then Town, then ParentLocalityName). The coalesce matters: a stop in an unnamed hamlet still has to resolve to a place a user would plausibly type.'
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/staging/naptan/stg_naptan__stops.sql:29
+  - id: stgn_locality_norm
+    name: locality_norm
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: The search key. Uppercased, punctuation stripped, spaces collapsed, so that "ASHTON UNDER LYNE" typed into the box matches "Ashton-under-Lyne" in the register. Frozen in CONTRACT.md s2 because backend/app.py normalises the query the same way.
+    customProperties:
+    - property: typeInferredFrom
+      value: 'dbt/models/staging/naptan/stg_naptan__stops.sql:52 (macros/locality_norm.sql: trim(regexp_replace(upper(..)))'
