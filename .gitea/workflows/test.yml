@@ -54,6 +54,20 @@ jobs:
               python3 contracts/policy.py "$base" "$f"
             fi
           done
+      - name: Contract change policy (compiled readers)
+        # Same comparison as the step above, plus reader detection: the sandbox
+        # is compiled so policy.py can scan the compiled SQL for readers.
+        run: |
+          set -euo pipefail
+          DEST="$(mktemp -d)/dbt-sandbox"
+          ./ops/dbt_sandbox.sh "$DEST"
+          (cd "$DEST" && dbt compile)
+          for f in contracts/*.odcs.yaml; do
+            base="$(mktemp)"
+            if git show "origin/main:$f" > "$base" 2>/dev/null; then
+              python3 contracts/policy.py "$base" "$f" "$DEST/target/compiled"
+            fi
+          done
       - name: dbt build + test (Learn dbt sandbox)
         # ROADMAP.md 1.1.0. Same limitation as "Validate data contracts"
         # above -- no live QuestDB or NaPTAN register on this runner -- so
@@ -74,6 +88,10 @@ jobs:
           cd "$DEST"
           dbt run
           dbt test
+      - name: SQL ratchet (hand-written model SQL)
+        # Fails when non-blank model SQL code lines (comments stripped) exceed
+        # ops/sql_baseline.txt. Raw line count is recorded there, not gated.
+        run: python3 ops/sql_ratchet.py
 
   auto-merge:
     needs: test-and-verify
