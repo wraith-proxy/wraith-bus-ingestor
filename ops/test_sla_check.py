@@ -68,3 +68,20 @@ def test_failed_stamp_leaves_served_file_untouched(tmp_path):
     with pytest.raises(duckdb.Error):
         sla_check.publish(staged, served, NOW, "1.2.0")
     assert served.read_bytes() == before
+
+
+def test_public_signatures_typed_and_documented():
+    import inspect
+
+    for fn in (
+        sla_check.check_slas,
+        sla_check.data_as_of,
+        sla_check.contract_version,
+        sla_check.write_meta,
+        sla_check.publish,
+    ):
+        assert inspect.getdoc(fn), f"{fn.__name__} has no docstring"
+        sig = inspect.signature(fn)
+        assert sig.return_annotation is not inspect.Signature.empty, fn.__name__
+        for p in sig.parameters.values():
+            assert p.annotation is not inspect.Parameter.empty, f"{fn.__name__}.{p.name}"

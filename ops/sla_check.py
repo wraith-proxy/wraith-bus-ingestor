@@ -60,10 +60,12 @@ def _meta(db: Path, column: str):
 
 
 def data_as_of(db: Path) -> datetime:
+    """The data-as-of stamp stored in the warehouse's `_meta` table."""
     return _meta(db, "data_as_of")
 
 
 def contract_version(db: Path) -> str:
+    """The contract version stored in the warehouse's `_meta` table."""
     return _meta(db, "contract_version")
 
 
