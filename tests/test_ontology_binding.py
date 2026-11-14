@@ -164,3 +164,40 @@ def test_through_carried_property_must_exist(tmp_path):
 def test_valid_through_passes(tmp_path):
     onto, con = through_case(properties=["n"])
     assert run(tmp_path, onto, con).failures == []
+
+
+def type_case(base, logical, cast=False):
+    """One bound property: ontology valueType with baseType `base`, contract column `logical`."""
+    onto = ontology(["code"], {"code": "code"})
+    onto["valueTypes"] = [{"apiName": "Code", "baseType": base}]
+    prop = onto["objectTypes"][0]["properties"][0]
+    prop["valueType"] = "Code"
+    if cast:
+        prop["binding"]["cast"] = True
+    con = contract(["code"], pk=["code"])
+    con["schema"][0]["properties"][0]["logicalType"] = logical
+    return onto, con
+
+
+def test_base_type_the_contract_column_cannot_hold_fails(tmp_path):
+    onto, con = type_case("Double", "string")
+    res = run(tmp_path, onto, con)
+    assert any("Thing.code" in f and "Double" in f and "string" in f for f in res.failures), (
+        res.failures
+    )
+
+
+def test_integer_base_type_over_a_number_column_fails(tmp_path):
+    """A number column can hold 2.5; an Integer valueType promises it cannot."""
+    onto, con = type_case("Integer", "number")
+    assert run(tmp_path, onto, con).failures
+
+
+def test_double_base_type_over_an_integer_column_passes(tmp_path):
+    onto, con = type_case("Double", "integer")
+    assert run(tmp_path, onto, con).failures == []
+
+
+def test_declared_cast_excuses_a_type_difference(tmp_path):
+    onto, con = type_case("Double", "string", cast=True)
+    assert run(tmp_path, onto, con).failures == []

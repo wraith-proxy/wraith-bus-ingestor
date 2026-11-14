@@ -301,6 +301,17 @@ def validate_contract(path, engines, res):
     return contract
 
 
+# Contract logicalTypes each ontology base type can faithfully hold (integer fits a Double,
+# a number does not fit an Integer). Base types not listed are not judged.
+_BASE_TYPE_HOLDS = {
+    "String": {"string"},
+    "Double": {"number", "integer"},
+    "Long": {"integer"},
+    "Integer": {"integer"},
+    "Boolean": {"boolean"},
+}
+
+
 def _check_through(link, by_alias, unvalidated, res):
     """A link's `through` join table must resolve: known contract alias, an object
     that exists in it, and every named column present. Returns the failure count.
@@ -427,6 +438,15 @@ def validate_ontology(path, contracts, res):
                              f"contract allows {sorted(missing)} which valueType {vt} does not")
                     broken += 1
 
+            # The valueType's base type must be one the contract column can hold,
+            # unless the binding declares `cast: true` (a deliberate conversion).
+            base = value_types.get(vt, {}).get("baseType", vt)
+            holds = _BASE_TYPE_HOLDS.get(base)
+            logical = cprop.get("logicalType")
+            if holds and logical and logical not in holds and not binding.get("cast"):
+                res.fail(ref, f"valueType {vt} ({base}) over contract logicalType "
+                              f"{logical!r}; declare `cast: true` on the binding if intended")
+                broken += 1
             # Every example the contract gives must satisfy the valueType's pattern.
             pattern = (value_types.get(vt, {}).get("constraints") or {}).get("pattern")
             if pattern:
