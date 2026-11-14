@@ -38,6 +38,22 @@ jobs:
         # The gate that checks real data is dbt/build.sh, which runs this
         # same script against the live marts before every publish.
         run: python3 contracts/validate.py
+      - name: Contract change policy (expand/contract)
+        # Compares each contract changed on this branch with its version on
+        # origin/main: breaking change without a major bump, removal before its
+        # sunset date, new column without a backfill. A contract that does not
+        # exist on main yet has nothing to compare against and is skipped.
+        # Reader detection over compiled SQL is not wired in yet (needs a
+        # `dbt compile`); see contracts/policy.py.
+        run: |
+          set -euo pipefail
+          for f in contracts/*.odcs.yaml; do
+            base="$(mktemp)"
+            if git show "origin/main:$f" > "$base" 2>/dev/null; then
+              echo "policy: $f"
+              python3 contracts/policy.py "$base" "$f"
+            fi
+          done
       - name: dbt build + test (Learn dbt sandbox)
         # ROADMAP.md 1.1.0. Same limitation as "Validate data contracts"
         # above -- no live QuestDB or NaPTAN register on this runner -- so
