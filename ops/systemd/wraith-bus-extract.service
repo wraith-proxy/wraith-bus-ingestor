@@ -1,0 +1,17 @@
+[Unit]
+Description=wraith-bus-ingestor nightly extract + ready gate (writes the marker that starts the build)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=thomaspeoples
+Group=thomaspeoples
+WorkingDirectory=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt
+# Extract the window from QuestDB, then validate it against its contract. The
+# gate writes /home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/data/.extract_ready only for a valid extract; wraith-bus-extract.path starts the
+# build on it. A failed extract or gate leaves no marker and the build does not run.
+ExecStart=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/.venv/bin/python3 /home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/extract.py
+ExecStart=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/.venv/bin/python3 /home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/ops/ready_gate.py /home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/contracts/bus-positions-extract.odcs.yaml /home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/data /home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/data/.extract_ready
+StandardOutput=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/extract.log
+StandardError=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/extract.log

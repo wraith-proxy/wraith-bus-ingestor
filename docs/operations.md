@@ -2,19 +2,31 @@
 
 ## The nightly rebuild
 
-`dbt/build.sh` runs from a host systemd timer at **03:00** every night —
-`ops/systemd/wraith-bus-build.{service,timer}`, installed to
-`/etc/systemd/system/` (a host unit, not a container, since it needs the
-repo root's `.venv` environment). Replaced the old host crontab entry
-2026-09-15 — the unit also auto-stops `ghost-osrm`/`ghost-backend`/
-`ghost-tiles` for the build window and restarts them after
-(`ExecStartPre`/`ExecStopPost`), which cron never did:
+Two host units, installed by the owner with `sudo ops/install_event_trigger.sh`
+(stage echoes, log in `ops/logs/`), which also disables the old build timer:
+
+1. `wraith-bus-extract.{timer,service}` at **03:00** runs `dbt/extract.py`, then
+   `ops/ready_gate.py`, which writes the marker `dbt/data/.extract_ready` only
+   when the extract meets its contract.
+2. `wraith-bus-extract.path` (`PathExists=` that marker) starts
+   `wraith-bus-build.service`, which keeps its `MemoryMax`, window and failure
+   hook. Its first `ExecStartPre` deletes the marker, so a failing build cannot
+   retrigger itself. It sets `SKIP_EXTRACT=1` (the extract already ran).
+
+The timer and the path unit are never both enabled for the build. Alerts: no
+success 90 minutes past the extract time is the non-paging "waiting on the
+extract" rule; a failed build is a warning; only `marts state not ok` (the API
+cannot serve) pages.
 
 ```
-sudo systemctl status wraith-bus-build.timer
-sudo systemctl list-timers wraith-bus-build.timer
-journalctl -u wraith-bus-build.service
+sudo systemctl status wraith-bus-extract.timer wraith-bus-extract.path
+sudo systemctl list-timers wraith-bus-extract.timer
+journalctl -u wraith-bus-extract.service -u wraith-bus-build.service
 ```
+
+(History: the build ran from `wraith-bus-build.timer` at 03:00 until this change;
+the unit auto-stops `ghost-osrm`/`ghost-backend`/`ghost-tiles` for the window and
+restarts them after, which the old cron entry never did.)
 
 A run does four things in order: extract each of the last `EXTRACT_DAYS`
 (default 4) of `bus_positions` that has no `data/bus_positions_<day>.done`

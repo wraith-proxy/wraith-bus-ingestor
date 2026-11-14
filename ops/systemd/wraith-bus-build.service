@@ -1,5 +1,5 @@
 [Unit]
-Description=wraith-bus-ingestor nightly dbt rebuild
+Description=wraith-bus-ingestor dbt rebuild (started by wraith-bus-extract.path)
 Wants=network-online.target
 After=network-online.target docker.service
 
@@ -27,6 +27,7 @@ WorkingDirectory=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingesto
 # 1.4GB) already excluded. The real remaining pressure is questdb (can't
 # stop, extraction needs it) plus whatever else this shared host is doing
 # at build time -- see MemoryMax's own history below.
+ExecStartPre=/usr/bin/rm -f /home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/data/.extract_ready
 ExecStartPre=-/usr/bin/docker stop ghost-osrm ghost-backend ghost-tiles ghost-grafana
 ExecStopPost=/usr/bin/docker start ghost-osrm ghost-backend ghost-tiles ghost-grafana
 #
@@ -39,6 +40,11 @@ ExecStopPost=/usr/bin/docker start ghost-osrm ghost-backend ghost-tiles ghost-gr
 # ends). Dependencies are stopped first and started last (postgres/redis before
 # immich_server). Both lines are `-`-prefixed: this must never fail a build.
 RuntimeDirectory=wraith-bus-build
+# Consume the ready marker FIRST and without a '-' prefix: a build that fails
+# must not leave the marker behind, or the path unit would retrigger it. The
+# extract unit already pulled the window, so the build skips its own extract
+# (wired here by Environment=; build.sh is not edited).
+Environment=SKIP_EXTRACT=1
 ExecStartPre=-/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/ops/build_window.sh stop ollama immich_server immich_machine_learning immich_redis immich_postgres
 ExecStopPost=-/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/ops/build_window.sh start
 # A failed run writes a 'failed' row to dbt_build_runs so the Grafana rule
