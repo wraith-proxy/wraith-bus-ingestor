@@ -1,0 +1,895 @@
+# Open Data Contract Standard v3.2.0
+#
+# FDP: the PRES layer, the five intermediate models.
+#
+# `consumes` custom properties on each schema object list exactly the upstream
+# columns the model reads, as "<contract file stem>.<table>.<column>".
+---
+apiVersion: v3.2.0
+kind: DataContract
+id: e8b2f6a3-1d47-4c90-b5e6-7a9c3d1f4b28
+name: wraith_bus_fdp
+version: 1.0.0
+status: active
+domain: transit
+tenant: ghost-stack
+tags:
+- transit
+- bus
+- presentation
+- fdp
+description:
+  purpose: 'FDP layer (presentation): the five intermediate models that segment pings into journeys, measure the ETA training set, and keep the two daily history tables the marts are built from.'
+  usage: Producer is dbt/models/intermediate. Consumers are the marts (bus-marts) and, within this contract, the models that read each other. Each schema object lists the upstream columns it reads as `consumes` custom properties ("<contract>.<table>.<column>"; contract = the file stem under contracts/). Column types were inferred from the DuckDB expressions in the model SQL and are recorded per column in `typeInferredFrom`. Where a column is also in the intermediate yml, its description is copied from there.
+  limitations: 'History tables int_eta_daily_stats and int_journey_delays are incremental and are the only place history older than the extract window lives (ADR-0010): they are never full-refreshed; FULL_REFRESH=1 keeps them and only an ops/incident.py replay rebuilds them. int_pings_segmented_to_journeys is also incremental. The yml omits several output columns (bus_id, operator, journey_ref, start/end timestamps and coordinates, ping_ts, ...); the SQL is the source for these. Types inferred from the SQL, not read from a warehouse.'
+servers:
+- server: build-warehouse
+  type: duckdb
+  database: ./dbt/wraith_bus_ingestor_build.duckdb
+  schema: main
+  environment: prod
+  description: The build warehouse the nightly dbt run writes before the atomic swap that publishes it as wraith_bus_ingestor.duckdb.
+support:
+- channel: ghost-stack-ops
+  tool: email
+  scope: interactive
+  url: mailto:hello@thomaspeoples.com
+schema:
+- id: seg_obj
+  name: int_pings_segmented_to_journeys
+  physicalName: int_pings_segmented_to_journeys
+  logicalType: object
+  physicalType: table
+  description: 'The ping stream cut into journeys. One row per ping, carrying the journey it belongs to and where in that journey it sits. Everything hard about this dataset is handled here. A vehicle reference is reused all day and across operators, buses keep transmitting while parked on a terminus stand, and the feed gives us no journey identifier for any historical row -- so "which pings belong to one run of the route" has to be reconstructed. Six break conditions do it; the model header explains each and names its ceiling. Incremental (see the model''s own header for the read/write window and why the key is derived the way it is): three downstream models scan it, and recomputing the window functions over the full retained history every run was the single most expensive step in the project before that.'
+  dataGranularityDescription: One row per ping, with the journey it belongs to.
+  customProperties:
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.bus_id
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.line
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.feed_direction
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.operator
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.recorded_at
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.journey_ref
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.origin_ref
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.dest_ref
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.ping_ts
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.ping_local_date
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.hour_band
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.day_type
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.lat
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.lon
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.origin_aimed_dep_ts
+  - property: consumes
+    value: bus-cdp.stg_bods__vehicle_pings.dest_aimed_arr_ts
+  properties:
+  - id: seg_journey_key
+    name: journey_key
+    logicalType: string
+    physicalType: VARCHAR
+    primaryKey: true
+    primaryKeyPosition: 1
+    required: true
+    description: 'Synthetic journey identifier, ''<operator or ~none~>|<bus_id>#<epoch_ms of its first ping>'' (changed 2026-09-20 from ''<bus_id>#<epoch_ms>'': bus_id is minted by each operator, so it is not a vehicle identity on its own). Deterministic for a given physical journey regardless of how wide a window it was read through -- see the model header for why that matters once this became incremental.'
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_pings_segmented_to_journeys.sql:265-272 (varchar || .. || cast(.. as varchar))
+  - id: seg_bus_id
+    name: bus_id
+    logicalType: string
+    physicalType: VARCHAR
+    description: Operator's vehicle reference, passed through from stg_bods__vehicle_pings.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough of stg_bods__vehicle_pings.bus_id
+  - id: seg_line
+    name: line
+    logicalType: string
+    physicalType: VARCHAR
+    description: Service number, passed through from stg_bods__vehicle_pings.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: seg_feed_direction
+    name: feed_direction
+    logicalType: string
+    physicalType: VARCHAR
+    description: Normalised DirectionRef from stg_bods__vehicle_pings; NULL when the feed gave none.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: seg_operator
+    name: operator
+    logicalType: string
+    physicalType: VARCHAR
+    description: NOC of the operating company; NULL before 2026-09-12. Passed through from stg_bods__vehicle_pings.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: seg_journey_ref
+    name: journey_ref
+    logicalType: string
+    physicalType: VARCHAR
+    description: DatedVehicleJourneyRef from stg_bods__vehicle_pings; NULL before 2026-09-12.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: seg_origin_ref
+    name: origin_ref
+    logicalType: string
+    physicalType: VARCHAR
+    description: Origin stop code from stg_bods__vehicle_pings.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: seg_dest_ref
+    name: dest_ref
+    logicalType: string
+    physicalType: VARCHAR
+    description: Destination stop code from stg_bods__vehicle_pings.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: seg_ping_ts
+    name: ping_ts
+    logicalType: date
+    physicalType: TIMESTAMP
+    description: Ping instant, UTC wall clock, from stg_bods__vehicle_pings.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: seg_ping_local_date
+    name: ping_local_date
+    logicalType: date
+    physicalType: DATE
+    description: Europe/London local date of the ping. The incremental unique_key of this model.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: seg_hour_band
+    name: hour_band
+    logicalType: string
+    physicalType: VARCHAR
+    description: Hour band of this ping, from local time, from stg_bods__vehicle_pings.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: seg_day_type
+    name: day_type
+    logicalType: string
+    physicalType: VARCHAR
+    description: Day type of this ping, from local time, from stg_bods__vehicle_pings.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: seg_lat
+    name: lat
+    logicalType: number
+    physicalType: DOUBLE
+    description: WGS84 latitude from stg_bods__vehicle_pings.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: seg_lon
+    name: lon
+    logicalType: number
+    physicalType: DOUBLE
+    description: WGS84 longitude from stg_bods__vehicle_pings.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: seg_hop_km
+    name: hop_km
+    logicalType: number
+    physicalType: DOUBLE
+    description: Great-circle distance from the previous ping. Forced to zero on the first ping of a journey, where the previous ping belongs to a different run and is often in another town.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_pings_segmented_to_journeys.sql:284 (0.0 literal / macros/haversine.sql, double arithmetic)
+  - id: seg_origin_aimed_dep_ts
+    name: origin_aimed_dep_ts
+    logicalType: date
+    physicalType: TIMESTAMP
+    description: Scheduled departure from origin, from stg_bods__vehicle_pings; NULL before 2026-09-12.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: seg_dest_aimed_arr_ts
+    name: dest_aimed_arr_ts
+    logicalType: date
+    physicalType: TIMESTAMP
+    description: Scheduled arrival at destination, from stg_bods__vehicle_pings; NULL before 2026-09-12.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: seg_ping_seq
+    name: ping_seq
+    logicalType: integer
+    physicalType: BIGINT
+    primaryKey: true
+    primaryKeyPosition: 2
+    required: true
+    description: Position of this ping within its journey, 1-based. With journey_key it is the primary key of this table.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_pings_segmented_to_journeys.sql:285 (row_number())
+  - id: seg_cum_km
+    name: cum_km
+    logicalType: number
+    physicalType: DOUBLE
+    description: Running path length from the journey's first ping. Measured as the sum of straight hops between 3-minute samples, so it cuts corners and understates the true road distance by roughly 10-20% on winding urban routes. Consistent, which is what the regression needs.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_pings_segmented_to_journeys.sql:318 (sum of DOUBLE hop_km)
+  - id: seg_journey_start_ts
+    name: journey_start_ts
+    logicalType: date
+    physicalType: TIMESTAMP
+    description: First ping time of the untrimmed journey.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_pings_segmented_to_journeys.sql:319 (min of TIMESTAMP)
+  - id: seg_journey_end_ts
+    name: journey_end_ts
+    logicalType: date
+    physicalType: TIMESTAMP
+    description: Last ping time of the untrimmed journey.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_pings_segmented_to_journeys.sql:320 (max of TIMESTAMP)
+  - id: seg_journey_n_pings
+    name: journey_n_pings
+    logicalType: integer
+    physicalType: BIGINT
+    description: Ping count of the UNtrimmed journey; kept for diagnostics, not used as a filter.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_pings_segmented_to_journeys.sql:321 (count(*))
+  - id: seg_first_moving_seq
+    name: first_moving_seq
+    logicalType: integer
+    physicalType: BIGINT
+    description: ping_seq of the first ping at which the bus was actually moving (>= 50 m in a bucket). NULL if the journey never moved at all.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_pings_segmented_to_journeys.sql:332 (min of BIGINT ping_seq)
+  - id: seg_last_moving_seq
+    name: last_moving_seq
+    logicalType: integer
+    physicalType: BIGINT
+    description: 'ping_seq of the last moving ping. int_journeys_shaped_and_directed trims the journey to [first_moving_seq, last_moving_seq]: the stationary tail at the terminus is real time but not travel, and leaving it in absorbed into a large positive regression intercept. Measured: trimming moved r2 from 0.52 to 0.69.'
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_pings_segmented_to_journeys.sql:334 (max of BIGINT ping_seq)
+- id: jrn_obj
+  name: int_journeys_shaped_and_directed
+  physicalName: int_journeys_shaped_and_directed
+  logicalType: object
+  physicalType: table
+  description: 'One row per journey: where it ran, how far, how long, and which way round the route. Implausible journeys are dropped here, so every downstream model can take this table at face value. Also where direction is decided. Until 2026-09-23 this also INFERRED a direction from journey geometry whenever the feed''s own DirectionRef was NULL. Retired (ROADMAP.md 1.2.0): measured against the build warehouse, feed_direction now covers 68.1% of journeys, and where both existed the heuristic disagreed with it 53.9% of the time -- chance level, because the heuristic''s inbound/outbound split was never tied to the feed''s own convention. direction is now feed_direction, unmodified; NULL on the 31.9% the feed didn''t tag, which nothing downstream requires non-null.'
+  dataGranularityDescription: One row per surviving journey.
+  customProperties:
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.journey_key
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.bus_id
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.line
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.feed_direction
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.operator
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.journey_ref
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.origin_ref
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.dest_ref
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.origin_aimed_dep_ts
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.dest_aimed_arr_ts
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.ping_ts
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.lat
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.lon
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.cum_km
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.ping_seq
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.hour_band
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.day_type
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.first_moving_seq
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.last_moving_seq
+  properties:
+  - id: jrn_journey_key
+    name: journey_key
+    logicalType: string
+    physicalType: VARCHAR
+    primaryKey: true
+    primaryKeyPosition: 1
+    required: true
+    unique: true
+    description: Primary key. One row per surviving journey.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough of int_pings_segmented_to_journeys.journey_key
+  - id: jrn_bus_id
+    name: bus_id
+    logicalType: string
+    physicalType: VARCHAR
+    description: Operator's vehicle reference of the journey.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:54 (any_value of VARCHAR)
+  - id: jrn_line
+    name: line
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: Service number. Not a route identifier -- see stg_bods__vehicle_pings.line.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:55
+  - id: jrn_feed_direction
+    name: feed_direction
+    logicalType: string
+    physicalType: VARCHAR
+    description: The operator's DirectionRef if the feed supplied one for any ping of this journey, else NULL. Present on 68.1% of journeys as of 2026-09-23.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:58
+  - id: jrn_direction
+    name: direction
+    logicalType: string
+    physicalType: VARCHAR
+    description: 'feed_direction, unmodified -- see the model description. NULL where the feed did not tag this journey. Never ''*'': ''*'' names a fallback grain of the model, not a real direction of travel.'
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:183
+  - id: jrn_operator
+    name: operator
+    logicalType: string
+    physicalType: VARCHAR
+    description: NOC of the operating company; NULL before 2026-09-12.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:59
+  - id: jrn_journey_ref
+    name: journey_ref
+    logicalType: string
+    physicalType: VARCHAR
+    description: DatedVehicleJourneyRef of the journey, when the feed gave one.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:60
+  - id: jrn_origin_ref
+    name: origin_ref
+    logicalType: string
+    physicalType: VARCHAR
+    description: Scheduled origin stop code, when the feed gave one.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:61
+  - id: jrn_dest_ref
+    name: dest_ref
+    logicalType: string
+    physicalType: VARCHAR
+    description: Scheduled destination stop code, when the feed gave one.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:62
+  - id: jrn_origin_aimed_dep_ts
+    name: origin_aimed_dep_ts
+    logicalType: date
+    physicalType: TIMESTAMP
+    description: Scheduled departure from origin, when the feed gave one.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:63
+  - id: jrn_dest_aimed_arr_ts
+    name: dest_aimed_arr_ts
+    logicalType: date
+    physicalType: TIMESTAMP
+    description: Scheduled arrival, when the feed gave one. The sole input to int_journey_delays, and through it line_punctuality.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:64
+  - id: jrn_hour_band
+    name: hour_band
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: The band the journey STARTED in, from local time. A journey is short enough that using one band per journey keeps it inside one grain of the punctuality aggregate.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:83
+  - id: jrn_day_type
+    name: day_type
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: The service pattern of the local date the journey set off on. One value per journey, for the same reason as hour_band.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:84
+  - id: jrn_n_pings
+    name: n_pings
+    logicalType: integer
+    physicalType: BIGINT
+    description: Pings in the trimmed journey. At least 5 by construction -- fewer is not enough shape to measure anything.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:65 (count(*))
+  - id: jrn_start_cum_km
+    name: start_cum_km
+    logicalType: number
+    physicalType: DOUBLE
+    description: cum_km at the trimmed start, subtracted downstream so distances are measured from where the journey actually began moving.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:77
+  - id: jrn_start_ping_seq
+    name: start_ping_seq
+    logicalType: integer
+    physicalType: BIGINT
+    description: ping_seq of the trimmed start, so downstream models can re-slice int_pings_segmented_to_journeys to the same window.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:78
+  - id: jrn_end_ping_seq
+    name: end_ping_seq
+    logicalType: integer
+    physicalType: BIGINT
+    description: ping_seq of the trimmed end.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:79
+  - id: jrn_start_ts
+    name: start_ts
+    logicalType: date
+    physicalType: TIMESTAMP
+    description: Time of the first ping of the trimmed journey, UTC wall clock.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:66
+  - id: jrn_end_ts
+    name: end_ts
+    logicalType: date
+    physicalType: TIMESTAMP
+    description: Time of the last ping of the trimmed journey, UTC wall clock.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:67
+  - id: jrn_start_lat
+    name: start_lat
+    logicalType: number
+    physicalType: DOUBLE
+    description: Latitude of the first ping of the trimmed journey.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:70
+  - id: jrn_start_lon
+    name: start_lon
+    logicalType: number
+    physicalType: DOUBLE
+    description: Longitude of the first ping of the trimmed journey.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:71
+  - id: jrn_end_lat
+    name: end_lat
+    logicalType: number
+    physicalType: DOUBLE
+    description: Latitude of the last ping of the trimmed journey.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:72
+  - id: jrn_end_lon
+    name: end_lon
+    logicalType: number
+    physicalType: DOUBLE
+    description: Longitude of the last ping of the trimmed journey.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:73
+  - id: jrn_straight_km
+    name: straight_km
+    logicalType: number
+    physicalType: DOUBLE
+    description: 'Crow-flies distance from first to last position. Mostly a diagnostic: straight_km / path_km near zero means the journey returned to where it started, which is how the terminus-layover problem was found.'
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:94
+  - id: jrn_path_km
+    name: path_km
+    logicalType: number
+    physicalType: DOUBLE
+    description: Distance travelled along the observed path between the trimmed start and end. At least 0.5 km by construction.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:76
+  - id: jrn_duration_secs
+    name: duration_secs
+    logicalType: integer
+    physicalType: BIGINT
+    description: Trimmed journey duration. Constrained to 4 minutes .. 5 hours; outside that it is a fragment or a failed segmentation.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journeys_shaped_and_directed.sql:95 (date_diff returns BIGINT)
+  - id: jrn_mean_speed_kmh
+    name: mean_speed_kmh
+    logicalType: number
+    physicalType: DOUBLE
+    description: path_km over duration. Constrained to 1..90 km/h -- below is a parked bus with drifting GPS, above is a vehicle-ref collision the segmentation failed to split.
+    customProperties:
+    - property: typeInferredFrom
+      value: 'dbt/models/intermediate/int_journeys_shaped_and_directed.sql:104 (macros/speed.sql: DOUBLE / DECIMAL literal)'
+- id: mea_obj
+  name: int_pings_measured_to_journey_end
+  physicalName: int_pings_measured_to_journey_end
+  logicalType: object
+  physicalType: table
+  description: 'The training set for the ETA regression: for every ping of every surviving journey, how far and how long was left to run. This is the whole modelling idea in one table. remaining_km is the independent variable, remaining_secs the dependent one. int_eta_daily_stats boils it down to six numbers per cell per date, and eta_models pools those at eleven widths (ADR-0010) -- the same fit as eleven GROUP BYs over this table would give.'
+  dataGranularityDescription: One row per ping of a surviving journey, up to two short of its end.
+  customProperties:
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.journey_key
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.direction
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.operator
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.end_ts
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.path_km
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.start_cum_km
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.start_ping_seq
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.end_ping_seq
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.journey_key
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.line
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.hour_band
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.day_type
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.ping_ts
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.ping_seq
+  - property: consumes
+    value: bus-fdp.int_pings_segmented_to_journeys.cum_km
+  properties:
+  - id: mea_journey_key
+    name: journey_key
+    logicalType: string
+    physicalType: VARCHAR
+    primaryKey: true
+    primaryKeyPosition: 1
+    required: true
+    description: The journey this training row came from. With ping_seq, the primary key.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: mea_line
+    name: line
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: Service number, one of the grain columns of the fitted model.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: mea_direction
+    name: direction
+    logicalType: string
+    physicalType: VARCHAR
+    description: Journey direction, straight from the feed's DirectionRef -- see int_journeys_shaped_and_directed. A grain column of the fitted model; NULL forms its own grain like any other value.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: mea_operator
+    name: operator
+    logicalType: string
+    physicalType: VARCHAR
+    description: NOC of the operating company; NULL is its own group downstream.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: mea_day_type
+    name: day_type
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: 'The day pattern of THIS ping, from local time -- not of the journey. It matters at the seam: a journey leaving at 23:50 on Saturday is still running at 00:10 on Sunday, and the API asking "what is the pace right now" at 00:10 is asking a Sunday question.'
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: mea_hour_band
+    name: hour_band
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: The band of THIS ping, not of the journey. The API looks the model up by the band of the current clock time, so training rows have to be bucketed the same way -- a journey starting at 09:50 correctly contributes its first pings to am_peak and the rest to inter.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: mea_ping_ts
+    name: ping_ts
+    logicalType: date
+    physicalType: TIMESTAMP
+    description: Ping instant, UTC wall clock. Not described in the intermediate yml.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: mea_ping_seq
+    name: ping_seq
+    logicalType: integer
+    physicalType: BIGINT
+    primaryKey: true
+    primaryKeyPosition: 2
+    required: true
+    description: Position within the journey. Always at least two short of the end -- see remaining_km.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: mea_remaining_km
+    name: remaining_km
+    logicalType: number
+    physicalType: DOUBLE
+    required: true
+    description: 'Path distance from this ping to the journey''s final ping. Always strictly positive: the last two pings of every journey are dropped because they sit at remaining ~= 0, carry no information about pace, and left in they flatten r2 and drag the intercept toward zero.'
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_pings_measured_to_journey_end.sql:75 (DOUBLE arithmetic)
+  - id: mea_remaining_secs
+    name: remaining_secs
+    logicalType: integer
+    physicalType: BIGINT
+    required: true
+    description: Seconds from this ping to the journey's final ping. The regression target.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_pings_measured_to_journey_end.sql:76 (date_diff returns BIGINT)
+- id: eta_obj
+  name: int_eta_daily_stats
+  physicalName: int_eta_daily_stats
+  logicalType: object
+  physicalType: table
+  description: 'The ETA regression''s training set reduced to its sufficient statistics: one row per (stats_date, operator, line, direction, day_type, hour_band) -- eta_models'' finest grain plus the date -- holding the six numbers an ordinary least-squares fit of remaining_secs on remaining_km actually needs: the cell''s count, means, and centred sums of squares and products. Those add up across days and cells exactly (the pooled, or Chan, formulas in eta_models.sql), so a fit over pooled rows is the line regr_slope() would draw through the raw pings. tests/assert_eta_stats_match_raw_fit.sql checks that against the raw pings on the dates they still cover, and checks eta_models'' own pooling of this table. Why it exists (ADR-0010): one row per cell per day where the raw pings are ~13M rows a day, so it keeps history_days() of evidence after the pings themselves have aged out of the SSD. Incremental by stats_date: a run rewrites every date from two days before the newest one the table already held (the model header says why two), and the post-hook drops anything more than history_days() older than the newest. A missed night heals on the next run, as long as the raw window still holds its dates. full_refresh follows the `replay` var: a plain FULL_REFRESH=1 keeps this table, because it is the only copy of anything older than the extract window, and only an ops/incident.py replay rebuilds it, from whatever is in data/.'
+  dataGranularityDescription: One row per (stats_date, operator, line, direction, day_type, hour_band); operator and direction may be NULL and form their own group.
+  customProperties:
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.journey_key
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.end_ts
+  - property: consumes
+    value: bus-fdp.int_pings_measured_to_journey_end.journey_key
+  - property: consumes
+    value: bus-fdp.int_pings_measured_to_journey_end.operator
+  - property: consumes
+    value: bus-fdp.int_pings_measured_to_journey_end.line
+  - property: consumes
+    value: bus-fdp.int_pings_measured_to_journey_end.direction
+  - property: consumes
+    value: bus-fdp.int_pings_measured_to_journey_end.day_type
+  - property: consumes
+    value: bus-fdp.int_pings_measured_to_journey_end.hour_band
+  - property: consumes
+    value: bus-fdp.int_pings_measured_to_journey_end.remaining_km
+  - property: consumes
+    value: bus-fdp.int_pings_measured_to_journey_end.remaining_secs
+  properties:
+  - id: eta_stats_date
+    name: stats_date
+    logicalType: date
+    physicalType: DATE
+    required: true
+    description: 'Europe/London local date of the journey''s END, for every training ping of that journey: a journey across midnight belongs whole to the later date. The incremental key -- see the model description for which dates a run rewrites and which the post-hook drops.'
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_eta_daily_stats.sql:111 (cast .. as date)
+  - id: eta_operator
+    name: operator
+    logicalType: string
+    physicalType: VARCHAR
+    description: National Operator Code, as int_pings_measured_to_journey_end has it. NULL is its own group; eta_models' null guards decide which rungs may use it.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: eta_line
+    name: line
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: Service number, one of the grain columns of the fitted model.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: eta_direction
+    name: direction
+    logicalType: string
+    physicalType: VARCHAR
+    description: As int_pings_measured_to_journey_end has it, straight from the feed's DirectionRef. NULL forms its own group, exactly as it did in the raw fit.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: eta_day_type
+    name: day_type
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: The day pattern of each training PING, from local time, as in int_pings_measured_to_journey_end -- not of the journey, and not of stats_date.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: eta_hour_band
+    name: hour_band
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: The band of each training PING, as in int_pings_measured_to_journey_end.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: eta_n_obs
+    name: n_obs
+    logicalType: integer
+    physicalType: BIGINT
+    required: true
+    description: Training pings in this cell on this date (regr_count). At least 1 by construction.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_eta_daily_stats.sql:144 (regr_count)
+  - id: eta_avg_km
+    name: avg_km
+    logicalType: number
+    physicalType: DOUBLE
+    description: Mean remaining_km of those pings (regr_avgx).
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_eta_daily_stats.sql:145 (regr_avgx)
+  - id: eta_avg_secs
+    name: avg_secs
+    logicalType: number
+    physicalType: DOUBLE
+    description: Mean remaining_secs of those pings (regr_avgy).
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_eta_daily_stats.sql:146 (regr_avgy)
+  - id: eta_sxx
+    name: sxx
+    logicalType: number
+    physicalType: DOUBLE
+    description: Sum of squared deviations of remaining_km from avg_km (regr_sxx). Centred, not a raw sum of squares -- see the model header for why.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_eta_daily_stats.sql:147 (regr_sxx)
+  - id: eta_sxy
+    name: sxy
+    logicalType: number
+    physicalType: DOUBLE
+    description: Sum of the products of the remaining_km and remaining_secs deviations (regr_sxy).
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_eta_daily_stats.sql:148 (regr_sxy)
+  - id: eta_syy
+    name: syy
+    logicalType: number
+    physicalType: DOUBLE
+    description: Sum of squared deviations of remaining_secs from avg_secs (regr_syy).
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_eta_daily_stats.sql:149 (regr_syy)
+- id: dly_obj
+  name: int_journey_delays
+  physicalName: int_journey_delays
+  logicalType: object
+  physicalType: table
+  description: 'One row per journey line_punctuality aggregates: how late it finished against its scheduled arrival, filed under the local date it finished on. The three filters on which journeys count -- a scheduled arrival, a feed-tagged direction, a delay inside plus or minus two hours -- are the ones line_punctuality applied to int_journeys_shaped_and_directed before ADR-0010, now applied here. Kept for history_days() by stats_date, for the same reason as int_eta_daily_stats: the journeys it comes from are pruned along with their pings, which only go back extract_days. Incremental exactly as int_eta_daily_stats is: each run rewrites every date from two days before the newest one the table already held, older dates stay as they were last written, and the post-hook keeps history_days() of them. A plain FULL_REFRESH=1 keeps it; an ops/incident.py replay rebuilds it from data/. The model header has the rewrite arithmetic; ADR-0010 has the why.'
+  dataGranularityDescription: One row per journey that has a scheduled arrival, a feed direction and a delay within +-2 hours.
+  customProperties:
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.journey_key
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.line
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.direction
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.day_type
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.hour_band
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.end_ts
+  - property: consumes
+    value: bus-fdp.int_journeys_shaped_and_directed.dest_aimed_arr_ts
+  properties:
+  - id: dly_stats_date
+    name: stats_date
+    logicalType: date
+    physicalType: DATE
+    required: true
+    description: 'Europe/London local date of the journey''s trimmed end -- the ping_local_date of its last moving ping. The incremental key, rewritten and pruned exactly as int_eta_daily_stats.stats_date. It decides which night a row is written on, not a grain: day_type and hour_band are still the journey''s own, from where it started.'
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journey_delays.sql:76 (cast .. as date)
+  - id: dly_journey_key
+    name: journey_key
+    logicalType: string
+    physicalType: VARCHAR
+    primaryKey: true
+    primaryKeyPosition: 1
+    required: true
+    unique: true
+    description: Primary key, as int_journeys_shaped_and_directed.journey_key. One row per journey across every retained stats_date.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: dly_line
+    name: line
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: Service number.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: dly_direction
+    name: direction
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: feed_direction, never NULL here -- an untagged journey is excluded, as line_punctuality has always excluded it; see line_punctuality.direction for why.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: dly_day_type
+    name: day_type
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: The service pattern of the local date the journey set off on, as int_journeys_shaped_and_directed has it. One value per journey.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: dly_hour_band
+    name: hour_band
+    logicalType: string
+    physicalType: VARCHAR
+    required: true
+    description: The band the journey started in, from local time.
+    customProperties:
+    - property: typeInferredFrom
+      value: passthrough
+  - id: dly_delay_s
+    name: delay_s
+    logicalType: integer
+    physicalType: BIGINT
+    required: true
+    description: Scheduled arrival to the journey's last moving ping, in seconds, positive late. Within plus or minus 7200 by construction; beyond that it is a mis-joined schedule, not a late bus.
+    customProperties:
+    - property: typeInferredFrom
+      value: dbt/models/intermediate/int_journey_delays.sql:98 (date_diff returns BIGINT)
