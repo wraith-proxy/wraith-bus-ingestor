@@ -282,3 +282,22 @@ def test_overridden_commands_do_not_demand_their_tool(tmp_path):
     _, env = setup(tmp_path, SAME)  # build, test and lint all overridden
     r = _run_layout(tmp_path, env)  # neither dbt nor datacontract anywhere
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_lint_stage_calls_resolved_datacontract_on_each_contract(tmp_path):
+    """The real LINT template (no CUTOVER_LINT_CMD) runs the venv datacontract per contract."""
+    _, env = setup(tmp_path, SAME)
+    env.pop("CUTOVER_LINT_CMD")
+    repo, path = _layout(tmp_path, ("datacontract",))
+    calls = tmp_path / "calls.txt"
+    fake = repo / ".venv" / "bin" / "datacontract"
+    fake.write_text(f'#!/bin/sh\necho "$0 $@" >> {calls}\n')
+    (repo / "contracts").mkdir()
+    for n in ("a", "b"):
+        (repo / "contracts" / f"{n}.odcs.yaml").write_text("")
+    env["PATH"] = str(path)
+    r = subprocess.run([str(repo / "ops" / "cutover.sh"), "--no-prompt"], env=env,
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert calls.read_text().splitlines() == [f"{fake} lint contracts/a.odcs.yaml",
+                                              f"{fake} lint contracts/b.odcs.yaml"]
