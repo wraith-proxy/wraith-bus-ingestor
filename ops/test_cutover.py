@@ -43,8 +43,8 @@ def setup(tmp_path, cand):
     return db, env
 
 
-def run(env, *args):
-    return subprocess.run([str(SCRIPT), *args], env=env, capture_output=True, text=True)
+def run(env, *args, script=SCRIPT):
+    return subprocess.run([str(script), *args], env=env, capture_output=True, text=True)
 
 
 def test_dry_run_echoes_all_stages_and_writes_nothing(tmp_path):
@@ -128,15 +128,8 @@ def test_each_tool_falls_back_to_path_when_venv_lacks_it(tmp_path):
     """Live run 2026-11-15 died at stage 5: the repo .venv had python but not datacontract
     (it lives in ~/.local/bin), and the script assumed both came from the venv."""
     _, env = setup(tmp_path, SAME)
-    repo = tmp_path / "repo"
-    (repo / "ops").mkdir(parents=True)
-    (repo / ".venv" / "bin").mkdir(parents=True)
-    (repo / ".venv" / "bin" / "python3").symlink_to(sys.executable)
-    (repo / "ops" / "cutover.sh").write_text(SCRIPT.read_text())
-    (repo / "ops" / "cutover.sh").chmod(0o755)
-    (repo / "ops" / "cutover_compare.py").write_text("")
-    r = subprocess.run([str(repo / "ops" / "cutover.sh"), "--dry-run"], env=env,
-                       capture_output=True, text=True)
+    repo, _ = _layout(tmp_path)
+    r = run(env, "--dry-run", script=repo / "ops" / "cutover.sh")
     line = next(ln for ln in (r.stdout + r.stderr).splitlines() if "tools: python=" in ln)
     assert "datacontract=datacontract" in line, line
     assert ".venv/bin/python3" in line, line
@@ -257,8 +250,7 @@ def _run_layout(tmp_path, env, venv_tools=(), drop=()):
     for k in drop:
         env.pop(k)
     env["PATH"] = str(path)
-    return subprocess.run([str(repo / "ops" / "cutover.sh"), "--dry-run"], env=env,
-                          capture_output=True, text=True)
+    return run(env, "--dry-run", script=repo / "ops" / "cutover.sh")
 
 
 def test_dbt_resolves_from_venv_like_the_other_tools(tmp_path):
@@ -296,8 +288,7 @@ def test_lint_stage_calls_resolved_datacontract_on_each_contract(tmp_path):
     for n in ("a", "b"):
         (repo / "contracts" / f"{n}.odcs.yaml").write_text("")
     env["PATH"] = str(path)
-    r = subprocess.run([str(repo / "ops" / "cutover.sh"), "--no-prompt"], env=env,
-                       capture_output=True, text=True)
+    r = run(env, "--no-prompt", script=repo / "ops" / "cutover.sh")
     assert r.returncode == 0, r.stdout + r.stderr
     assert calls.read_text().splitlines() == [f"{fake} lint contracts/a.odcs.yaml",
                                               f"{fake} lint contracts/b.odcs.yaml"]
