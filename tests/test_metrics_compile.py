@@ -14,7 +14,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "ops" / "compile_metrics.py"
 OSSIE = ROOT / "contracts" / "metrics.ossie.yaml"
-GENERATED = ROOT / "dbt" / "models" / "marts" / "_generated" / "_semantic.yml"
+GENERATED = ROOT / "dbt" / "semantic" / "_semantic.yml"
 
 
 def _load(path, name):
@@ -112,3 +112,15 @@ def test_compiler_refuses_a_metric_over_a_missing_field():
     m["metrics"][0]["expression"]["sql"] = "SUM(Locality.noSuchField)"
     with pytest.raises(c.CompileError, match="noSuchField"):
         c.compile_model(m)
+
+
+@pytest.mark.skipif(not (ROOT / ".venv" / "bin" / "dbt").exists(), reason="dbt not installed here")
+def test_generated_semantic_yml_does_not_break_dbt_parse(tmp_path):
+    """#55 regression: _semantic.yml in the model paths made dbt parse exit 2 (no time spine)."""
+    sb = tmp_path / "sb"
+    subprocess.run([str(ROOT / "ops" / "dbt_sandbox.sh"), str(sb)], check=True, capture_output=True)
+    r = subprocess.run(
+        [str(ROOT / ".venv" / "bin" / "dbt"), "parse", "--project-dir", str(sb), "--profiles-dir", str(sb)],
+        capture_output=True, text=True,
+    )
+    assert r.returncode == 0, r.stdout[-2000:] + r.stderr[-2000:]

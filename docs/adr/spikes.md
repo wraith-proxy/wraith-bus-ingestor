@@ -23,7 +23,7 @@ Results of short experiments run in a throwaway dbt sandbox. The repo itself was
 
 **Caveats:**
 1. An incremental model with an enforced contract needs `on_schema_change` set to `append_new_columns` or `fail`. Without it, the run hits a parse error.
-2. A fresh sandbox does not parse. `models/marts/_generated/_semantic.yml` needs a MetricFlow time spine model. The file was moved out of the sandbox copy only. The repo was not touched.
+2. A fresh sandbox does not parse. `models/marts/_generated/_semantic.yml` needs a MetricFlow time spine model. The file was moved out of the sandbox copy only. The repo was not touched. Resolved (#55): generated file now lives at `dbt/semantic/_semantic.yml`, outside `model-paths`, until the semantic layer is switched on with a time spine.
 
 ## Spike (b) incremental schema change without full refresh
 
