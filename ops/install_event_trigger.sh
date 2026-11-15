@@ -22,5 +22,8 @@ systemctl enable --now wraith-bus-extract.timer
 systemctl enable --now wraith-bus-extract.path
 stage "5/5 verify"
 systemctl is-enabled wraith-bus-extract.timer wraith-bus-extract.path
-! systemctl is-enabled --quiet wraith-bus-build.timer
+if systemctl is-enabled --quiet wraith-bus-build.timer; then
+  echo "ERROR: wraith-bus-build.timer is still enabled; it would double-run the build with the path unit" >&2
+  exit 1
+fi
 stage "done; log at $LOG"

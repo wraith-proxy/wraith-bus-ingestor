@@ -76,3 +76,34 @@ def test_alerts_waiting_does_not_page():
     assert by["wraith-nightly-build"]["labels"]["severity"] != "critical"
     assert by["wraith-marts-state"]["labels"]["severity"] == "critical"
     assert by["wraith-nightly-build"]["noDataState"] != "Alerting"
+
+
+def _run_install(tmp_path, timer_enabled):
+    """Run the installer with cp/systemctl stubbed on PATH; never touches systemd."""
+    import os
+    import subprocess
+
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (bindir / "cp").write_text("#!/bin/sh\nexit 0\n")
+    # is-enabled --quiet for the old build timer reports enabled (exit 0) when asked.
+    flag = "0" if timer_enabled else "1"
+    (bindir / "systemctl").write_text(
+        '#!/bin/sh\ncase "$*" in\n'
+        f'  "is-enabled --quiet wraith-bus-build.timer") exit {flag};;\n'
+        "esac\nexit 0\n"
+    )
+    for f in bindir.iterdir():
+        f.chmod(0o755)
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "LOG": str(tmp_path / "i.log")}
+    return subprocess.run(["bash", str(INSTALL)], env=env, capture_output=True, text=True)
+
+
+def test_install_fails_when_old_timer_still_enabled(tmp_path):
+    r = _run_install(tmp_path, timer_enabled=True)
+    assert r.returncode != 0
+    assert "wraith-bus-build.timer" in (r.stdout + r.stderr)
+
+
+def test_install_succeeds_when_old_timer_disabled(tmp_path):
+    assert _run_install(tmp_path, timer_enabled=False).returncode == 0
