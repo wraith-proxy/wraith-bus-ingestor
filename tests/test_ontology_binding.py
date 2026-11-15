@@ -74,6 +74,27 @@ def test_derived_object_is_not_held_to_the_contracts_primary_key(tmp_path):
     assert res.failures == []
 
 
+def _with_function(impl):
+    onto = ontology(["operatorRef"], {"operatorRef": "operator"})
+    onto["functions"] = [{"apiName": "f", "implementation": impl}]
+    return onto
+
+
+def test_function_implementation_pointer_resolves(tmp_path):
+    res = run(tmp_path, _with_function("backend/app.py::predict"), contract(["operator"]))
+    assert res.failures == []
+
+
+def test_function_implementation_missing_file_fails(tmp_path):
+    res = run(tmp_path, _with_function("backend/nope.py::predict"), contract(["operator"]))
+    assert any("implementation" in f and "nope.py" in f for f in res.failures), res.failures
+
+
+def test_function_implementation_missing_symbol_fails(tmp_path):
+    res = run(tmp_path, _with_function("backend/app.py::no_such_fn"), contract(["operator"]))
+    assert any("implementation" in f and "no_such_fn" in f for f in res.failures), res.failures
+
+
 def test_real_ontology_binds_cleanly_to_real_contracts(tmp_path):
     root = Path(__file__).resolve().parent.parent / "contracts"
     contracts = {p.name: yaml.safe_load(p.read_text()) for p in root.glob("*.odcs.yaml")}

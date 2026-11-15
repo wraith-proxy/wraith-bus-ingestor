@@ -21,6 +21,7 @@ import re
 import sys
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import yaml
 
@@ -474,6 +475,21 @@ def validate_ontology(path, contracts, res):
                          f"{side} references {spec['objectType']}.{spec['property']} "
                          "which does not exist")
         _check_through(link, by_alias, unvalidated, res)
+
+    # A function's `implementation: path::symbol` must name a real top-level def/class,
+    # so the pointer an agent follows cannot rot silently.
+    repo = Path(__file__).resolve().parent.parent
+    for fn in onto.get("functions", []):
+        impl = fn.get("implementation")
+        if not impl:
+            continue
+        rel, _, symbol = impl.partition("::")
+        src = repo / rel
+        if not src.is_file():
+            res.fail(fn["apiName"], f"implementation file {rel!r} does not exist")
+        elif not re.search(rf"^(?:async\s+)?(?:def|class)\s+{re.escape(symbol)}\b",
+                           src.read_text(), re.M):
+            res.fail(fn["apiName"], f"implementation symbol {symbol!r} not defined in {rel}")
 
     if len(res.failures) == failed_before:
         res.ok(f"{bound} ontology property bindings resolve; "

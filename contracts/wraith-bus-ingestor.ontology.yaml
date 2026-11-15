@@ -5,7 +5,7 @@
 # key and a title property, typed link types with explicit cardinality, and
 # functions. There is no open standard for this the way there is for the data
 # contract itself, so the shape below is Foundry-conventional rather than
-# normative -- it is documented in contracts/README.md.
+# normative -- it is documented in docs/contracts.md.
 #
 # The point of it: the contracts say what the COLUMNS are, this says what the
 # THINGS are. Every property here binds to a contract + schema object + property,
