@@ -213,7 +213,7 @@ def check_quality(engine, res, rule, table, prop=None):
                 keys = ", ".join(engine.quote(c) for c in cols)
                 value = engine.scalar(
                     f"SELECT coalesce(sum(n - 1), 0) FROM "
-                    f"(SELECT count(*) AS n FROM {t} GROUP BY {keys} HAVING count(*) > 1)")
+                    f"(SELECT count(*) AS n FROM {t} GROUP BY {keys}) WHERE n > 1")
             elif metric == "invalidValues":
                 col = engine.quote(prop)
                 valid = args.get("validValues")

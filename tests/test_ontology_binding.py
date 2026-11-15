@@ -95,6 +95,61 @@ def test_function_implementation_missing_symbol_fails(tmp_path):
     assert any("implementation" in f and "no_such_fn" in f for f in res.failures), res.failures
 
 
+class _DuckStub:
+    """Just enough of an engine for check_quality, over an in-memory DuckDB, recording the SQL."""
+
+    def __init__(self, rows):
+        import duckdb
+
+        self.sql = []
+        self.con = duckdb.connect()
+        self.con.execute("create table t(a varchar, b varchar)")
+        self.con.executemany("insert into t values (?, ?)", rows)
+
+    quote = staticmethod(lambda ident: f'"{ident}"')
+    scope = staticmethod(lambda table: table)
+
+    def scalar(self, sql):
+        self.sql.append(sql)
+        return self.con.execute(sql).fetchone()[0]
+
+
+def _composite_rule():
+    return {"id": "primaryKey", "metric": "duplicateValues", "mustBe": 0,
+            "arguments": {"properties": ["a", "b"]}}
+
+
+def test_composite_key_check_avoids_having_which_questdb_rejects():
+    """The 2026-11-15 live build failed with QuestDB HTTP 400 on this check: no HAVING."""
+    engine = _DuckStub([("x", "1"), ("x", "2")])
+    validate.check_quality(engine, validate.Result(), _composite_rule(), "t")
+    assert engine.sql and all("HAVING" not in q.upper() for q in engine.sql), engine.sql
+
+
+def test_composite_key_check_still_counts_duplicates():
+    clean, dup = _DuckStub([("x", "1"), ("x", "2")]), _DuckStub([("x", "1"), ("x", "1")])
+    res_clean, res_dup = validate.Result(), validate.Result()
+    validate.check_quality(clean, res_clean, _composite_rule(), "t")
+    validate.check_quality(dup, res_dup, _composite_rule(), "t")
+    assert res_clean.failures == [] and len(res_dup.failures) == 1
+
+
+def test_positions_contract_has_no_composite_row_key():
+    """bus_positions rows are pings: many per vehicle. (bus_id, operator) is not a row key."""
+    root = Path(__file__).resolve().parent.parent / "contracts"
+    doc = yaml.safe_load((root / "bus-positions.odcs.yaml").read_text())
+    for obj in doc["schema"]:
+        keys = [p["name"] for p in obj["properties"] if p.get("primaryKey")]
+        assert len(keys) <= 1, f"{obj['name']} declares a composite key {keys}"
+
+
+def test_vehicle_is_a_derived_view_not_row_grain():
+    root = Path(__file__).resolve().parent.parent / "contracts"
+    onto = yaml.safe_load((root / "wraith-bus-ingestor.ontology.yaml").read_text())
+    vehicle = next(o for o in onto["objectTypes"] if o["apiName"] == "Vehicle")
+    assert all(b.get("grain") != "row" for b in vehicle["backingDatasets"])
+
+
 def test_real_ontology_binds_cleanly_to_real_contracts(tmp_path):
     root = Path(__file__).resolve().parent.parent / "contracts"
     contracts = {p.name: yaml.safe_load(p.read_text()) for p in root.glob("*.odcs.yaml")}

@@ -152,9 +152,9 @@ objectTypes:
     backingDatasets:
       - contract: positions
         object: bus_positions
-        grain: row
         note: >-
-          The live tail only -- newest row per vehicle inside a five-minute
+          A derived view, not row grain (a bus_positions row is one ping, many per
+          vehicle). The live tail only -- newest row per vehicle inside a five-minute
           ingest window, further filtered to those whose recorded_at is under
           10 minutes old. Vehicles failing that filter are not Vehicle objects;
           they are replayed dead records.
@@ -319,6 +319,7 @@ objectTypes:
     properties:
       - apiName: operatorRef
         valueType: String
+        nullable: true
         binding: {contract: positions, object: bus_positions, property: operator}
 
   - apiName: Stop
