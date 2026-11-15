@@ -53,7 +53,7 @@ done
 DB="${CUTOVER_DB:-$REPO/dbt/wraith_bus_ingestor_build.duckdb}"
 DATA="${CUTOVER_DATA:-$REPO/dbt/data}"
 WORK="${CUTOVER_WORK:-$(dirname "$DB")/cutover-work}"
-BACKUP_DIR="${CUTOVER_BACKUP_DIR:-/mnt/archive/build_db_backup}"
+BACKUP_DIR="${CUTOVER_BACKUP_DIR:-/mnt/vault2/wraith-bus-ingestor-build-backup}"
 UNIT="${CUTOVER_UNIT:-wraith-bus-build.service}"
 # 13000M is the build unit's MemoryMax (spike c: MetricFlow adds ~0.2G on top).
 MIN_MEM_MB="${CUTOVER_MIN_MEM_MB:-13000}"

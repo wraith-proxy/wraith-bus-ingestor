@@ -40,7 +40,7 @@ build output in `build-baseline.log` and `build-candidate.log`):
 | Stage | What | Failure leaves |
 | --- | --- | --- |
 | 0 preflight | not root, no build running, memory, disk | nothing written |
-| 1 backup | whole file to `/mnt/archive/build_db_backup/` | nothing changed |
+| 1 backup | whole file to `/mnt/vault2/wraith-bus-ingestor-build-backup/` | nothing changed |
 | 2 copies | BASELINE (old code, `CUTOVER_OLD_REF`, the pre-merge commit) and CANDIDATE (this code), each a copy of the file, sharing `data/` | live file untouched |
 | 3 build | `dbt run` in each copy | live file untouched |
 | 4 compare | `ops/cutover_compare.py` on `eta_models`, `localities`, `line_punctuality`: row counts and every non-DOUBLE column exactly; DOUBLE columns within `1e-6 + 1e-9*|x|` (3-thread sums are not bit-reproducible) | live file untouched |
@@ -66,7 +66,7 @@ baseline (`ops/sql_ratchet.py`).
 2. Check out the pre-cutover code (the commit before the merge).
 3. Put the old file back: `mv -f <file>.pre-cutover-<stamp> dbt/wraith_bus_ingestor_build.duckdb`
    (same filesystem, atomic). If it is gone, restore the stamped file from
-   `/mnt/archive/build_db_backup/` instead.
+   `/mnt/vault2/wraith-bus-ingestor-build-backup/` instead.
 4. `rm -f dbt/wraith_bus_ingestor_build.duckdb.wal`, then run one normal build.
 
 **Limit: rollback is lossless only within the extract window (`EXTRACT_DAYS=4`).**
