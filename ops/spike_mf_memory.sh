@@ -29,8 +29,8 @@ case "$WORK" in "$REPO"|"$REPO"/*|/tmp|/tmp/*|""|"/"|"$HOME") die "WORK must be 
 [[ -f "$BUILD" ]] || die "missing $BUILD"
 free_gb=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc 0-9)
 [[ $free_gb -ge $MIN_FREE_GB ]] || die "only ${free_gb}G free, need $MIN_FREE_GB"
-if pgrep -f "build.sh|dbt run|extract.py" >/dev/null; then die "a build or extract is running"; fi
-hh=$(date -u +%H%M); [[ $hh -lt 0230 || $hh -gt 0430 ]] || die "inside the nightly build window (02:30-04:30 UTC)"
+if ${PGREP:-pgrep} -f "build.sh|dbt run|extract.py" >/dev/null; then die "a build or extract is running"; fi
+hh=${NOW_HHMM:-$(date -u +%H%M)}; [[ $((10#$hh)) -lt 230 || $((10#$hh)) -gt 430 ]] || die "inside the nightly build window (02:30-04:30 UTC)"
 say "ok: ${free_gb}G free, build $(du -h "$BUILD" | cut -f1)"
 
 say "stage 1: scratch venv (dbt + metricflow, versions from the #54 feasibility check)"
