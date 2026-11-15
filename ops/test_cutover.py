@@ -135,7 +135,8 @@ def _stub(tmp_path, marker=None):
                                   "wraith-bus-extract.path"])
 def test_active_unit_blocks_preflight(tmp_path, unit):
     _, env = setup(tmp_path, SAME)
-    env.update(CUTOVER_STATE_CMD=_stub(tmp_path), STUB_ACTIVE=unit, CUTOVER_UNIT="wraith-bus-build.service")
+    env.update(CUTOVER_STATE_CMD=_stub(tmp_path), STUB_ACTIVE=unit,
+               CUTOVER_UNIT="wraith-bus-build.service")
     r = run(env, "--dry-run")
     assert r.returncode != 0 and unit in r.stdout
 
@@ -143,7 +144,9 @@ def test_active_unit_blocks_preflight(tmp_path, unit):
 def test_build_started_during_prompt_blocks_swap(tmp_path):
     db, env = setup(tmp_path, SAME)
     marker = tmp_path / "started"
-    env.update(CUTOVER_UNIT="wraith-bus-build.service", CUTOVER_STATE_CMD=_stub(tmp_path, marker), STUB_ACTIVE="wraith-bus-build.service",
+    env.update(CUTOVER_UNIT="wraith-bus-build.service",
+               CUTOVER_STATE_CMD=_stub(tmp_path, marker),
+               STUB_ACTIVE="wraith-bus-build.service",
                CUTOVER_VALIDATE_CMD=f"touch {marker}")
     r = run(env, "--no-prompt")
     assert r.returncode == 4 and "not swapping" in r.stdout, r.stdout
