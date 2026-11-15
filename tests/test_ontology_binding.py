@@ -335,7 +335,8 @@ def test_ossie_dataset_without_a_foundry_object_type_fails(tmp_path):
 def test_ossie_relationship_naming_an_undeclared_field_fails(tmp_path):
     model, onto, contracts = ossie_case()
     model["relationships"] = [
-        {"name": "r", "from": "Thing", "to": "Thing", "from_columns": ["zzz"], "to_columns": ["code"]}
+        {"name": "r", "from": "Thing", "to": "Thing",
+         "from_columns": ["zzz"], "to_columns": ["code"]}
     ]
     res = ossie_run(tmp_path, model, onto, contracts)
     assert any("r" in f and "'zzz'" in f for f in res.failures), res.failures

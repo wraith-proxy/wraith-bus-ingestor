@@ -629,7 +629,8 @@ def check_generated(root, generate=None):
             else:
                 with open(fresh[rel]) as a, open(committed[rel]) as b:
                     if _normalise(a.read()) != _normalise(b.read()):
-                        problems.append(f"{rel}: differs from regeneration (hand edit or stale); run modelgen run")
+                        problems.append(f"{rel}: differs from regeneration "
+                                    "(hand edit or stale); run modelgen run")
         return problems
 
 
@@ -654,7 +655,8 @@ def main():
         problems = check_generated(ROOT)
         for p in problems:
             print(f"  - {p}")
-        print("generated files in sync" if not problems else f"{len(problems)} generated file(s) drifted")
+        print("generated files in sync" if not problems
+              else f"{len(problems)} generated file(s) drifted")
         return 1 if problems else 0
 
     paths = args.contract or [os.path.join(HERE, f) for f in

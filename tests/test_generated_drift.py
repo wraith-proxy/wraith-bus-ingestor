@@ -22,7 +22,8 @@ BODY = "select 1 as failure\n"
 
 def _repo(tmp_path, version="0.16.0"):
     (tmp_path / ".modelgen.yml").write_text(
-        "sources_contracts: contracts/x.odcs.yaml\nsources_output: dbt/models\ntests_output: dbt/tests\n"
+        "sources_contracts: contracts/x.odcs.yaml\nsources_output: dbt/models\n"
+        "tests_output: dbt/tests\n"
     )
     f = tmp_path / OUT / "a.sql"
     f.parent.mkdir(parents=True)
