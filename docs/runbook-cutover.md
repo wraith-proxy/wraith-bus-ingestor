@@ -11,7 +11,15 @@ So the candidate is a **copy** of that file, never a rebuild from scratch.
 
 - modelgen released; this branch merged and checked out as `main`.
 - Choose a Saturday, outside 01:30 to 05:00 UTC. The script refuses while
-  `wraith-bus-build.service` is active.
+  `wraith-bus-build.service`, `wraith-bus-extract.service` or
+  `wraith-bus-extract.path` is active, and checks again right before the swap
+  (exit 4 if a build started while it waited for your `go`).
+- Stop the extract timer and the extract path unit for the whole cutover, and
+  start them again afterwards.
+- **Record the pre-merge commit or tag BEFORE merging**, and export it:
+  `CUTOVER_OLD_REF=<commit-or-tag> ops/cutover.sh`. After the merge the default
+  `origin/main` is the new code, baseline equals candidate, and the compare would
+  prove nothing; the script refuses to run when the two trees are identical.
 - Stop osrm, backend and tiles (as for a full build). Keep the ingestor and
   QuestDB running. The preflight needs at least 13000 MB of available memory
   (the build unit's `MemoryMax`) and two warehouse copies plus 1 GB free beside
@@ -33,7 +41,7 @@ build output in `build-baseline.log` and `build-candidate.log`):
 | --- | --- | --- |
 | 0 preflight | not root, no build running, memory, disk | nothing written |
 | 1 backup | whole file to `/mnt/archive/build_db_backup/` | nothing changed |
-| 2 copies | BASELINE (old code, `origin/main`) and CANDIDATE (this code), each a copy of the file, sharing `data/` | live file untouched |
+| 2 copies | BASELINE (old code, `CUTOVER_OLD_REF`, the pre-merge commit) and CANDIDATE (this code), each a copy of the file, sharing `data/` | live file untouched |
 | 3 build | `dbt run` in each copy | live file untouched |
 | 4 compare | `ops/cutover_compare.py` on `eta_models`, `localities`, `line_punctuality`: row counts and every non-DOUBLE column exactly; DOUBLE columns within `1e-6 + 1e-9*|x|` (3-thread sums are not bit-reproducible) | live file untouched |
 | 5 validate | offline `datacontract lint`, then `contracts/validate.py` on the candidate | live file untouched |

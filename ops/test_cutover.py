@@ -121,3 +121,56 @@ def test_tools_do_not_depend_on_uv(tmp_path):
     line = next(ln for ln in (r.stdout + r.stderr).splitlines() if "tools: python=" in ln)
     assert "uv" not in line.split("python=")[1].split()[0].split("/")
     assert "uv run" not in (Path(__file__).parent / "cutover.sh").read_text()
+
+
+def _stub(tmp_path, marker=None):
+    s = tmp_path / "state.sh"
+    cond = f'[ -e "{marker}" ] && ' if marker else ""
+    s.write_text(f'#!/bin/sh\n{cond}[ "$1" = "$STUB_ACTIVE" ] && echo active || echo inactive\n')
+    s.chmod(0o755)
+    return str(s)
+
+
+@pytest.mark.parametrize("unit", ["wraith-bus-build.service", "wraith-bus-extract.service",
+                                  "wraith-bus-extract.path"])
+def test_active_unit_blocks_preflight(tmp_path, unit):
+    _, env = setup(tmp_path, SAME)
+    env.update(CUTOVER_STATE_CMD=_stub(tmp_path), STUB_ACTIVE=unit, CUTOVER_UNIT="wraith-bus-build.service")
+    r = run(env, "--dry-run")
+    assert r.returncode != 0 and unit in r.stdout
+
+
+def test_build_started_during_prompt_blocks_swap(tmp_path):
+    db, env = setup(tmp_path, SAME)
+    marker = tmp_path / "started"
+    env.update(CUTOVER_UNIT="wraith-bus-build.service", CUTOVER_STATE_CMD=_stub(tmp_path, marker), STUB_ACTIVE="wraith-bus-build.service",
+               CUTOVER_VALIDATE_CMD=f"touch {marker}")
+    r = run(env, "--no-prompt")
+    assert r.returncode == 4 and "not swapping" in r.stdout, r.stdout
+    assert not list(db.parent.glob("*.pre-cutover-*"))
+
+
+def test_work_guard_refuses_data_and_foreign_dirs(tmp_path):
+    db, env = setup(tmp_path, SAME)
+    data = Path(env["CUTOVER_DATA"])
+    for bad in (data, data / "sub"):
+        env["CUTOVER_WORK"] = str(bad)
+        r = run(env, "--dry-run")
+        assert r.returncode != 0 and "WORK" in r.stdout
+    foreign = db.parent / "precious"
+    foreign.mkdir()
+    (foreign / "x").write_text("keep")
+    env["CUTOVER_WORK"] = str(foreign)
+    r = run(env, "--no-prompt")
+    assert r.returncode != 0 and (foreign / "x").exists()
+    repo = Path(__file__).resolve().parent.parent
+    env["CUTOVER_WORK"] = str(repo / "dbt" / "data")
+    assert run(env, "--dry-run").returncode != 0
+
+
+def test_same_tree_baseline_refused(tmp_path):
+    _, env = setup(tmp_path, SAME)
+    env.pop("CUTOVER_SRC_ONLY")
+    env["CUTOVER_OLD_REF"] = "HEAD"
+    r = run(env, "--dry-run")
+    assert r.returncode != 0 and "same tree" in r.stdout and "CUTOVER_OLD_REF" in r.stdout

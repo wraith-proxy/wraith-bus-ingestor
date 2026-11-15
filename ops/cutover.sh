@@ -30,7 +30,7 @@
 # Env overrides (used by ops/test_cutover.py): CUTOVER_DB CUTOVER_DATA
 # CUTOVER_WORK CUTOVER_BACKUP_DIR CUTOVER_LOGDIR CUTOVER_UNIT
 # CUTOVER_MIN_MEM_MB CUTOVER_TABLES CUTOVER_OLD_REF CUTOVER_BUILD_CMD
-# CUTOVER_SRC_ONLY CUTOVER_LINT_CMD CUTOVER_VALIDATE_CMD
+# CUTOVER_SRC_ONLY CUTOVER_STATE_CMD CUTOVER_LINT_CMD CUTOVER_VALIDATE_CMD
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -83,10 +83,24 @@ stage "STAGE 0 preflight"
 (( EUID == 0 )) && die "refusing to run as root (a root-owned warehouse fails the nightly build)"
 [[ -f "$DB" ]] || die "no warehouse at $DB"
 [[ -e "$DB.wal" ]] && die "$DB.wal exists: a build holds or crashed on the file"
-if [[ "$UNIT" != none ]] && command -v systemctl >/dev/null; then
-  st="$(systemctl --user is-active "$UNIT" 2>/dev/null || systemctl is-active "$UNIT" 2>/dev/null || true)"
-  [[ "$st" == active || "$st" == activating ]] && die "$UNIT is $st: wait for the build to finish"
-fi
+# Unit states: system level only (a user-level query prints a second line and masked the
+# real state). CUTOVER_STATE_CMD names a stub taking the unit and printing its ActiveState.
+unit_state() {
+  if [[ -n "${CUTOVER_STATE_CMD:-}" ]]; then "$CUTOVER_STATE_CMD" "$1"
+  else systemctl show -p ActiveState --value "$1" 2>/dev/null; fi
+}
+check_no_build() {
+  [[ "$UNIT" == none && -z "${CUTOVER_STATE_CMD:-}" ]] && return 0
+  [[ -z "${CUTOVER_STATE_CMD:-}" ]] && ! command -v systemctl >/dev/null && return 0
+  local u st
+  for u in "$UNIT" wraith-bus-extract.service wraith-bus-extract.path; do
+    [[ "$u" == none ]] && continue
+    st="$(unit_state "$u" | head -n1)"
+    [[ "$st" == active || "$st" == activating ]] && return 1
+  done
+  return 0
+}
+check_no_build || die "$UNIT, wraith-bus-extract.service or wraith-bus-extract.path is active: stop the extract timer and path unit and wait for the build to finish"
 avail_mb=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo)
 say "memory available ${avail_mb} MB, need ${MIN_MEM_MB} MB"
 (( avail_mb >= MIN_MEM_MB )) || die "not enough memory: ${avail_mb} MB < ${MIN_MEM_MB} MB (stop osrm/backend/tiles first)"
@@ -104,6 +118,21 @@ fi
 if (( ! DRY )) && [[ -z "${CUTOVER_SRC_ONLY:-}" && ! -d "$PACKAGES" ]]; then
   die "no dbt_packages at $PACKAGES (gitignored, not in the git archive): run 'dbt deps' in $REPO/dbt first"
 fi
+# WORK is rm -rf'd later: it must never be the data dir, hold it, or be a directory that
+# is not a previous cutover-work dir (marker file).
+case "$WORK/" in "$DATA"/*) die "WORK must not be or sit inside the data dir $DATA" ;; esac
+case "$DATA/" in "$WORK"/*) die "WORK must not contain the data dir $DATA" ;; esac
+if [[ "$WORK" == "$REPO"/* && "$WORK" != "$REPO/dbt/cutover-work" ]]; then
+  die "WORK must not sit inside the repo tree (only the default $REPO/dbt/cutover-work)"
+fi
+if [[ -e "$WORK" ]] && [[ ! -d "$WORK" || ( -n "$(ls -A "$WORK" 2>/dev/null)" && ! -f "$WORK/.cutover-work" ) ]]; then
+  die "WORK $WORK exists and is not a cutover-work dir (no .cutover-work marker): refusing to delete it"
+fi
+if [[ -z "${CUTOVER_SRC_ONLY:-}" ]]; then
+  [[ "$(git -C "$REPO" rev-parse "$OLD_REF^{tree}" 2>/dev/null)" ]] || die "cannot resolve baseline ref $OLD_REF"
+  [[ "$(git -C "$REPO" rev-parse "$OLD_REF^{tree}")" != "$(git -C "$REPO" rev-parse 'HEAD^{tree}')" ]] \
+    || die "baseline $OLD_REF and HEAD have the same tree: the compare would prove nothing. Set CUTOVER_OLD_REF to the commit or tag from before the merge"
+fi
 say "tools: python=$PY datacontract=$DCLI"
 say "preflight ok"
 
@@ -119,10 +148,9 @@ stage "STAGE 2 copies  (baseline = $OLD_REF code, candidate = HEAD code, history
 if (( DRY )); then
   say "   (dry-run) would: copy $DB twice into $WORK, extract code, link data/ -> $DATA"
 else
-  [[ "$WORK" == "$REPO"/* && "$WORK" != "$REPO/dbt/"* ]] && die "WORK must not sit inside the repo tree"
   [[ "$(stat -c %d "$(dirname "$DB")")" == "$(stat -c %d "$(dirname "$WORK")")" ]] \
     || die "WORK must be on the same filesystem as $DB (the swap is a rename)"
-  rm -rf "$WORK"; mkdir -p "$BASE" "$CAND"
+  rm -rf "$WORK"; mkdir -p "$BASE" "$CAND"; : > "$WORK/.cutover-work"
   if [[ -z "${CUTOVER_SRC_ONLY:-}" ]]; then
     git -C "$REPO" archive "$OLD_REF" dbt | tar -C "$WORK/baseline" -xf - || die "cannot extract $OLD_REF"
     git -C "$REPO" archive HEAD dbt | tar -C "$WORK/candidate" -xf - || die "cannot extract HEAD"
@@ -177,6 +205,7 @@ KEEP="$DB.pre-cutover-$STAMP"
 if (( DRY )); then
   say "   (dry-run) would: ln $DB $KEEP ; mv -f candidate $DB ; rm -f $DB.wal"
 else
+  check_no_build || die "a build or extract started while waiting: not swapping. Candidate kept in $WORK" 4
   ln "$DB" "$KEEP" || die "cannot keep the old file"
   mv -f "$CAND/$(basename "$DB")" "$DB" || die "swap failed (old file still in place)"
   rm -f "$DB.wal"
