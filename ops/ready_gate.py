@@ -47,11 +47,14 @@ def _failures(contract: dict, data_dir: Path) -> list[str]:
             for rule in obj.get("quality", []) or []:
                 if rule.get("type") != "sql" or rule.get("severity", "error") != "error":
                     continue
-                for key, fn in _OPS.items():
-                    if key in rule:
-                        value = con.execute(rule["query"].replace("{object}", "o")).fetchone()[0]
-                        if not fn(value, rule[key]):
-                            fails.append(f"{rule.get('id')}: {key} {rule[key]}, got {value}")
+                known = [k for k in _OPS if k in rule]
+                if not known:
+                    fails.append(f"{rule.get('id')}: no recognised operator, cannot evaluate")
+                    continue
+                for key in known:
+                    value = con.execute(rule["query"].replace("{object}", "o")).fetchone()[0]
+                    if not _OPS[key](value, rule[key]):
+                        fails.append(f"{rule.get('id')}: {key} {rule[key]}, got {value}")
             con.execute("DROP VIEW o")
     finally:
         con.close()

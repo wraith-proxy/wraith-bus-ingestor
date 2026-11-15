@@ -93,3 +93,22 @@ def test_failed_validation_leaves_no_stale_marker_write(tmp_path, contract):
     marker = tmp_path / "extract.ready"
     assert ready_gate.validate(contract, data, marker) is False
     assert not marker.exists()
+
+
+def test_error_rule_with_unrecognised_operator_fails_closed(tmp_path):
+    doc = yaml.safe_load(yaml.safe_dump(CONTRACT))
+    doc["schema"][0]["quality"].append(
+        {
+            "id": "between_rule",
+            "type": "sql",
+            "severity": "error",
+            "query": "SELECT count(*) FROM {object}",
+            "mustBeBetween": [0, 1],
+        }
+    )
+    c = tmp_path / "c2.odcs.yaml"
+    c.write_text(yaml.safe_dump(doc))
+    data = write_extract(tmp_path, {"2026-01-01": [("a", 60.0), ("b", 60.0)]})
+    marker = tmp_path / "ready"
+    assert ready_gate.validate(c, data, marker) is False
+    assert not marker.exists()
