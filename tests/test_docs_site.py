@@ -2,9 +2,9 @@
 
 The seam is the built site. One build of a copy of docs/ is shared by the
 tests; a second build seeds a broken link to prove link problems are warnings.
-The copy gets a stub api.md when the generated one is absent (CI runs pytest
+The copy gets a stub for each generated API page that is absent (CI runs pytest
 before `poe docs-api`), so the nav never warns for a file the pipeline makes
-later.
+later. tests/test_docs_api.py builds the real generated pages, strict.
 """
 
 import json
@@ -153,8 +153,9 @@ def _build(workdir: Path, extra_pages: dict[str, str] | None = None):
     """Build a copy of docs/ with the real mkdocs.yml; return (site, output)."""
     docs = workdir / "docs"
     shutil.copytree(ROOT / "docs", docs)
-    if not (docs / "api.md").exists():
-        (docs / "api.md").write_text("# Python API\n")
+    for page in re.findall(r"api/\w+\.md", (ROOT / "mkdocs.yml").read_text()):
+        if not (docs / page).exists():
+            (docs / page).write_text("# Python API\n")
     for name, body in (extra_pages or {}).items():
         (docs / name).write_text(body)
     config = workdir / "mkdocs.yml"

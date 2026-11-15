@@ -64,14 +64,34 @@ _log = logging.getLogger('gtfs')
 
 
 def log(msg):
+    """Log a message to the gtfs logger.
+
+    Args:
+        msg: Message to log.
+    """
     _log.info(msg)
 
 
 def stage(msg):
+    """Log a stage banner.
+
+    Args:
+        msg: Stage description.
+    """
     log(f'==> {msg}')
 
 
 def download(dest):
+    """Download the GTFS zip and sanity-check it.
+
+    Args:
+        dest: Path to write the zip to.
+
+    Raises:
+        RuntimeError: The download exceeded its deadline, was truncated, or is
+            not a valid feed zip.
+        urllib.error.URLError: The request failed.
+    """
     req = urllib.request.Request(SOURCE_URL, headers={'User-Agent': 'wraith-bus-ingestor-gtfs/1'})
     # timeout is per socket read, so a stalled connection fails instead of hanging
     # forever while a slow-but-alive 1.3GB download is fine. 300s, not 60: BODS
@@ -96,6 +116,15 @@ def download(dest):
 
 
 def extract(zip_path):
+    """Extract the wanted members of the feed zip into the work directory.
+
+    Args:
+        zip_path: Path to the downloaded zip.
+
+    Raises:
+        RuntimeError: A required member is missing from the feed.
+        zipfile.BadZipFile: A member fails its CRC check.
+    """
     with zipfile.ZipFile(zip_path) as zf:
         have = set(zf.namelist())
         for name in MEMBERS:
@@ -110,7 +139,16 @@ def extract(zip_path):
 
 
 def read_csv_sql(name, extra_types=None, sample_all=True):
-    """read_csv over one member with every *_id column forced to VARCHAR."""
+    """read_csv over one member with every *_id column forced to VARCHAR.
+
+    Args:
+        name: Feed member name without the .txt suffix.
+        extra_types: Extra column-type overrides, merged over the VARCHAR pins.
+        sample_all: When true, sample every row for type detection.
+
+    Returns:
+        A ``read_csv(...)`` SQL fragment.
+    """
     path = WORK / f'{name}.txt'
     with open(path, newline='', encoding='utf-8-sig') as f:
         header = next(csv.reader(f))
@@ -125,6 +163,11 @@ def read_csv_sql(name, extra_types=None, sample_all=True):
 
 
 def build_staging(con):
+    """Load the feed tables and the NaPTAN stops into the staging database.
+
+    Args:
+        con: DuckDB connection to the staging database.
+    """
     for name in ['agency', 'routes', 'trips', 'stops', 'calendar', 'calendar_dates']:
         con.execute(f'CREATE TABLE gtfs_{name} AS SELECT * FROM {read_csv_sql(name)}')
     # Times stay VARCHAR: GTFS runs past 24:00:00 ("25:10:00" is 01:10 next day).
@@ -142,10 +185,26 @@ def build_staging(con):
 
 
 def count(con, table):
+    """Count the rows in a table.
+
+    Args:
+        con: DuckDB connection.
+        table: Table name.
+
+    Returns:
+        The row count.
+    """
     return con.execute(f'SELECT count(*) FROM {table}').fetchone()[0]
 
 
 def previous_counts():
+    """Row counts of the serving tables in the currently served database.
+
+    Returns:
+        A dict of table name to row count. Empty when there is no previous
+        database or it is unreadable; a table the previous database lacks is
+        left out.
+    """
     if not DB_PATH.exists():
         return {}
     out = {}
@@ -165,7 +224,11 @@ def previous_counts():
 
 def review_accepts():
     """Keys accepted in alias_review.csv with no reject row (reject wins); same rule as
-    build_alias._load_review. Unreadable csv gives an empty set: fail closed."""
+    build_alias._load_review. Unreadable csv gives an empty set: fail closed.
+
+    Returns:
+        A set of (live_operator, live_line, gtfs_operator, gtfs_line) tuples.
+    """
     decided = {}
     try:
         with open(HERE / 'alias_review.csv', newline='', encoding='utf-8-sig') as f:
@@ -189,6 +252,17 @@ PAT = f'{KEY}, pattern_id'
 
 
 def verify(con):
+    """Check the staging database is sane before it may replace the live one.
+
+    Args:
+        con: DuckDB connection to the staging database.
+
+    Returns:
+        A dict of table name to row count.
+
+    Raises:
+        RuntimeError: Any check failed; the message lists every failure.
+    """
     tables = ['gtfs_stop_times', 'gtfs_trips', 'gtfs_agency', 'gtfs_stops', 'gtfs_route_patterns',
               'gtfs_route_stops', 'gtfs_line_localities']
     n = {t: count(con, t) for t in tables}
@@ -213,6 +287,7 @@ def verify(con):
             bad.append(f'{t} shrank {old:,} -> {n[t]:,} (more than 30%)')
 
     def one(sql):
+        """Run a query and return its first column of the first row."""
         return con.execute(sql).fetchone()[0]
 
     # A patterns.sql bug (e.g. stop_id type mismatch) shows as NULL keys or broken seq.
@@ -299,7 +374,12 @@ def verify(con):
 
 def alias_fallback(con, previous_db):
     """Degrade path: carry the served DB's alias table over, else an empty one. This
-    stage must never fail a refresh, and an old alias beats none while QuestDB is down."""
+    stage must never fail a refresh, and an old alias beats none while QuestDB is down.
+
+    Args:
+        con: DuckDB connection to the staging database.
+        previous_db: Path to the served database, or None.
+    """
     con.execute('DROP TABLE IF EXISTS gtfs_line_alias')
     if previous_db and Path(previous_db).exists():
         try:
@@ -344,6 +424,13 @@ def alias_fallback(con, previous_db):
 
 
 def alias_stage(con):
+    """Learn gtfs_line_alias from the live feed, falling back on any failure.
+
+    Never raises: a failure is logged and the previous alias table carried over.
+
+    Args:
+        con: DuckDB connection to the staging database.
+    """
     previous = str(DB_PATH) if DB_PATH.exists() else None
     try:
         sys.path.insert(0, str(HERE))
@@ -359,6 +446,12 @@ def alias_stage(con):
 
 
 def write_meta(con, n):
+    """Write the single-row gtfs_meta table.
+
+    Args:
+        con: DuckDB connection to the staging database.
+        n: Table row counts from verify().
+    """
     start = end = None
     if (WORK / 'feed_info.txt').exists():
         row = con.execute(
@@ -375,7 +468,11 @@ def write_meta(con, n):
 
 
 def check_paths():
-    """Refuse layouts where cleaning WORK could delete the DB (or the home dir)."""
+    """Refuse layouts where cleaning WORK could delete the DB (or the home dir).
+
+    Raises:
+        SystemExit: The work directory is too broad, or contains the database.
+    """
     work, db = WORK.resolve(), DB_PATH.resolve()
     if work in (Path('/'), Path.home().resolve()) or len(work.parts) < 3:
         sys.exit(f'GTFS_WORK_DIR {work} is too broad to clean')
@@ -392,6 +489,18 @@ def clean_work():
 
 
 def refresh(staging):
+    """Download, build, verify and publish a fresh database.
+
+    Args:
+        staging: Path of the staging database file.
+
+    Returns:
+        A dict of table name to row count from verify().
+
+    Raises:
+        RuntimeError: Not enough free space, a bad download, or failed
+            verification. The served database is left untouched.
+    """
     stage(f'checking free space on {WORK} and {DB_PATH.parent}')
     for d in (WORK, DB_PATH.parent):
         free = shutil.disk_usage(d).free
@@ -448,7 +557,14 @@ def refresh(staging):
 
 def record_run(status, n, started, message):
     """One row per run for Grafana. Mirrors archiver.record_run: a failure to
-    record is logged and swallowed, never allowed to mask the real outcome."""
+    record is logged and swallowed, never allowed to mask the real outcome.
+
+    Args:
+        status: 'ok' or 'error'.
+        n: Row counts from verify(), or None.
+        started: Run start time, from time.time().
+        message: Free text; truncated to 400 characters.
+    """
     try:
         message = message[:400].replace("'", "''")   # truncate first: never split a '' pair
         n = n or {}
@@ -469,6 +585,15 @@ def record_run(status, n, started, message):
 
 
 def main():
+    """Run one refresh.
+
+    Takes a lock so only one refresh runs, cleans staging on any failure and
+    records the outcome in QuestDB unless ``--no-record`` was given.
+
+    Raises:
+        SystemExit: Bad arguments, an unsafe path layout, or another refresh
+            holds the lock.
+    """
     args = sys.argv[1:]
     if args not in ([], ['--no-record']):
         sys.exit(__doc__)

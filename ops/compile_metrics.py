@@ -8,6 +8,9 @@ Only validly aggregable metrics compile: no percentile or median, and any metric
 the eta_models rollup table must filter `operatorRef != '*'`. Marts have no time column,
 so no semantic model carries an agg_time_dimension (ticket #52). A composite primary
 key becomes one concatenated primary entity (the converter rejects composite keys).
+
+This module reads only the Ossie yaml and writes only the generated MetricFlow
+file. It must never touch a database or hand-edit the generated output.
 """
 
 import argparse
@@ -34,6 +37,8 @@ AGG = {"SUM": "sum", "COUNT": "count", "AVG": "average", "MIN": "min", "MAX": "m
 
 
 class CompileError(Exception):
+    """Raised when a metric cannot be compiled to a valid MetricFlow metric."""
+
     pass
 
 
@@ -62,6 +67,19 @@ def _parse(metric, datasets):
 
 
 def compile_model(model):
+    """Compile an Ossie model to MetricFlow yaml text.
+
+    Args:
+        model: The parsed Ossie document, with `datasets` and `metrics`.
+
+    Returns:
+        The generated yaml text, header included, deterministic for a given model.
+
+    Raises:
+        CompileError: If a metric is a percentile, has an unsupported expression,
+            names an undeclared field, reads a non-mart, or lacks the real-operator
+            filter on the eta_models rollup.
+    """
     datasets = {
         d["name"]: dict(d, _fields={f["name"]: f for f in d.get("fields", [])})
         for d in model.get("datasets", [])
@@ -117,6 +135,14 @@ def compile_model(model):
 
 
 def main(argv=None):
+    """Compile the Ossie metrics file to the MetricFlow yaml file.
+
+    Args:
+        argv: Command-line arguments; defaults to `sys.argv[1:]`.
+
+    Returns:
+        0 on success, 1 on a `CompileError`.
+    """
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--ossie", default=DEFAULT_OSSIE)
     ap.add_argument("--out", default=DEFAULT_OUT)

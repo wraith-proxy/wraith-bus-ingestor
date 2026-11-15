@@ -82,7 +82,16 @@ nav:
       - "0010 - eta from daily statistics & 3-day hot window": adr/0010-eta-from-daily-statistics-and-3-day-hot-window.md
       - "0011 - contract-first dbt": adr/0011-contract-first-dbt.md
       - "Spikes": adr/spikes.md
-  - Python API: api.md
+  - Python API:
+      - Overview: api/index.md
+      - Backend: api/backend.md
+      - Ops: api/ops.md
+      - Contracts: api/contracts.md
+      - GTFS: api/gtfs.md
+      - Archiver: api/archiver.md
+      - Ingestor: api/ingestor.md
+      - dbt scripts: api/dbt.md
+      - Tooling: api/tooling.md
   - dbt Docs: dbt/index.html
   - Learn dbt:
       - Start here: learn-dbt/index.md
@@ -121,8 +130,10 @@ plugins:
   - search:
       lang: en
       # Also split on underscores, dots and camelCase, so bus_positions,
-      # servers.type and physicalType are findable by any part.
-      separator: '[\s\-_,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+      # servers.type and physicalType are findable by any part. The apostrophe
+      # splits too, so possessives in docstrings ("bus_positions' columns") do not
+      # glue a quote onto the name.
+      separator: '[\s\-_,:!=\[\]()"`/'']+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
   # Bundled with mkdocs-material. At BUILD time it downloads every third-party
   # asset into assets/external/ and rewrites the references, so the published
   # site makes no third-party request. Needs network on a cold cache only when

@@ -13,6 +13,13 @@ writing. That collapse is an approximation, not a re-derivation from raw
 per-journey delays (BODS/this pipeline never stores an actual per-journey
 delay, only the grain-level median/p90 dbt already computed), and the
 per-line comment below says exactly what it approximates.
+
+Usage: publish_punctuality_summary.py [marts_path]. The marts file defaults to
+wraith_bus_ingestor.duckdb beside this script. Environment: QUESTDB_HTTP
+(default http://localhost:9001). Exit code: always 0.
+
+This module must never write to the duckdb marts (it opens them read-only) and
+must never fail a build: every error degrades to a warning.
 """
 
 import os
@@ -43,13 +50,32 @@ WEAK_R2_CUTOFF = 0.5
 
 
 def esc_tag(val):
+    """Escape a value for use as an ILP tag.
+
+    Args:
+        val: The tag value; converted with str().
+
+    Returns:
+        The value with spaces, commas and equals signs replaced by underscores.
+    """
     return str(val).replace(" ", "_").replace(",", "_").replace("=", "_")
 
 
 def build_lines(con):
-    """Turn the two duckdb marts into ILP lines. Kept separate from the
+    """Turn the two duckdb marts into ILP lines.
+
+    Kept separate from the
     connection/POST so it can be exercised against any duckdb connection,
-    live or a fixture, without a real QuestDB."""
+    live or a fixture, without a real QuestDB.
+
+    Args:
+        con: An open duckdb connection with the line_punctuality and eta_models
+            marts.
+
+    Returns:
+        ILP lines: one line_punctuality_summary line per line, then one
+        eta_model_summary line.
+    """
     ts = int(datetime.now(UTC).timestamp() * 1_000_000_000)
     lines = []
 
@@ -94,6 +120,18 @@ def build_lines(con):
 
 
 def publish(marts_path):
+    """Read the marts read-only and POST the summaries to QuestDB.
+
+    Args:
+        marts_path: Path to the published duckdb marts file.
+
+    Returns:
+        A (line_count, http_status) tuple.
+
+    Raises:
+        duckdb.Error: If the marts file cannot be opened or queried.
+        urllib.error.URLError: If QuestDB is unreachable or rejects the write.
+    """
     import duckdb
 
     con = duckdb.connect(marts_path, read_only=True)
@@ -108,6 +146,10 @@ def publish(marts_path):
 
 
 def main():
+    """Publish the summaries for argv[1], or the default marts file.
+
+    Always exits 0; a failure is reported as a warning on stderr.
+    """
     path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_MARTS
     # Same rule as publish_run_results.py: a dashboard missing a datapoint is
     # a much smaller problem than a nightly build dying because a metrics

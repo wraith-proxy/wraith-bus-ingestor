@@ -19,6 +19,12 @@ when a new operator's code shows up unmapped on the dashboard:
 QuestDB rather than a dbt seed: dbt seeds load into the duckdb warehouse,
 which Grafana cannot reach (no wire protocol) -- same reasoning as every
 other publish_*.py script in this directory.
+
+Environment:
+    QUESTDB_HTTP: QuestDB HTTP base URL (default http://localhost:9001).
+
+Exit codes:
+    0 on success, 1 when the publish fails.
 """
 
 import csv
@@ -33,14 +39,38 @@ DEFAULT_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "noc_oper
 
 
 def esc_tag(val):
+    """Escape a value for use as an ILP tag.
+
+    Args:
+        val: Value to escape; coerced to str.
+
+    Returns:
+        The string with spaces, commas and equals signs replaced by underscores.
+    """
     return str(val).replace(" ", "_").replace(",", "_").replace("=", "_")
 
 
 def esc_str(val):
+    """Escape a value for use inside a quoted ILP string field.
+
+    Args:
+        val: Value to escape; coerced to str.
+
+    Returns:
+        The string with backslashes and double quotes escaped.
+    """
     return str(val).replace("\\", "\\\\").replace('"', '\\"')
 
 
 def build_lines(csv_path):
+    """Build ILP lines from the operator names CSV, skipping incomplete rows.
+
+    Args:
+        csv_path: Path to a CSV with operator_code and operator_name columns.
+
+    Returns:
+        A list of ILP lines, one per row that has both a code and a name.
+    """
     lines = []
     with open(csv_path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
@@ -56,6 +86,17 @@ def build_lines(csv_path):
 
 
 def publish(csv_path):
+    """POST the operator names to QuestDB over ILP/HTTP.
+
+    Args:
+        csv_path: Path to the operator names CSV.
+
+    Returns:
+        A tuple of (line count, HTTP status).
+
+    Raises:
+        urllib.error.URLError: QuestDB is unreachable or rejects the request.
+    """
     lines = build_lines(csv_path)
     body = ("\n".join(lines) + "\n").encode()
     req = urllib.request.Request(QUESTDB_ILP_URL, data=body, method="POST")
@@ -64,6 +105,11 @@ def publish(csv_path):
 
 
 def main():
+    """Publish the CSV named by argv[1], or the default CSV.
+
+    Raises:
+        SystemExit: Exit code 1 when the publish fails.
+    """
     path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_CSV
     try:
         count, status = publish(path)

@@ -13,6 +13,9 @@ its own -- so this script stamps the row with wall-clock now at publish time.
 An unreachable API is itself the signal this exists to catch, so a failed
 GET still publishes a row (state="unreachable", n_models=0) rather than
 skipping the publish.
+
+This module must never read the duckdb marts itself; it only talks to the
+marts-state API and QuestDB's HTTP endpoint.
 """
 
 import json
@@ -30,7 +33,14 @@ QUESTDB_ILP_URL = QUESTDB_HTTP.rstrip("/") + "/write"
 
 
 def esc_tag(val):
-    """ILP tag values cannot carry spaces, commas or equals signs unescaped."""
+    """ILP tag values cannot carry spaces, commas or equals signs unescaped.
+
+    Args:
+        val: Raw tag value.
+
+    Returns:
+        The value with spaces, commas and equals signs replaced by underscores.
+    """
     return val.replace(" ", "_").replace(",", "_").replace("=", "_")
 
 
@@ -44,7 +54,11 @@ def fetch_state():
     treating urllib's default `Python-urllib/x.y` UA as a bot), while a
     plain `curl` to the exact same URL passed -- caught 2026-09-24, after
     the timer had been "working" (publishing a row every 5 minutes, just
-    always the wrong one) since it was first enabled."""
+    always the wrong one) since it was first enabled.
+
+    Returns:
+        A tuple of the state string and the model count.
+    """
     try:
         req = urllib.request.Request(
             MARTS_STATE_URL, method="GET",
@@ -63,12 +77,29 @@ def fetch_state():
 
 def build_line(state, n_models, ts_ns):
     """Turn a state reading into a single ILP line. Kept separate from the
-    POST so it can be exercised without a live QuestDB."""
+    POST so it can be exercised without a live QuestDB.
+
+    Args:
+        state: The marts state reading.
+        n_models: Number of models reported.
+        ts_ns: Timestamp in nanoseconds since the epoch.
+
+    Returns:
+        The ILP line.
+    """
     tags = f"state={esc_tag(str(state))}"
     return f"marts_state,{tags} n_models={int(n_models)}i {ts_ns}"
 
 
 def publish(line):
+    """POST one ILP line to QuestDB.
+
+    Args:
+        line: The ILP line to write.
+
+    Returns:
+        The HTTP status code.
+    """
     body = (line + "\n").encode()
     req = urllib.request.Request(QUESTDB_ILP_URL, data=body, method="POST")
     with urllib.request.urlopen(req, timeout=10) as response:
@@ -76,6 +107,7 @@ def publish(line):
 
 
 def main():
+    """Fetch the state, publish a row, and exit 0 only when the state is 'ok'."""
     state, n_models = fetch_state()
     ts_ns = time.time_ns()
     line = build_line(state, n_models, ts_ns)

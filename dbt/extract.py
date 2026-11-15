@@ -5,6 +5,14 @@ QuestDB holds ~1e9 rows; dbt only needs enough to fit per-line models, so we
 downsample to one row per bus per SAMPLE_MINS and keep the last EXTRACT_DAYS
 UTC days. Each day is fetched once, as chunk files plus a .done marker, so a
 nightly run only pulls the one day it does not have yet.
+
+Run by the dbt build before the models. Environment: QUESTDB_HTTP,
+EXTRACT_DAYS, EXTRACT_SAMPLE_MINS, EXTRACT_CHUNK_HOURS, QUESTDB_CONTAINER and
+EXTRACT_RESTART_QUESTDB (see the constants below for defaults).
+
+This module only reads from QuestDB and writes parquet files and .done markers
+under dbt/data. It must never write to QuestDB, and it only deletes day files
+that have slid out of the extract window.
 """
 import glob
 import json
@@ -45,6 +53,11 @@ RESTART_QUESTDB_BETWEEN_DAYS = os.environ.get("EXTRACT_RESTART_QUESTDB", "1") ==
 
 
 def restart_questdb():
+    """Restart the QuestDB container and wait for it to answer again.
+
+    Raises:
+        subprocess.CalledProcessError: If docker restart fails.
+    """
     subprocess.run(["docker", "restart", QUESTDB_CONTAINER], check=True,
                     capture_output=True)
     deadline = time.monotonic() + 30
@@ -97,14 +110,34 @@ TYPES = {
 
 
 def questdb_columns():
-    """The schedule columns only appear once the patched ingestor has run, so
-    ask QuestDB what it actually has rather than guessing."""
+    """Ask QuestDB which bus_positions columns exist.
+
+    The schedule columns only appear once the patched ingestor has run, so
+    ask QuestDB what it actually has rather than guessing.
+
+    Returns:
+        The set of column names of bus_positions.
+
+    Raises:
+        urllib.error.URLError: If QuestDB is unreachable.
+    """
     q = urllib.parse.quote("SELECT * FROM bus_positions LIMIT 0")
     with urllib.request.urlopen(f"{QUESTDB}/exec?query={q}", timeout=30) as r:
         return {c["name"] for c in json.load(r)["columns"]}
 
 
 def build_select(available):
+    """Build the SAMPLE BY select list and the read_csv column map.
+
+    Wanted columns not in available are reported and skipped.
+
+    Args:
+        available: Column names QuestDB actually has, from questdb_columns.
+
+    Returns:
+        A (select, columns) tuple: the QuestDB select list, and the DuckDB
+        read_csv columns literal.
+    """
     cols = [c for c in WANTED if c in available]
     missing = [c for c in WANTED if c not in available]
     if missing:
@@ -115,6 +148,23 @@ def build_select(available):
 
 
 def fetch(con, day, hour_start, hour_end, select, columns):
+    """Fetch one chunk of a day from QuestDB into a parquet file.
+
+    Args:
+        con: An open duckdb connection with httpfs loaded.
+        day: The UTC date to fetch (a datetime.date).
+        hour_start: First hour of the chunk, 0-23.
+        hour_end: Hour the chunk ends before, 1-24.
+        select: Select list from build_select.
+        columns: read_csv columns literal from build_select.
+
+    Returns:
+        A (path, row_count) tuple, or (None, 0) if the window had no rows and
+        nothing was written.
+
+    Raises:
+        duckdb.Error: If the QuestDB export or the parquet write fails.
+    """
     end_day = day + timedelta(days=1) if hour_end == 24 else day
     start_ts = f"{day.isoformat()}T{hour_start:02d}:00:00.000000Z"
     end_ts = f"{end_day.isoformat()}T{hour_end % 24:02d}:00:00.000000Z"
@@ -149,14 +199,21 @@ def fetch(con, day, hour_start, hour_end, select, columns):
 
 
 def wal_applied():
-    """(True, None) when QuestDB has applied every write it has accepted for
+    """Report whether QuestDB has applied every accepted bus_positions write.
+
+    (True, None) when QuestDB has applied every write it has accepted for
     bus_positions, else (False, why). bus_positions is a WAL table: a commit
     lands in the WAL first and becomes visible to queries only once the apply
     job has written it to the table, and a suspended table stops applying
     altogether. A day fetched while either was true can come back short, so
     it is marked only if, once its chunks have landed, wal_tables() shows the
     table not suspended and writerTxn caught up with sequencerTxn; otherwise
-    the next run fetches it again. Any failure to ask counts as not applied."""
+    the next run fetches it again. Any failure to ask counts as not applied.
+
+    Returns:
+        A (applied, reason) tuple: (True, None), or (False, why) when the WAL
+        is lagging, the table is suspended, or the check itself failed.
+    """
     q = urllib.parse.quote(
         "SELECT suspended, writerTxn, sequencerTxn FROM wal_tables() "
         "WHERE name = 'bus_positions'"
@@ -178,12 +235,22 @@ def wal_applied():
 
 
 def prune_outside_window(first_day):
-    """The SSD keeps only the extract window; SATA is the archive. dbt's source
+    """Delete extract files for days before the window.
+
+    The SSD keeps only the extract window; SATA is the archive. dbt's source
     glob (bus_positions_*.parquet) reads every file in OUT, and nothing else
     ever removed a day that had slid out of the window -- 2026-09-19's
     nightly was reading 12 days (81.9M rows) against a 4GB memory_limit tuned
     for 8. Only files whose date is before the window are touched, and a day's
-    .done marker goes with its chunks."""
+    .done marker goes with its chunks.
+
+    Args:
+        first_day: First UTC date (a datetime.date) inside the window; files
+            dated earlier are removed.
+
+    Returns:
+        The sorted basenames of the files removed.
+    """
     removed = []
     for path in glob.glob(os.path.join(OUT, "bus_positions_*")):
         m = re.match(r"bus_positions_(\d{4}-\d{2}-\d{2})", os.path.basename(path))
@@ -194,6 +261,11 @@ def prune_outside_window(first_day):
 
 
 def main():
+    """Extract the window of bus_positions into parquet files under dbt/data.
+
+    Fetches each missing UTC day in chunks, marks complete days with a .done
+    file, then prunes days outside the window.
+    """
     import duckdb
 
     os.makedirs(OUT, exist_ok=True)

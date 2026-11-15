@@ -11,6 +11,9 @@ introspected for the catalog. A zero-row file with the right columns lets
 that introspection succeed instead -- ping_columns() then reports no
 optional columns present, which stg_bods__vehicle_pings already handles
 (see its own header comment).
+
+This script runs on import and takes no arguments. It must never overwrite or
+delete real data: it only creates placeholder files when none exist.
 """
 
 import csv

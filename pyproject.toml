@@ -104,15 +104,30 @@ test-ci = "pytest --cov=backend --cov-report=term-missing --cov-fail-under=80"
 lint = "ruff check ."
 format = "ruff format ."
 tidy = ["lint", "format"]
-# Regenerates docs/api.md from backend/app.py's own docstrings.
-docs-api = { shell = "printf '# Python API\\n\\n' > docs/api.md && pydoc-markdown pydoc-markdown.yml >> docs/api.md" }
+# Regenerates the Python API pages docs/api/<area>.md from the public modules' own
+# docstrings (config: pydoc-markdown.yml, one page per area). Generated, never committed.
+# Fails if a module cannot be found or an area page comes out empty, so a broken
+# reference stops the docs build. PYDOC_CONFIG points it at another config (used by tests).
+docs-api = { shell = '''
+set -e
+rm -rf build/api-docs
+pydoc-markdown "${PYDOC_CONFIG:-pydoc-markdown.yml}"
+mkdir -p docs/api
+for f in build/api-docs/api/*.md; do
+  n=$(basename "$f" .md)
+  [ -s "$f" ] || { echo "docs-api: area page $n is empty" >&2; exit 1; }
+  t=$(sed -n "s/^- \\(.*\\): $n\\.md$/\\1/p" build/api-docs/mkdocs.yml)
+  { printf '# %s\n\n' "${t:-$n}"; cat "$f"; } > "docs/api/$n.md"
+done
+''' }
 # dbt docs generate needs the `dbt` extra and a duckdb file to introspect --
 # an empty one is fine, it just means catalog data is sparse until a real
 # build has run. --static inlines manifest+catalog into one HTML file, since
 # this gets served under /dbt/ (a subpath), not domain root, and the default
 # multi-file output's internal fetches assume the latter.
 docs-dbt = { shell = "cd dbt && ../.venv/bin/python3 ensure_ci_fixtures.py && ../.venv/bin/dbt docs generate --profiles-dir . --static && mkdir -p ../docs/dbt && cp target/static_index.html ../docs/dbt/index.html" }
-docs-mkdocs = "mkdocs build"
+# --strict: a missing page (e.g. an API page that was not generated) fails the build.
+docs-mkdocs = "mkdocs build --strict"
 docs-build = ["docs-api", "docs-dbt", "docs-mkdocs"]
 docs-serve = "mkdocs serve"
 # dbt runs under this same project-root venv now (see dbt/build.sh) -- build.sh
@@ -123,15 +138,27 @@ validate = "python contracts/validate.py"
 lint-contracts = { shell = "for f in contracts/*.odcs.yaml; do datacontract lint \"$f\" || exit 1; done" }
 
 [tool.ruff]
+# Files not yet converted to Google-style docstrings (#60) may fail the D rules; the
+# list is docstring-baseline.toml, and tests/test_docstring_baseline.py keeps it shrinking.
+extend = "docstring-baseline.toml"
 # 99, not a default 79: this codebase's established voice is long explanatory
 # prose comments, measured against the real code as fitting p99 = 99 chars.
 line-length = 99
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
+select = ["E", "F", "I", "UP", "D"]
+
+[tool.ruff.lint.pydocstyle]
+# One convention, shared with the docs renderer (pydoc-markdown's smart processor reads
+# Google sections), so the lint and the published reference agree.
+convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
+# Tests are exempt from the docstring rules (#60); generated files are not Python source.
+"**/test_*.py" = ["D"]
+"tests/**" = ["D"]
+"**/tests/**" = ["D"]
 # This generator emits dbt YAML from triple-quoted templates. Two `description:`
 # lines exceed 99 chars, but they are the emitted payload, not source: a `# noqa`
 # would be written into the generated file, and wrapping them would desync the

@@ -9,6 +9,8 @@ as a multiset of those columns and may need a `keys` override.
     cutover_compare.py BASELINE.duckdb CANDIDATE.duckdb TABLE [TABLE ...]
 
 Exit 0 identical within tolerance, 1 otherwise. Opens both files read-only.
+
+This module must never write to either warehouse.
 """
 import sys
 from dataclasses import dataclass, field
@@ -21,6 +23,13 @@ RTOL = 1e-9
 
 @dataclass
 class Result:
+    """Outcome of a comparison.
+
+    Attributes:
+        problems: One message per mismatch found; empty means identical.
+        ok: True when there are no problems.
+    """
+
     problems: list = field(default_factory=list)
 
     @property
@@ -36,6 +45,20 @@ def _columns(con, schema, table):
 
 
 def compare(baseline, candidate, tables, atol=ATOL, rtol=RTOL, keys=None):
+    """Compare two DuckDB warehouses table by table.
+
+    Args:
+        baseline: Path to the baseline warehouse file.
+        candidate: Path to the candidate warehouse file.
+        tables: Table names to compare.
+        atol: Absolute tolerance for DOUBLE columns.
+        rtol: Relative tolerance for DOUBLE columns.
+        keys: Optional mapping of table name to the columns that pair rows,
+            overriding the default of every non-DOUBLE column.
+
+    Returns:
+        A `Result` listing every mismatch found.
+    """
     res = Result()
     con = duckdb.connect()
     con.execute(f"attach '{baseline}' as a (read_only)")
@@ -77,6 +100,14 @@ def compare(baseline, candidate, tables, atol=ATOL, rtol=RTOL, keys=None):
 
 
 def main(argv):
+    """Compare the tables named on the command line and print the verdict.
+
+    Args:
+        argv: BASELINE, CANDIDATE, then one or more table names.
+
+    Returns:
+        0 if identical within tolerance, 1 on mismatch, 2 on too few arguments.
+    """
     if len(argv) < 3:
         print(__doc__)
         return 2

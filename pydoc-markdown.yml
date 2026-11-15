@@ -1,18 +1,142 @@
-# Generates docs/api.md from backend/app.py's own docstrings.
-# Run via `uv run poe docs-api`, or `uv run poe docs-build` (chains it in).
+# Generates the Python API reference: one docs/api/<area>.md per area, from the public
+# modules' own docstrings (Google style, see [tool.ruff.lint.pydocstyle] in pyproject.toml).
+# Run via `uv run poe docs-api`, or `uv run poe docs-build` (chains it in). The pages are
+# generated, never committed (.gitignore). A module that cannot be found fails the run, and
+# so does an area page that comes out empty.
+#
+# A new public module must be listed twice: under its area's loader (modules) and in that
+# area's page (contents); tests/test_docs_api.py fails until it is.
 # search_path is relative to this file, not the cwd it's invoked from.
 loaders:
+  # Backend
   - type: python
     search_path: [backend]
-    modules: [app]
+    modules: [app, gtfs, schemas, tiebreak]
+  # Ops
+  - type: python
+    search_path: [ops]
+    modules: [compile_metrics, cutover_compare, incident, publish_marts_state, ready_gate, salvage_legacy_archive, sla_check, sql_ratchet]
+  # Contracts
+  - type: python
+    search_path: [contracts]
+    modules: [policy, validate]
+  # GTFS
+  - type: python
+    search_path: [gtfs]
+    modules: [build_alias, fetch]
+  # Archiver
+  - type: python
+    search_path: [archiver]
+    modules: [archive]
+  # Ingestor
+  - type: python
+    search_path: [ingestor]
+    modules: [ingest]
+  # dbt scripts
+  - type: python
+    search_path: [dbt]
+    modules: [ensure_ci_fixtures, extract, publish_operator_names, publish_punctuality_summary, publish_run_results]
+  # Tooling
+  - type: python
+    search_path: [.]
+    modules: [hostenv, tasks]
 
 processors:
+  # Private helpers (leading underscore) and undocumented members stay out by default.
   - type: filter
+    exclude_private: true
+    documented_only: true
     skip_empty_modules: true
   - type: smart
   - type: crossref
 
 renderer:
-  type: markdown
-  render_module_header: false
-  descriptive_class_title: false
+  type: mkdocs
+  # Rendered here, then copied into docs/api/ by `poe docs-api` (which also adds each
+  # page's title and checks it is not empty). mkdocs.yml here is a by-product, unused.
+  output_directory: build/api-docs
+  content_directory_name: api
+  markdown:
+    render_module_header: true
+    descriptive_class_title: false
+    header_level_by_type:
+      Module: 2
+      Class: 3
+      Method: 4
+      Function: 3
+      Data: 4
+  pages:
+    - title: Backend
+      name: backend
+      contents:
+        - 'app'
+        - 'app.*'
+        - 'gtfs'
+        - 'gtfs.*'
+        - 'schemas'
+        - 'schemas.*'
+        - 'tiebreak'
+        - 'tiebreak.*'
+    - title: Ops
+      name: ops
+      contents:
+        - 'compile_metrics'
+        - 'compile_metrics.*'
+        - 'cutover_compare'
+        - 'cutover_compare.*'
+        - 'incident'
+        - 'incident.*'
+        - 'publish_marts_state'
+        - 'publish_marts_state.*'
+        - 'ready_gate'
+        - 'ready_gate.*'
+        - 'salvage_legacy_archive'
+        - 'salvage_legacy_archive.*'
+        - 'sla_check'
+        - 'sla_check.*'
+        - 'sql_ratchet'
+        - 'sql_ratchet.*'
+    - title: Contracts
+      name: contracts
+      contents:
+        - 'policy'
+        - 'policy.*'
+        - 'validate'
+        - 'validate.*'
+    - title: GTFS
+      name: gtfs
+      contents:
+        - 'build_alias'
+        - 'build_alias.*'
+        - 'fetch'
+        - 'fetch.*'
+    - title: Archiver
+      name: archiver
+      contents:
+        - 'archive'
+        - 'archive.*'
+    - title: Ingestor
+      name: ingestor
+      contents:
+        - 'ingest'
+        - 'ingest.*'
+    - title: dbt scripts
+      name: dbt
+      contents:
+        - 'ensure_ci_fixtures'
+        - 'ensure_ci_fixtures.*'
+        - 'extract'
+        - 'extract.*'
+        - 'publish_operator_names'
+        - 'publish_operator_names.*'
+        - 'publish_punctuality_summary'
+        - 'publish_punctuality_summary.*'
+        - 'publish_run_results'
+        - 'publish_run_results.*'
+    - title: Tooling
+      name: tooling
+      contents:
+        - 'hostenv'
+        - 'hostenv.*'
+        - 'tasks'
+        - 'tasks.*'

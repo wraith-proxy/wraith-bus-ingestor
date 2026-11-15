@@ -10,6 +10,13 @@ QuestDB rather than the duckdb marts because duckdb has no wire protocol
 Grafana can reach -- it is an embedded file opened by whoever holds the lock,
 so a dashboard cannot read it at all while a build is writing it. QuestDB is
 already the ingest sink and already speaks HTTP, so Grafana just points at it.
+
+Usage: publish_run_results.py [run_results_path]. The path defaults to
+target/run_results.json beside this script. Environment: QUESTDB_HTTP (default
+http://localhost:9001). Exit code: always 0.
+
+This module must never fail a build: every error degrades to a warning. It only
+reads run_results.json and writes to QuestDB.
 """
 
 import json
@@ -28,19 +35,50 @@ DEFAULT_RESULTS = os.path.join(
 
 
 def esc_tag(val):
-    """ILP tag values cannot carry spaces, commas or equals signs unescaped."""
+    """ILP tag values cannot carry spaces, commas or equals signs unescaped.
+
+    Args:
+        val: The tag value (a str).
+
+    Returns:
+        The value with spaces, commas and equals signs replaced by underscores.
+    """
     return val.replace(" ", "_").replace(",", "_").replace("=", "_")
 
 
 def epoch_ns(stamp):
-    """dbt stamps are ISO8601 with a trailing Z, which fromisoformat wants as
-    an explicit offset before Python 3.11."""
+    """Convert a dbt ISO8601 stamp to epoch nanoseconds.
+
+    dbt stamps are ISO8601 with a trailing Z, which fromisoformat wants as
+    an explicit offset before Python 3.11.
+
+    Args:
+        stamp: An ISO8601 timestamp such as "2026-01-01T00:00:00Z".
+
+    Returns:
+        The time as integer nanoseconds since the Unix epoch.
+
+    Raises:
+        ValueError: If stamp is not a valid ISO8601 timestamp.
+    """
     return int(datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp() * 1_000_000_000)
 
 
 def build_lines(run_results):
-    """Turn a parsed run_results.json into ILP lines. Kept separate from the
-    POST so it can be exercised without a live QuestDB."""
+    """Turn a parsed run_results.json into ILP lines.
+
+    Kept separate from the
+    POST so it can be exercised without a live QuestDB.
+
+    Args:
+        run_results: The parsed run_results.json; metadata.generated_at is required.
+
+    Returns:
+        One dbt_test_results ILP line per test, then one dbt_build_runs line.
+
+    Raises:
+        KeyError: If metadata.generated_at is missing.
+    """
     metadata = run_results.get("metadata") or {}
     results = run_results.get("results") or []
     # Every row carries the time of the run it describes, not wall-clock-now,
@@ -75,6 +113,18 @@ def build_lines(run_results):
 
 
 def publish(path):
+    """Read run_results.json and POST its ILP lines to QuestDB.
+
+    Args:
+        path: Path to dbt's run_results.json.
+
+    Returns:
+        A (line_count, http_status) tuple.
+
+    Raises:
+        OSError: If the file cannot be read.
+        urllib.error.URLError: If QuestDB is unreachable or rejects the write.
+    """
     with open(path) as fh:
         run_results = json.load(fh)
     lines = build_lines(run_results)
@@ -85,6 +135,10 @@ def publish(path):
 
 
 def main():
+    """Publish the results for argv[1], or the default path.
+
+    Always exits 0; a failure is reported as a warning on stderr.
+    """
     path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_RESULTS
     # A dashboard that misses a datapoint is a much smaller problem than a
     # nightly build that dies because its metrics sink was down, so every

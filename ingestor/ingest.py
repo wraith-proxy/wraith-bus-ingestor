@@ -1,3 +1,13 @@
+"""Poll the BODS SIRI-VM feed and write vehicle positions to QuestDB over ILP/HTTP.
+
+This is the long-running ghost-ingestor process. It only appends rows to
+bus_positions; it must never read back from, alter or delete anything in
+QuestDB, and it must never log the BODS API key.
+
+Environment:
+    BODS_API_KEY: BODS API key (required).
+    QUESTDB_URL: QuestDB HTTP base URL (required).
+"""
 import logging
 import os
 import signal
@@ -32,26 +42,65 @@ NS = {"siri": "http://www.siri.org.uk/siri"}
 
 
 def clean(sym):
+    """Make a value safe as an ILP symbol, or return the placeholder.
+
+    Args:
+        sym: Raw symbol, possibly None or empty.
+
+    Returns:
+        The symbol with spaces and commas replaced by underscores, or "UKN"
+        when it is empty.
+    """
     return sym.replace(" ", "_").replace(",", "_") if sym else "UKN"
 
 
 def esc_tag(val):
-    """ILP tag values cannot carry spaces, commas or equals signs unescaped."""
+    """ILP tag values cannot carry spaces, commas or equals signs unescaped.
+
+    Args:
+        val: Tag value to escape.
+
+    Returns:
+        The value with those characters replaced by underscores.
+    """
     return val.replace(" ", "_").replace(",", "_").replace("=", "_")
 
 
 def esc_str(val):
-    """ILP string field values are double-quoted; escape quotes and backslashes."""
+    """ILP string field values are double-quoted; escape quotes and backslashes.
+
+    Args:
+        val: String value to escape.
+
+    Returns:
+        The escaped value.
+    """
     return val.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def text(el, path):
+    """Return the stripped text of a SIRI child element.
+
+    Args:
+        el: Parent XML element.
+        path: ElementTree path relative to ``el``, using the siri namespace.
+
+    Returns:
+        The stripped text, or None when the element or its text is missing.
+    """
     node = el.find(path, NS)
     return node.text.strip() if node is not None and node.text else None
 
 
 def epoch_ms(stamp):
-    """SIRI timestamps are ISO8601, usually with a +00:00 offset."""
+    """SIRI timestamps are ISO8601, usually with a +00:00 offset.
+
+    Args:
+        stamp: ISO8601 timestamp string, or None.
+
+    Returns:
+        Milliseconds since the epoch, or None when empty or unparseable.
+    """
     if not stamp:
         return None
     try:
@@ -79,7 +128,20 @@ TIME_FIELDS = (
 
 
 def build_line(v):
-    """One ILP line per VehicleActivity, or None if it lacks a usable position."""
+    """One ILP line per VehicleActivity, or None if it lacks a usable position.
+
+    Args:
+        v: A siri VehicleActivity XML element.
+
+    Returns:
+        The ILP line for the bus_positions measurement.
+
+    Raises:
+        AttributeError: A required element (VehicleRef, Latitude, Longitude,
+            LineRef) is missing.
+        TypeError: A required element has no text.
+        ValueError: Latitude or longitude is not a number.
+    """
     ref = clean(text(v, ".//siri:VehicleRef"))
     lat = float(text(v, ".//siri:Latitude"))
     lon = float(text(v, ".//siri:Longitude"))
@@ -108,7 +170,11 @@ def build_line(v):
 
 def ingest():
     """Returns True on success (an empty feed still counts), False on a
-    failure that should count toward the backoff in main()."""
+    failure that should count toward the backoff in main().
+
+    Returns:
+        True when the poll succeeded, False when it failed.
+    """
     try:
         response = requests.get(AVL_URL, timeout=60)
         if response.status_code != 200:
@@ -145,6 +211,7 @@ MAX_BACKOFF_S = 15 * 60
 
 
 def main():
+    """Run the poll loop until SIGTERM or SIGINT, backing off on failures."""
     stop = threading.Event()
 
     def handle_signal(signum, frame):

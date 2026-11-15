@@ -40,6 +40,10 @@ day can also be read in place, no restore needed:
 maps were lost in the 2026-09-18 schema migration (docs/adr/0006). They were
 salvaged to Parquet with `timestamp lat lon bearing` and the raw integer keys,
 and restore() refuses them -- there is no bus_id to load into bus_positions.
+
+This is a host-side operator tool. It must never be run inside a container,
+never recover a day lost inside the hot window (see above), and never restore
+a numeric-only archive.
 """
 import argparse
 import json
@@ -66,16 +70,46 @@ RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "3"))
 
 
 def qdb_exec(query, timeout=30):
+    """Run a query against QuestDB's HTTP /exec endpoint.
+
+    Args:
+        query: SQL text to execute.
+        timeout: Seconds to wait for the HTTP response.
+
+    Returns:
+        The decoded JSON response.
+    """
     url = QUESTDB + "/exec?" + urllib.parse.urlencode({"query": query})
     with urllib.request.urlopen(url, timeout=timeout) as r:
         return json.load(r)
 
 
 def docker(*args, check=True):
+    """Run a docker CLI command and capture its output.
+
+    Args:
+        *args: Arguments passed to `docker`.
+        check: Raise on a non-zero exit when True.
+
+    Returns:
+        The completed process, with text stdout and stderr captured.
+
+    Raises:
+        subprocess.CalledProcessError: If `check` is True and docker exits non-zero.
+    """
     return subprocess.run(["docker", *args], check=check, capture_output=True, text=True)
 
 
 def is_attached(day, table=TABLE):
+    """Report whether a day's partition is attached in QuestDB.
+
+    Args:
+        day: Day as YYYY-MM-DD.
+        table: Table whose partitions are checked.
+
+    Returns:
+        True if the partition is attached.
+    """
     resp = qdb_exec(
         f"SELECT name FROM table_partitions('{table}') "
         f"WHERE attached = true AND name = '{day}'"
@@ -92,7 +126,14 @@ COLUMNS = [
 
 
 def parquet_info(path):
-    """(column names, row count) read from the file itself."""
+    """(column names, row count) read from the file itself.
+
+    Args:
+        path: Path to the Parquet file.
+
+    Returns:
+        A tuple of the column names and the row count.
+    """
     import duckdb
 
     con = duckdb.connect()
@@ -107,7 +148,16 @@ def parquet_info(path):
 
 def restore(day):
     """Bring a day back from the Parquet archive into live bus_positions.
-    No-op if already present. The row count is checked against the file."""
+    No-op if already present. The row count is checked against the file.
+
+    Args:
+        day: Day as YYYY-MM-DD.
+
+    Raises:
+        RuntimeError: If there is no Parquet archive for the day, the archive is
+            numeric-only (no bus_id), the INSERT fails, or the restored row
+            count does not match the file.
+    """
     if is_attached(day):
         print(f"{day}: already attached, nothing to do")
         return
@@ -153,7 +203,14 @@ def extract_day(day_obj):
     """Pull one day using extract.py's own build_select/fetch -- same
     chunking, same column typing, same empty-file handling as the nightly
     run. Reimporting rather than reimplementing: this is the one place that
-    logic should live."""
+    logic should live.
+
+    Args:
+        day_obj: The day to extract, as a `datetime.date`.
+
+    Returns:
+        The total number of rows extracted across the day's chunks.
+    """
     import duckdb
     import extract
 
@@ -186,6 +243,15 @@ def extract_day(day_obj):
 
 
 def daterange(start, end):
+    """Yield each day from start to end inclusive.
+
+    Args:
+        start: First day, as a `datetime.date`.
+        end: Last day, as a `datetime.date`.
+
+    Yields:
+        Each `datetime.date` in the range.
+    """
     d = start
     while d <= end:
         yield d
@@ -193,6 +259,19 @@ def daterange(start, end):
 
 
 def replay(start_str, end_str):
+    """Replay a day range through restore (if needed), extract and dbt.
+
+    Days older than the hot RETENTION_DAYS window are restored first, then every
+    day is extracted, then one full-refresh build.sh run covers the range.
+
+    Args:
+        start_str: First day as YYYY-MM-DD.
+        end_str: Last day as YYYY-MM-DD.
+
+    Raises:
+        RuntimeError: If start is after end, or a restore fails.
+        subprocess.CalledProcessError: If build.sh exits non-zero.
+    """
     start = date.fromisoformat(start_str)
     end = date.fromisoformat(end_str)
     if start > end:
@@ -210,6 +289,7 @@ def replay(start_str, end_str):
 
 
 def main():
+    """Parse the command line and run `restore` or `replay`."""
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
