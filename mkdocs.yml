@@ -106,13 +106,11 @@ nav:
       - Landing: learn-dbt/landing.md
       - Cheat sheet: learn-dbt/cheatsheet.md
 
-# Agent-facing notes stay published at their URLs but out of the reader's nav.
-not_in_nav: |
-  /agents/
-
 # Snippet-only file: appended to every page by pymdownx.snippets, never a page.
+# /agents/ is a local, untracked folder: never published.
 exclude_docs: |
   /assets/abbreviations.md
+  /agents/
 
 # Broken links and anchors surface as WARNING lines in the build.
 validation:
