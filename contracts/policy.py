@@ -158,8 +158,10 @@ def check_change(
                     f"{name} changed type without a major version bump",
                 )
             )
+    base_tables = {key[0] for key in base_cols}
     for key, col in head_cols.items():
-        if key in base_cols:
+        # A column of a table absent from base has no history to backfill.
+        if key in base_cols or key[0] not in base_tables:
             continue
         name, backfill = f"{key[0]}.{key[1]}", _prop(col, "backfill")
         if backfill is None:

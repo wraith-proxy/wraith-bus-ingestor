@@ -14,7 +14,7 @@ Two host units, installed by the owner with `sudo ops/install_event_trigger.sh`
    retrigger itself. It sets `SKIP_EXTRACT=1` (the extract already ran).
 
 The timer and the path unit are never both enabled for the build. Alerts: no
-success 90 minutes past the extract time is the non-paging "waiting on the
+successful build row in 25.5 hours is the non-paging "waiting on the
 extract" rule; a failed build is a warning; only `marts state not ok` (the API
 cannot serve) pages.
 

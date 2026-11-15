@@ -39,7 +39,9 @@ gated before `dbt/build.sh` moves it into place.
   before its sunset date, a column removed while compiled SQL still reads it
   (a second CI step, "Contract change policy (compiled readers)", scans
   `dbt compile` output with sqlglot and names the reader), and a new column
-  without a valid `backfill` (`derive`, `null-before`, `replay`). `sunset`,
+  on an existing table without a valid `backfill` (`derive`, `null-before`,
+  `replay`); the columns of a brand-new table are exempt, since they have no
+  history. `sunset`,
   `backfill` and `consumes` are `customProperties` on the contract.
 - **Generated-file drift gate** (CI step "Generated files in sync"): runs
   `modelgen check --from-contract --diff`, falling back to

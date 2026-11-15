@@ -52,6 +52,31 @@ def test_additive_without_backfill_fails(tmp_path):
     assert "t.b" in violations[0].message
 
 
+def test_new_table_needs_no_backfill(tmp_path):
+    """A table that did not exist on base has no history to backfill: its columns are exempt."""
+    base_doc = contract({"a": "string"})
+    head_doc = contract({"a": "string"}, version="1.1.0")
+    head_doc["schema"].append(
+        {"name": "t2", "properties": [{"name": "x", "logicalType": "string"}]}
+    )
+    base = write(tmp_path, "base.yaml", base_doc)
+    head = write(tmp_path, "head.yaml", head_doc)
+    assert policy.check_change(base, head) == []
+
+
+def test_new_column_on_existing_table_still_needs_backfill_beside_a_new_table(tmp_path):
+    base_doc = contract({"a": "string"})
+    head_doc = contract({"a": "string", "b": "string"}, version="1.1.0")
+    head_doc["schema"].append(
+        {"name": "t2", "properties": [{"name": "x", "logicalType": "string"}]}
+    )
+    base = write(tmp_path, "base.yaml", base_doc)
+    head = write(tmp_path, "head.yaml", head_doc)
+    violations = policy.check_change(base, head)
+    assert codes(violations) == ["expand-without-backfill"]
+    assert "t.b" in violations[0].message
+
+
 def test_additive_with_backfill_passes(tmp_path):
     base = write(tmp_path, "base.yaml", contract({"a": "string"}))
     for mode in ("derive", "null-before", "replay"):

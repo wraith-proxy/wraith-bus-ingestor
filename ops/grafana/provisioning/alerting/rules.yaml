@@ -72,12 +72,15 @@ groups:
               refId: A
               format: table
               rawQuery: true
-              # Waiting = no successful build 90 minutes past the expected
-              # 03:00 extract (04:30), i.e. the ready marker never arrived or
-              # the build it starts has not finished. The marker is consumed
-              # when the build starts, so the observable outcome is the build
-              # row. Bounded: 25.5h after the last success, then it is a
-              # failure for the owner to read, not an open-ended wait.
+              # Waiting = no successful build row in the last 25.5 hours, i.e.
+              # the ready marker never arrived or the build it starts has not
+              # finished. The window is measured from the last success, not
+              # from 03:00, so the alert fires 25.5h after that build row
+              # (about 04:30 only when the last build finished near 03:00; a
+              # later finish pushes it later). The marker is consumed when
+              # the build starts, so the observable outcome is the build row.
+              # Bounded: after 25.5h it is a failure for the owner to read,
+              # not an open-ended wait.
               rawSql: >-
                 select case when count() = 0 then 1 else 0 end
                 from dbt_build_runs
@@ -100,7 +103,7 @@ groups:
         labels:
           severity: waiting
         annotations:
-          summary: Waiting on the extract - no ready marker or build 90 minutes after 03:00.
+          summary: Waiting on the extract - no successful build in the last 25.5 hours.
           description: >-
             Does not page: the API keeps serving the previous marts. The extract
             (wraith-bus-extract.service) writes the ready marker only for a valid
