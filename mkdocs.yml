@@ -36,6 +36,8 @@ nav:
       - "0008 - published timetables vs inferred routes": adr/0008-published-timetables-vs-inferred-routes.md
       - "0009 - fast nightly build": adr/0009-fast-nightly-build.md
       - "0010 - eta from daily statistics & 3-day hot window": adr/0010-eta-from-daily-statistics-and-3-day-hot-window.md
+      - "0011 - contract-first dbt": adr/0011-contract-first-dbt.md
+      - "Spikes": adr/spikes.md
   - Python API: api.md
   - dbt Docs: dbt/index.html
   - Learn dbt:

@@ -37,11 +37,23 @@ gated before `dbt/build.sh` moves it into place.
   compares each changed contract with its `origin/main` version. Fails on a
   breaking change without a major version bump, a removal without a `sunset` or
   before its sunset date, a column removed while compiled SQL still reads it
-  (reader detection is not wired into CI yet), and a new column without a valid
-  `backfill` (`derive`, `null-before`, `replay`).
+  (a second CI step, "Contract change policy (compiled readers)", scans
+  `dbt compile` output with sqlglot and names the reader), and a new column
+  without a valid `backfill` (`derive`, `null-before`, `replay`). `sunset`,
+  `backfill` and `consumes` are `customProperties` on the contract.
+- **Generated-file drift gate** (CI step "Generated files in sync"): runs
+  `modelgen check --from-contract --diff`, falling back to
+  `python3 contracts/validate.py --generated`, which regenerates the dbt sources,
+  schema yml and singular tests and fails if a committed generated file differs.
+  A difference in the version header alone passes. Never hand-edit a generated
+  file; change the contract and regenerate.
 - **SLA checks** (`ops/sla_check.py`): compares a contract's `latency`
   `slaProperties` with the warehouse's `_meta.data_as_of` stamp. Written and
-  tested; not yet wired into `dbt/build.sh`.
+  tested; not yet wired into `dbt/build.sh` (deliberately left to the final gate).
+- **SQL ratchet** (`ops/sql_ratchet.py`): hand-written model SQL may not grow past
+  `ops/sql_baseline.txt`.
+
+See [ADR-0011](adr/0011-contract-first-dbt.md) for why.
 
 ## `bus-positions.odcs.yaml` — the ingest boundary
 
@@ -149,6 +161,16 @@ vehicle to the journey it's currently running), `journeyOnLine`,
 `journeyStartsAt`. This is what turns "a table with a `line` column" into
 "a Journey runs on exactly one Line" — a claim `validate.py` can check
 against the actual data, not just assert in prose.
+
+**Display metadata is kept on purpose.** The ontology serves an MCP for agent
+queries, and a UI may follow. `pluralDisplayName`, `icon`, `renderHints`,
+`displayName`, `reverseDisplayName` and `unit` are therefore deliberately kept
+even though no code in this repo reads them today.
+
+**Function pointers are validated.** Each `functions[].implementation`
+(`path::symbol`) must name a real file and a top-level def or class in it;
+`validate_ontology` fails otherwise. `rateVehicle` and `predictArrival`
+deliberately share `backend/app.py::predict`.
 
 The contracts say what the **columns** are; the ontology says what the
 **things** are.
