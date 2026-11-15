@@ -196,3 +196,30 @@ def test_reader_in_nested_compiled_directory_is_found(tmp_path):
     root = tmp_path / "compiled"
     violations = policy.check_change(base, head, today=TODAY, compiled_sql_dir=root)
     assert "stg_deep" in violations[0].message
+
+
+def extract_pair(tmp_path):
+    base_doc = contract(
+        {"a": "string", "b": {"type": "string", "props": [("sunset", "2026-11-01")]}}
+    )
+    base_doc["schema"][0].update(name="bus_positions", physicalName="bus_positions_*.parquet")
+    head_doc = contract({"a": "string"}, version="2.0.0")
+    head_doc["schema"][0].update(name="bus_positions", physicalName="bus_positions_*.parquet")
+    return write(tmp_path, "base.yaml", base_doc), write(tmp_path, "head.yaml", head_doc)
+
+
+def test_read_parquet_reader_matched_via_physical_name(tmp_path):
+    base, head = extract_pair(tmp_path)
+    sql = compiled(
+        tmp_path,
+        stg="select a, b from read_parquet('data/bus_positions_*.parquet', union_by_name=true)",
+    )
+    violations = policy.check_change(base, head, today=date(2026, 12, 1), compiled_sql_dir=sql)
+    assert codes(violations) == ["removal-with-readers"]
+    assert "stg" in violations[0].message
+
+
+def test_read_parquet_of_unrelated_files_is_not_a_reader(tmp_path):
+    base, head = extract_pair(tmp_path)
+    sql = compiled(tmp_path, other="select b from read_parquet('data/other_*.parquet')")
+    assert policy.check_change(base, head, today=date(2026, 12, 1), compiled_sql_dir=sql) == []

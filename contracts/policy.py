@@ -7,6 +7,7 @@ entries ({property, value}) on a schema property.
 
 from dataclasses import dataclass
 from datetime import date
+from fnmatch import fnmatch
 from pathlib import Path
 
 import sqlglot
@@ -42,13 +43,41 @@ def _as_date(value):
     return value if value is None or isinstance(value, date) else date.fromisoformat(str(value))
 
 
-def _select_reads(sel, table, column):
+def _physical_names(doc):
+    """{table: physicalName glob} for objects whose files are read by path."""
+    return {
+        obj["name"]: obj["physicalName"]
+        for obj in doc.get("schema", [])
+        if obj.get("physicalName")
+    }
+
+
+def _table_name(t, physical):
+    """Contract table a FROM item reads: its name, or the object whose physicalName
+    matches the file path of a read_parquet/read_csv/... table function."""
+    if t.name:
+        return t.name
+    fn = t.this
+    if isinstance(fn, exp.Expression) and fn.expressions:
+        arg = fn.expressions[0]
+        if isinstance(arg, exp.Literal) and arg.is_string:
+            base = arg.name.rsplit("/", 1)[-1]
+            for table, glob in physical.items():
+                if fnmatch(base, glob) or base == glob:
+                    return table
+    return ""
+
+
+def _select_reads(sel, table, column, physical=None):
     """True if this SELECT (not its subqueries) reads table.column."""
+    physical = physical or {}
 
     def mine(node):
         return node.find_ancestor(exp.Select) is sel
 
-    tables = {t.alias_or_name: t.name for t in sel.find_all(exp.Table) if mine(t)}
+    tables = {
+        t.alias_or_name: _table_name(t, physical) for t in sel.find_all(exp.Table) if mine(t)
+    }
     if table not in tables.values():
         return False
     named = any(
@@ -59,7 +88,7 @@ def _select_reads(sel, table, column):
     return named or any(mine(star) for star in sel.find_all(exp.Star))
 
 
-def _readers(sql_dir, table, column):
+def _readers(sql_dir, table, column, physical=None):
     """Compiled SQL files that read table.column, by file stem.
 
     ponytail: per-SELECT name matching, not full lineage. A select over the table
@@ -71,7 +100,7 @@ def _readers(sql_dir, table, column):
         path.stem
         for path in sorted(Path(sql_dir).rglob("*.sql"))
         if any(
-            _select_reads(sel, table, column)
+            _select_reads(sel, table, column, physical)
             for tree in sqlglot.parse(path.read_text(), read="duckdb")
             if tree
             for sel in tree.find_all(exp.Select)
@@ -114,7 +143,7 @@ def check_change(
                     )
                 )
             if compiled_sql_dir is not None and (
-                readers := _readers(compiled_sql_dir, key[0], key[1])
+                readers := _readers(compiled_sql_dir, key[0], key[1], _physical_names(base_doc))
             ):
                 violations.append(
                     Violation(
