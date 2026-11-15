@@ -43,8 +43,8 @@ def setup(tmp_path, cand):
     return db, env
 
 
-def run(env, *args):
-    return subprocess.run([str(SCRIPT), *args], env=env, capture_output=True, text=True)
+def run(env, *args, script=SCRIPT):
+    return subprocess.run([str(script), *args], env=env, capture_output=True, text=True)
 
 
 def test_dry_run_echoes_all_stages_and_writes_nothing(tmp_path):
@@ -122,6 +122,17 @@ def test_tools_do_not_depend_on_uv(tmp_path):
     line = next(ln for ln in (r.stdout + r.stderr).splitlines() if "tools: python=" in ln)
     assert "uv" not in line.split("python=")[1].split()[0].split("/")
     assert "uv run" not in (Path(__file__).parent / "cutover.sh").read_text()
+
+
+def test_each_tool_falls_back_to_path_when_venv_lacks_it(tmp_path):
+    """Live run 2026-11-15 died at stage 5: the repo .venv had python but not datacontract
+    (it lives in ~/.local/bin), and the script assumed both came from the venv."""
+    _, env = setup(tmp_path, SAME)
+    repo, _ = _layout(tmp_path)
+    r = run(env, "--dry-run", script=repo / "ops" / "cutover.sh")
+    line = next(ln for ln in (r.stdout + r.stderr).splitlines() if "tools: python=" in ln)
+    assert "datacontract=datacontract" in line, line
+    assert ".venv/bin/python3" in line, line
 
 
 def _stub(tmp_path, marker=None):
@@ -211,3 +222,73 @@ def test_failing_dbt_test_blocks_swap(tmp_path):
     assert "STAGE 5 validate" not in r.stdout and "STAGE 6 swap" not in r.stdout
     assert not list(db.parent.glob("*.pre-cutover-*"))
     assert list((tmp_path / "logs").glob("cutover-*/test-candidate.log"))
+
+
+def _layout(tmp_path, venv_tools=()):
+    """Temp repo copy of the script; PATH holds every command except dbt and datacontract."""
+    repo = tmp_path / "repo"
+    (repo / "ops").mkdir(parents=True)
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (repo / ".venv" / "bin" / "python3").symlink_to(sys.executable)
+    for t in venv_tools:
+        (repo / ".venv" / "bin" / t).write_text("#!/bin/sh\n")
+        (repo / ".venv" / "bin" / t).chmod(0o755)
+    (repo / "ops" / "cutover.sh").write_text(SCRIPT.read_text())
+    (repo / "ops" / "cutover.sh").chmod(0o755)
+    (repo / "ops" / "cutover_compare.py").write_text("")
+    path = tmp_path / "path"
+    path.mkdir()
+    for d in os.environ["PATH"].split(":"):
+        for f in Path(d).glob("*") if Path(d).is_dir() else []:
+            if f.name not in ("dbt", "datacontract") and not (path / f.name).exists():
+                (path / f.name).symlink_to(f)
+    return repo, path
+
+
+def _run_layout(tmp_path, env, venv_tools=(), drop=()):
+    repo, path = _layout(tmp_path, venv_tools)
+    for k in drop:
+        env.pop(k)
+    env["PATH"] = str(path)
+    return run(env, "--dry-run", script=repo / "ops" / "cutover.sh")
+
+
+def test_dbt_resolves_from_venv_like_the_other_tools(tmp_path):
+    _, env = setup(tmp_path, SAME)
+    r = _run_layout(tmp_path, env, ("dbt", "datacontract"),
+                    ("CUTOVER_BUILD_CMD", "CUTOVER_TEST_CMD", "CUTOVER_LINT_CMD"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"{tmp_path}/repo/.venv/bin/dbt run" in r.stdout
+    assert f"{tmp_path}/repo/.venv/bin/dbt test" in r.stdout
+
+
+def test_preflight_names_missing_tool_and_where_it_looked(tmp_path):
+    _, env = setup(tmp_path, SAME)
+    r = _run_layout(tmp_path, env, ("datacontract",), ("CUTOVER_BUILD_CMD", "CUTOVER_TEST_CMD"))
+    out = r.stdout + r.stderr
+    assert r.returncode != 0 and "dbt" in out and ".venv/bin/dbt" in out and "PATH" in out, out
+    assert "STAGE 1 backup" not in out
+
+
+def test_overridden_commands_do_not_demand_their_tool(tmp_path):
+    _, env = setup(tmp_path, SAME)  # build, test and lint all overridden
+    r = _run_layout(tmp_path, env)  # neither dbt nor datacontract anywhere
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_lint_stage_calls_resolved_datacontract_on_each_contract(tmp_path):
+    """The real LINT template (no CUTOVER_LINT_CMD) runs the venv datacontract per contract."""
+    _, env = setup(tmp_path, SAME)
+    env.pop("CUTOVER_LINT_CMD")
+    repo, path = _layout(tmp_path, ("datacontract",))
+    calls = tmp_path / "calls.txt"
+    fake = repo / ".venv" / "bin" / "datacontract"
+    fake.write_text(f'#!/bin/sh\necho "$0 $@" >> {calls}\n')
+    (repo / "contracts").mkdir()
+    for n in ("a", "b"):
+        (repo / "contracts" / f"{n}.odcs.yaml").write_text("")
+    env["PATH"] = str(path)
+    r = run(env, "--no-prompt", script=repo / "ops" / "cutover.sh")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert calls.read_text().splitlines() == [f"{fake} lint contracts/a.odcs.yaml",
+                                              f"{fake} lint contracts/b.odcs.yaml"]
