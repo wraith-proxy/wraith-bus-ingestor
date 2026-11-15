@@ -49,9 +49,12 @@ gated before `dbt/build.sh` moves it into place.
   schema yml and singular tests and fails if a committed generated file differs.
   A difference in the version header alone passes. Never hand-edit a generated
   file; change the contract and regenerate.
-- **SLA checks** (`ops/sla_check.py`): compares a contract's `latency`
-  `slaProperties` with the warehouse's `_meta.data_as_of` stamp. Written and
-  tested; not yet wired into `dbt/build.sh` (deliberately left to the final gate).
+- **SLA checks** (`ops/sla_check.py`): `dbt/build.sh` publishes through
+  `sla_check.py publish`, which stamps a `_meta` table (`data_as_of` = the newest
+  ping in the extract, `contract_version`) into the staged warehouse before the
+  atomic swap, then compares the marts contract's `latency` `slaProperties` with
+  that stamp. A breach is reported, never a failed publish; a failure to stamp
+  stops the build and the previous marts keep serving.
 - **SQL ratchet** (`ops/sql_ratchet.py`): hand-written model SQL may not grow past
   `ops/sql_baseline.txt`.
 
