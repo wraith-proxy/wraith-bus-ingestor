@@ -1,8 +1,10 @@
 """SLA checks for a contract's slaProperties, plus the data-as-of stamp."""
 
+import argparse
 import os
+import sys
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import duckdb
@@ -77,3 +79,47 @@ def publish(staged: Path, served: Path, as_of: datetime, version: str) -> None:
     """
     write_meta(staged, as_of, version)
     os.replace(staged, served)
+
+
+def extract_data_as_of(data_dir: Path) -> datetime:
+    """Newest ping in the extract Parquet: what the served marts are as of."""
+    con = duckdb.connect()
+    try:
+        newest = con.execute(
+            "select max(timestamp) from read_parquet(?)",
+            [str(Path(data_dir) / "bus_positions_*.parquet")],
+        ).fetchone()[0]
+    finally:
+        con.close()
+    if newest is None:
+        raise ValueError(f"no pings in {data_dir}")
+    return newest if newest.tzinfo else newest.replace(tzinfo=UTC)
+
+
+def main(argv=None) -> int:
+    """`publish STAGED SERVED --data-dir DIR --contract FILE`: stamp, swap, report breaches.
+
+    Called by dbt/build.sh in place of a bare `mv`. A failure to stamp leaves the served file
+    untouched (the build stops, the previous marts keep serving). An SLA breach is reported
+    but does not fail the publish: it is a ticket for the owner, not a reason to go dark.
+    """
+    ap = argparse.ArgumentParser(description=main.__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    pub = sub.add_parser("publish")
+    pub.add_argument("staged", type=Path)
+    pub.add_argument("served", type=Path)
+    pub.add_argument("--data-dir", type=Path, required=True)
+    pub.add_argument("--contract", type=Path, required=True)
+    args = ap.parse_args(argv)
+
+    as_of = extract_data_as_of(args.data_dir)
+    version = str(yaml.safe_load(args.contract.read_text())["version"])
+    publish(args.staged, args.served, as_of, version)
+    print(f"published {args.served} (data as of {as_of:%Y-%m-%d %H:%M} UTC, contract {version})")
+    for breach in check_slas(args.contract, datetime.now(UTC), as_of=as_of):
+        print(f"SLA breach: {breach.property}: {breach.message}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

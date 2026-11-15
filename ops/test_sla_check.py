@@ -1,8 +1,12 @@
 """SLA checker: breaches of a contract's slaProperties and the data-as-of stamp.
 DuckDB runs in-memory or on tmp files; nothing here touches the network."""
 
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
+import duckdb
 import sla_check
 import yaml
 
@@ -85,3 +89,80 @@ def test_public_signatures_typed_and_documented():
         assert sig.return_annotation is not inspect.Signature.empty, fn.__name__
         for p in sig.parameters.values():
             assert p.annotation is not inspect.Parameter.empty, f"{fn.__name__}.{p.name}"
+
+
+# --- CLI: what dbt/build.sh calls instead of a bare `mv` --------------------------------
+
+OPS = Path(__file__).resolve().parent
+BUILD_SH = OPS.parent / "dbt" / "build.sh"
+
+
+def make_extract(data_dir, newest):
+    data_dir.mkdir()
+    con = duckdb.connect()
+    older, latest = (f"{t:%Y-%m-%d %H:%M:%S}" for t in (newest - timedelta(hours=2), newest))
+    con.execute(
+        f"copy (select * from (values (timestamp '{older}'), (timestamp '{latest}')) t(timestamp))"
+        f" to '{data_dir}/bus_positions_2026-11-14_00.parquet' (format parquet)"
+    )
+    con.close()
+
+
+def publish_cli(tmp_path, newest, version="3.1.1", sla_hours=26):
+    contract = write_contract(
+        tmp_path, [{"property": "latency", "value": sla_hours, "unit": "h"}], version=version
+    )
+    data = tmp_path / "data"
+    make_extract(data, newest)
+    staged, served = tmp_path / "staged.duckdb", tmp_path / "served.duckdb"
+    duckdb.connect(str(staged)).execute("create table eta_models as select 1 as x").close()
+    served.write_bytes(b"old")
+    r = subprocess.run(
+        [sys.executable, str(OPS / "sla_check.py"), "publish", str(staged), str(served),
+         "--data-dir", str(data), "--contract", str(contract)],
+        capture_output=True, text=True,
+    )
+    return r, staged, served
+
+
+def test_cli_publish_stamps_then_swaps(tmp_path):
+    newest = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=1)
+    r, staged, served = publish_cli(tmp_path, newest)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert not staged.exists()
+    assert sla_check.contract_version(served) == "3.1.1"
+    assert sla_check.data_as_of(served).replace(tzinfo=None) == newest
+    assert "SLA breach" not in r.stdout + r.stderr
+
+
+def test_cli_publish_reports_a_breach_without_blocking(tmp_path):
+    newest = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=40)
+    r, staged, served = publish_cli(tmp_path, newest)
+    assert r.returncode == 0, "an SLA breach is a ticket, not a failed publish"
+    assert "SLA breach" in r.stdout + r.stderr
+    assert not staged.exists() and sla_check.contract_version(served) == "3.1.1"
+
+
+def test_cli_publish_with_no_extract_leaves_the_served_file_alone(tmp_path):
+    contract = write_contract(tmp_path, [{"property": "latency", "value": 26, "unit": "h"}])
+    staged, served = tmp_path / "staged.duckdb", tmp_path / "served.duckdb"
+    duckdb.connect(str(staged)).execute("create table t as select 1 as x").close()
+    served.write_bytes(b"old")
+    r = subprocess.run(
+        [sys.executable, str(OPS / "sla_check.py"), "publish", str(staged), str(served),
+         "--data-dir", str(tmp_path / "missing"), "--contract", str(contract)],
+        capture_output=True, text=True,
+    )
+    assert r.returncode != 0
+    assert served.read_bytes() == b"old" and staged.exists()
+
+
+def test_build_sh_publishes_through_the_sla_stamp():
+    sh = BUILD_SH.read_text()
+    assert "sla_check.py publish" in sh
+    assert 'mv -f "$STAGED" "$SERVED"' not in sh, "a bare mv would skip the _meta stamp"
+    assert sh.index("validate.py --marts") < sh.index("sla_check.py publish"), (
+        "the stamp and swap come after the contract gate"
+    )
+    r = subprocess.run(["bash", "-n", str(BUILD_SH)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
