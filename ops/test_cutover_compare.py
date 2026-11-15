@@ -1,9 +1,8 @@
 """cutover_compare: keys and counts exact, DOUBLE columns within tolerance.
 Throwaway DuckDB files only; no live warehouse."""
 
-import duckdb
-
 import cutover_compare as cc
+import duckdb
 
 
 def make(path, rows):
