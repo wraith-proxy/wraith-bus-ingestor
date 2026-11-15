@@ -146,6 +146,8 @@ One ILP line per VehicleActivity, or None if it lacks a usable position.
 def ingest()
 ```
 
+Poll the feed once and return whether it succeeded.
+
 Returns True on success (an empty feed still counts), False on a
 failure that should count toward the backoff in main().
 

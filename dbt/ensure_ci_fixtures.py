@@ -1,4 +1,6 @@
-"""Bootstrap empty placeholder source files for a docs-only build with no
+"""Bootstrap empty placeholder source files for a docs-only build.
+
+This is for a build with no
 live data on disk (pages.yml runs `dbt docs generate` without ever calling
 extract.py). No-op the moment real data exists -- a real box's data/
 directory is never touched.

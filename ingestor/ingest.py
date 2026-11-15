@@ -169,7 +169,9 @@ def build_line(v):
 
 
 def ingest():
-    """Returns True on success (an empty feed still counts), False on a
+    """Poll the feed once and return whether it succeeded.
+
+    Returns True on success (an empty feed still counts), False on a
     failure that should count toward the backoff in main().
 
     Returns:

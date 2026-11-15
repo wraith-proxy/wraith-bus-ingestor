@@ -34,6 +34,7 @@ class Result:
 
     @property
     def ok(self):
+        """Whether the comparison found no problems."""
         return not self.problems
 
 

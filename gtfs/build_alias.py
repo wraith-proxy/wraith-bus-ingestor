@@ -102,8 +102,11 @@ def _learn(con, rows):
 
 
 def _load_review(con):
-    """Allowlist from the review csv: only accepted pairs with no reject row (reject wins).
-    Missing/unparseable csv means an empty allowlist: fail closed, never fail the refresh."""
+    """Build the allowlist from the review csv.
+
+    Only accepted pairs with no reject row (reject wins).
+    Missing/unparseable csv means an empty allowlist: fail closed, never fail the refresh.
+    """
     con.execute(
         "create or replace temp table _allow(lo varchar, ll varchar, go varchar, gl varchar)"
     )
@@ -148,8 +151,11 @@ def _apply_allowlist(con):
 
 
 def _rules(con):
-    """Prefix rows generated from GTFS alone. A rule never shadows a real match:
-    if GTFS itself publishes the prefixed label, the row is not emitted."""
+    """Generate prefix rows from GTFS alone.
+
+    A rule never shadows a real match:
+    if GTFS itself publishes the prefixed label, the row is not emitted.
+    """
     for op, prefix in PREFIX_RULES.items():
         con.execute("""insert into gtfs_line_alias
             select ?, ? || line, ?, line, NULL, NULL, 'rule'
@@ -160,9 +166,12 @@ def _rules(con):
 
 
 def _carry(con, previous_db_path, seen_live=False):
-    """Copy still-valid previous aliases: live pair must still lack a pattern, the
+    """Copy still-valid previous aliases.
+
+    The live pair must still lack a pattern, the
     target must still exist. With seen_live, labels the fresh window covered are
-    left to it (a fresh drop as ambiguous must not be resurrected)."""
+    left to it (a fresh drop as ambiguous must not be resurrected).
+    """
     if not previous_db_path or not os.path.exists(previous_db_path):
         print("build_alias: no previous DB, nothing carried over", flush=True)
         return

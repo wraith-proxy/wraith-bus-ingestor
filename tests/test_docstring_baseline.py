@@ -18,7 +18,7 @@ BASELINE_REL = "docstring-baseline.toml"
 # Ratchet ceiling: the number of unconverted files the baseline may hold. Lower it as
 # conversion slices land (never raise it). The seeded size is the count of non-test
 # modules that failed the D rules when the rule was switched on.
-CEILING = 15
+CEILING = 0
 
 GOOGLE = ["--isolated", "--select", "D", "--config", 'lint.pydocstyle.convention="google"']
 

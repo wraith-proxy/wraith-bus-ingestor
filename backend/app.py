@@ -45,9 +45,10 @@ CORS(app)
 
 
 class _ScriptNamePrefix:
-    """Tells Flask's own url_for() that every URL it generates is reached externally via /api/...
+    """Make Flask's url_for() emit externally reachable /api/... URLs.
 
-    , without changing which path Flask matches an INCOMING request against (that's PATH_INFO,
+    Tells Flask's own url_for() that every URL it generates is reached externally via /api/...,
+    without changing which path Flask matches an INCOMING request against (that's PATH_INFO,
     untouched here -- routes stay registered at bare paths like every other one in this file).
 
     ghost-site's nginx does `location /api/ { proxy_pass http://api/; }`
@@ -65,7 +66,8 @@ class _ScriptNamePrefix:
     is exactly the WSGI mechanism for "the app knows its own routes as X, but
     the world reaches it at PREFIX+X" -- so url_for('...openapi_json') now
     correctly comes out as /api/openapi.json, matching what nginx actually
-    exposes, while routing itself is unaffected."""
+    exposes, while routing itself is unaffected.
+    """
     def __init__(self, wsgi_app, prefix):
         self.wsgi_app = wsgi_app
         self.prefix = prefix
@@ -300,9 +302,9 @@ def classify_status(delay_s):
 
 
 def normalise_query(q):
-    """Match localities.locality_norm:
+    """Normalise a query to match localities.locality_norm.
 
-    upper, punctuation stripped, whitespace collapsed, trimmed.
+    Upper, punctuation stripped, whitespace collapsed, trimmed.
 
     Args:
         q: Raw user search text.
@@ -567,10 +569,13 @@ _last_eta = {}
 
 
 def _table_columns(con, table):
-    """Columns a mart actually has. The dbt side is rebuilt independently, so
+    """Return the columns a mart actually has.
+
+    The dbt side is rebuilt independently, so
     for a while wraith_bus_ingestor.duckdb still carries the pre-day_type shape. Detect
     rather than assume: a missing column must degrade the grain, not throw and
-    disable every prediction."""
+    disable every prediction.
+    """
     try:
         rows = con.execute(
             'SELECT column_name FROM information_schema.columns '
@@ -764,7 +769,9 @@ def qdb_rows(sql):
 
 
 def available_columns():
-    """The enriched columns are created lazily by the ingestor's ILP writes, so
+    """Return the enriched columns that exist on bus_positions.
+
+    The enriched columns are created lazily by the ingestor's ILP writes, so
     select only what actually exists or QuestDB 400s the whole query.
 
     Returns:
@@ -994,7 +1001,8 @@ def _delay_from_fraction(fraction, departed, scheduled, now_s):
        journey's timetable against this vehicle" are the same picture. The
        ceiling is a fraction of the journey's own scheduled duration, floored so
        that short workings are not held to an implausibly tight bound. See
-       STALE_JOURNEY_FRACTION for the evidence and the proper fix."""
+       STALE_JOURNEY_FRACTION for the evidence and the proper fix.
+    """
     if fraction >= ARRIVED_FRACTION:
         return None                # arrived; see (1)
     fraction = min(1.0, max(0.0, fraction))
@@ -1008,7 +1016,9 @@ def _delay_from_fraction(fraction, departed, scheduled, now_s):
 
 
 def geometric_progress_delay(row, marts, now_s):
-    """Same idea as progress_delay, but measuring progress as plain distance
+    """Estimate delay from plain distance covered between origin and destination.
+
+    Same idea as progress_delay, but measuring progress as plain distance
     covered between the origin and destination stops.
 
     progress_delay needs the bus to be near a stop the marts already know on
@@ -1099,7 +1109,9 @@ def position_is_live(row, now_s):
 
 
 def pinned_trip(row):
-    """The GTFS trip this row's journey unambiguously pins to (ROADMAP.md
+    """Return the GTFS trip this row's journey unambiguously pins to, or None.
+
+    The trip is the one the journey pins to (ROADMAP.md
     1.13.0 / ADR-0008 Phase 2), or None. A thin wrapper over gtfs.pin_trip
     keyed the same way journey_key() keys a journey, so a repeated call for
     the same journey is a cache hit, not a re-query.
@@ -1115,7 +1127,9 @@ def pinned_trip(row):
 
 
 def pinned_stop_arrival(pin, atco):
-    """This pinned trip's real wall-clock arrival epoch at one stop, or None
+    """Return a pinned trip's wall-clock arrival epoch at one stop, or None.
+
+    This is the pinned trip's real wall-clock arrival epoch at one stop, or None
     if the stop is not on it (should not happen for origin/dest, which is how
     the pin was found, but a defensive lookup costs nothing).
 
@@ -1135,7 +1149,9 @@ def pinned_stop_arrival(pin, atco):
 
 
 def pinned_eta(row, now_s):
-    """(predicted_epoch_s, eta_iso) from a pinned trip's own scheduled
+    """Return (predicted_epoch_s, eta_iso) from a pinned trip's own timetable.
+
+    (predicted_epoch_s, eta_iso) from a pinned trip's own scheduled
     arrival at this journey's destination, or (None, None) if the trip does
     not pin. This is the timetable ITSELF, not a delay adjustment -- delay
     still comes from progress_delay/geometric_progress_delay exactly as
@@ -1378,7 +1394,9 @@ def journey_key(row):
 
 
 def observe_trails(rows, sync_seed=False):
-    """Score the latest ping of every bus with more than one candidate pattern,
+    """Score the latest ping of every multi-candidate bus and queue trail backfills.
+
+    Score the latest ping of every bus with more than one candidate pattern,
     and queue the ones without a trail for backfilling.
 
     Args:
@@ -1411,7 +1429,9 @@ def observe_trails(rows, sync_seed=False):
 
 
 def seed_trails(items, gen):
-    """Backfill trails from the last SEED_MINUTES of QuestDB pings, so an API
+    """Backfill trails from the last SEED_MINUTES of QuestDB pings.
+
+    Backfill trails from the last SEED_MINUTES of QuestDB pings, so an API
     restart or a newly seen vehicle does not start with no evidence. Failure
     just leaves the prior in charge.
 
@@ -1722,7 +1742,9 @@ def bus_detail(args, bus_id):
 
 
 def road_snapped_geometry(stops):
-    """[[lon, lat], ...] following real roads through these stops in order,
+    """Return [[lon, lat], ...] following real roads through the stops, or None.
+
+    [[lon, lat], ...] following real roads through these stops in order,
     via the self-hosted OSRM car profile (overview=full for the detailed
     shape, not OSRM's default simplified one). None on any failure --
     unreachable OSRM, a stop pair with no drivable path, a timeout -- so the
@@ -1751,8 +1773,9 @@ def road_snapped_geometry(stops):
 
 
 def route_stops_for_line(operator, line, direction):
-    """Stop sequence plus how it was resolved, for /api/route:
+    """Return the stop sequence plus how it was resolved, for /api/route.
 
+    Stop sequence plus how it was resolved, for /api/route:
     the timetable's primary pattern. Returns (stops, operator, direction, day_type, source); the
     day_type is always None (patterns are not day-specific) and is kept only so the response shape
     does not change for clients.
@@ -1778,8 +1801,9 @@ def route_stops_for_line(operator, line, direction):
 @buses_blp.alt_response(400, schema=schemas.ApiErrorSchema,
                          description='Invalid line, direction, day_type or operator.')
 def route(args):
-    """GeoJSON for drawing a line on the map:
+    """Return GeoJSON for drawing a line on the map.
 
+    GeoJSON for drawing a line on the map:
     its stop sequence as a dotted LineString, the stops themselves, and the buses currently working
     it.
 
@@ -2107,7 +2131,9 @@ def metrics_summary():
 @system_blp.response(200, schemas.MetricsPunctualityResponseSchema)
 @system_blp.alt_response(503, schema=schemas.ApiErrorSchema, description='QuestDB unavailable.')
 def metrics_punctuality():
-    """System-wide on-time %, delay and ETA model fit, plus the worst lines
+    """Return system-wide punctuality, ETA model fit and the worst lines.
+
+    System-wide on-time %, delay and ETA model fit, plus the worst lines
     table -- the same rollup dbt/publish_punctuality_summary.py writes into
     QuestDB and the same queries the dashboard's 'Punctuality & ETA models'
     row runs. The per-line rollup is a volume-weighted approximation from

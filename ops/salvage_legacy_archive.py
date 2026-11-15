@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""One-off: salvage the 63 archived days whose symbol maps were lost into Parquet.
+r"""One-off: salvage the 63 archived days whose symbol maps were lost into Parquet.
 
 Kept for provenance, not routine use (docs/adr/0006, docs/adr/0007). Days
 archived before the 2026-09-18 schema migration hold `bus_id` and `line` as
@@ -10,7 +10,7 @@ per day: `timestamp`, `lat`, `lon`, `bearing`, plus the raw `bus_id_key` /
 `line_key` integers (meaningless without the lost maps, kept so nothing that
 survived is thrown away). The file's key/value metadata says so.
 
-    uv run --no-project --with numpy --with pyarrow --with duckdb \\
+    uv run --no-project --with numpy --with pyarrow --with duckdb \
         python ops/salvage_legacy_archive.py            # every old-layout day
         python ops/salvage_legacy_archive.py 2026-08-31 # one day
 

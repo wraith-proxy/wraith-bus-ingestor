@@ -1,4 +1,6 @@
-"""Ready gate: validate the whole extract window against its contract, then write
+"""Validate the extract window against its contract and write the readiness marker.
+
+Ready gate: validate the whole extract window against its contract, then write
 the readiness marker only when every error-severity check passes. Warning-severity
 rules never block. A failed validation never writes the marker.
 

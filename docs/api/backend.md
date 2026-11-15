@@ -176,9 +176,9 @@ RAG bucket for a delay in seconds. See the threshold block above.
 def normalise_query(q)
 ```
 
-Match localities.locality_norm:
+Normalise a query to match localities.locality_norm.
 
-upper, punctuation stripped, whitespace collapsed, trimmed.
+Upper, punctuation stripped, whitespace collapsed, trimmed.
 
 **Arguments**:
 
@@ -466,6 +466,8 @@ Run a query and return rows as dicts keyed by column name.
 def available_columns()
 ```
 
+Return the enriched columns that exist on bus_positions.
+
 The enriched columns are created lazily by the ingestor's ILP writes, so
 select only what actually exists or QuestDB 400s the whole query.
 
@@ -639,6 +641,8 @@ window, so it cannot carry the RAG classification on its own.
 def geometric_progress_delay(row, marts, now_s)
 ```
 
+Estimate delay from plain distance covered between origin and destination.
+
 Same idea as progress_delay, but measuring progress as plain distance
 covered between the origin and destination stops.
 
@@ -696,7 +700,9 @@ the only freshness signal available for those.
 def pinned_trip(row)
 ```
 
-The GTFS trip this row's journey unambiguously pins to (ROADMAP.md
+Return the GTFS trip this row's journey unambiguously pins to, or None.
+
+The trip is the one the journey pins to (ROADMAP.md
 1.13.0 / ADR-0008 Phase 2), or None. A thin wrapper over gtfs.pin_trip
 keyed the same way journey_key() keys a journey, so a repeated call for
 the same journey is a cache hit, not a re-query.
@@ -718,7 +724,9 @@ the same journey is a cache hit, not a re-query.
 def pinned_stop_arrival(pin, atco)
 ```
 
-This pinned trip's real wall-clock arrival epoch at one stop, or None
+Return a pinned trip's wall-clock arrival epoch at one stop, or None.
+
+This is the pinned trip's real wall-clock arrival epoch at one stop, or None
 if the stop is not on it (should not happen for origin/dest, which is how
 the pin was found, but a defensive lookup costs nothing).
 
@@ -739,6 +747,8 @@ the pin was found, but a defensive lookup costs nothing).
 ```python
 def pinned_eta(row, now_s)
 ```
+
+Return (predicted_epoch_s, eta_iso) from a pinned trip's own timetable.
 
 (predicted_epoch_s, eta_iso) from a pinned trip's own scheduled
 arrival at this journey's destination, or (None, None) if the trip does
@@ -870,6 +880,8 @@ Key identifying a vehicle's current journey.
 def observe_trails(rows, sync_seed=False)
 ```
 
+Score the latest ping of every multi-candidate bus and queue trail backfills.
+
 Score the latest ping of every bus with more than one candidate pattern,
 and queue the ones without a trail for backfilling.
 
@@ -890,6 +902,8 @@ and queue the ones without a trail for backfilling.
 ```python
 def seed_trails(items, gen)
 ```
+
+Backfill trails from the last SEED_MINUTES of QuestDB pings.
 
 Backfill trails from the last SEED_MINUTES of QuestDB pings, so an API
 restart or a newly seen vehicle does not start with no evidence. Failure
@@ -1063,6 +1077,8 @@ and the payload lists who else answers to that id in `same_bus_id`.
 def road_snapped_geometry(stops)
 ```
 
+Return [[lon, lat], ...] following real roads through the stops, or None.
+
 [[lon, lat], ...] following real roads through these stops in order,
 via the self-hosted OSRM car profile (overview=full for the detailed
 shape, not OSRM's default simplified one). None on any failure --
@@ -1087,8 +1103,9 @@ breaking the map.
 def route_stops_for_line(operator, line, direction)
 ```
 
-Stop sequence plus how it was resolved, for /api/route:
+Return the stop sequence plus how it was resolved, for /api/route.
 
+Stop sequence plus how it was resolved, for /api/route:
 the timetable's primary pattern. Returns (stops, operator, direction, day_type, source); the
 day_type is always None (patterns are not day-specific) and is kept only so the response shape
 does not change for clients.
@@ -1119,8 +1136,9 @@ does not change for clients.
 def route(args)
 ```
 
-GeoJSON for drawing a line on the map:
+Return GeoJSON for drawing a line on the map.
 
+GeoJSON for drawing a line on the map:
 its stop sequence as a dotted LineString, the stops themselves, and the buses currently working
 it.
 
@@ -1231,6 +1249,8 @@ applies to last_stop/next_stop.
                          description='QuestDB unavailable.')
 def metrics_punctuality()
 ```
+
+Return system-wide punctuality, ETA model fit and the worst lines.
 
 System-wide on-time %, delay and ETA model fit, plus the worst lines
 table -- the same rollup dbt/publish_punctuality_summary.py writes into
@@ -1349,8 +1369,10 @@ def stop(atco)
 def prime_routes(keys)
 ```
 
-Batch-load candidates for the (operator, line, origin_ref, dest_ref) keys
-of one poll; keys already cached, or missing a field, are skipped.
+Batch-load candidates for the keys of one poll.
+
+The keys are (operator, line, origin_ref, dest_ref); keys already cached, or missing a
+field, are skipped.
 
 **Arguments**:
 
@@ -1369,8 +1391,9 @@ of one poll; keys already cached, or missing a field, are skipped.
 def candidates(operator, line, origin_ref, dest_ref)
 ```
 
-Every timetable pattern of this line that runs origin_ref -> dest_ref,
-most-run first (trip_share desc, then lowest pattern_id, so the order is
+List every timetable pattern of this line that runs origin_ref -> dest_ref.
+
+Most-run first (trip_share desc, then lowest pattern_id, so the order is
 total). [] when the line is not in the timetable or no pattern matches the
 endpoints. Each: {pattern_id, direction, trip_share, is_circular, stops}.
 
@@ -1395,8 +1418,10 @@ endpoints. Each: {pattern_id, direction, trip_share, is_circular, stops}.
 def prime_pins(keys)
 ```
 
-Batch-load trip pins for (operator, line, origin_ref, aimed_dep_ms)
-keys; keys already cached, or missing a field, are skipped.
+Batch-load trip pins for the given keys.
+
+The keys are (operator, line, origin_ref, aimed_dep_ms); keys already cached, or missing
+a field, are skipped.
 
 **Arguments**:
 
@@ -1415,8 +1440,9 @@ keys; keys already cached, or missing a field, are skipped.
 def pin_trip(operator, line, origin_ref, aimed_dep_ms)
 ```
 
-{'trip_id', 'anchor_epoch_s', 'stops':
+Return the one GTFS trip a vehicle's journey pins to, or None.
 
+Result is {'trip_id', 'anchor_epoch_s', 'stops':
 [{'atco','seq','arr_secs', 'dep_secs'}, ...]} for the one GTFS trip this vehicle's current
 journey unambiguously matches by (operator, line, origin stop, exact aimed departure) -- or
 None if it does not pin (no match, more than one match, or a missing field). See the module
@@ -1444,8 +1470,9 @@ work). stops is the WHOLE trip, ordered by stop_sequence.
 def prime_lines(keys)
 ```
 
-Batch-load line routes for (operator, line, direction) keys; keys already
-cached, or without an operator or line, are skipped.
+Batch-load line routes for (operator, line, direction) keys.
+
+Keys already cached, or without an operator or line, are skipped.
 
 **Arguments**:
 
@@ -1464,9 +1491,9 @@ cached, or without an operator or line, are skipped.
 def line_route(operator, line, direction=None)
 ```
 
-One representative route for a line, for the map's route overlay:
+Return one representative route for a line, for the map's route overlay.
 
-{stops, operator, direction, source}, or None. Chooses among the primary patterns: the
+Shape: {stops, operator, direction, source}, or None. Chooses among the primary patterns: the
 requested direction if it exists, else outbound, else any; with no operator, the one carrying
 the most trips.
 
@@ -1544,8 +1571,10 @@ Error body, {"error": <message>}, returned with a 4xx or 5xx status.
 class BusFeaturePropertiesSchema(Schema)
 ```
 
-bus_properties()'s exact field set -- what every 'bus' Feature on
-/buses and /route carries, and the base of BusDetailSchema below.
+Schema of bus_properties()'s exact field set.
+
+This is what every 'bus' Feature on /buses and /route carries, and the base of
+BusDetailSchema below.
 
 <a id="schemas.ModelFitSchema"></a>
 
@@ -1605,7 +1634,9 @@ Another operator's vehicle that shares a bus_id: operator and line.
 class BusDetailSchema(BusFeaturePropertiesSchema)
 ```
 
-GET /bus/<bus_id>. Extends the properties every bus Feature carries
+Schema of the GET /bus/<bus_id> response.
+
+Extends the properties every bus Feature carries
 with the position and route detail only a single-bus lookup computes.
 
 <a id="schemas.BusDetailQuerySchema"></a>
@@ -1821,7 +1852,9 @@ drop a vehicle's trail this long after we last saw it
 def distance_m(lat, lon, stops)
 ```
 
-Metres from a point to the polyline through these stops, in a local flat
+Return the distance in metres from a point to the polyline through these stops.
+
+Measured in a local flat
 projection (fine at bus scale). inf for fewer than one usable stop.
 
 **Arguments**:

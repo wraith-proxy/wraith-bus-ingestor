@@ -112,9 +112,11 @@ def _clean(text):
 
 
 def _pack(items):
-    """Many strings as ONE bound parameter, for `unnest(string_split(?, chr(30)))`.
+    """Pack many strings into ONE bound parameter for `unnest(string_split(?, chr(30)))`.
+
     Binding a Python list makes DuckDB do a failed import lookup per element,
-    which cost 6 s for a poll's worth of keys."""
+    which cost 6 s for a poll's worth of keys.
+    """
     return chr(30).join(items)
 
 
@@ -166,13 +168,15 @@ def stop(atco):
 
 
 def _load_candidates(keys):
-    """Fill _cands for many (operator, line, origin_ref, dest_ref) keys with three
-    queries in one connection, not three per key: a cold poll has over a thousand
+    """Fill _cands for many (operator, line, origin_ref, dest_ref) keys in one connection.
+
+    Uses three queries in one connection, not three per key: a cold poll has over a thousand
     keys, and one query each would take longer than the request budget.
 
     The live (operator, line) is taken as the timetable spells it if the
     timetable has it, else through the reviewed alias table (which never shadows
-    a real match; checking exact first keeps it so)."""
+    a real match; checking exact first keeps it so).
+    """
     if not available():
         return
     try:
@@ -227,8 +231,10 @@ def _load_candidates(keys):
 
 
 def prime_routes(keys):
-    """Batch-load candidates for the (operator, line, origin_ref, dest_ref) keys
-    of one poll; keys already cached, or missing a field, are skipped.
+    """Batch-load candidates for the keys of one poll.
+
+    The keys are (operator, line, origin_ref, dest_ref); keys already cached, or missing a
+    field, are skipped.
 
     Args:
         keys: Iterable of (operator, line, origin_ref, dest_ref) tuples.
@@ -243,8 +249,9 @@ def prime_routes(keys):
 
 
 def candidates(operator, line, origin_ref, dest_ref):
-    """Every timetable pattern of this line that runs origin_ref -> dest_ref,
-    most-run first (trip_share desc, then lowest pattern_id, so the order is
+    """List every timetable pattern of this line that runs origin_ref -> dest_ref.
+
+    Most-run first (trip_share desc, then lowest pattern_id, so the order is
     total). [] when the line is not in the timetable or no pattern matches the
     endpoints. Each: {pattern_id, direction, trip_share, is_circular, stops}.
 
@@ -292,10 +299,13 @@ _GTFS_SECS_MACRO = (
 
 
 def _local_date_and_secs(epoch_ms):
-    """(YYYYMMDD, seconds-since-local-midnight) for an epoch-millis timestamp,
+    """Convert an epoch-millis timestamp to a local (YYYYMMDD, seconds) pair.
+
+    The pair is (YYYYMMDD, seconds-since-local-midnight)
     in Europe/London -- the same zone the dbt side and app.py's hour_band /
     day_type use. None on a bad value rather than raising: a malformed
-    aimed-departure field must just fail to pin, not break the poll."""
+    aimed-departure field must just fail to pin, not break the poll.
+    """
     try:
         dt = datetime.fromtimestamp(int(epoch_ms) / 1000.0, tz=_LOCAL_TZ)
     except (TypeError, ValueError, OSError, OverflowError):
@@ -304,8 +314,9 @@ def _local_date_and_secs(epoch_ms):
 
 
 def _load_pins(keys):
-    """Fill _pins for many (operator, line, origin_ref, aimed_dep_ms) keys in
-    one connection. Two interpretations per key are tried and unioned before
+    """Fill _pins for many (operator, line, origin_ref, aimed_dep_ms) keys.
+
+    Done in one connection. Two interpretations per key are tried and unioned before
     counting distinct trips, because GTFS times run past 24:00:00 for a
     service that started the previous calendar day: 'today, plain
     seconds-of-day' and 'yesterday, seconds-of-day + 86400' (a trip departing
@@ -313,7 +324,8 @@ def _load_pins(keys):
     is pinned only if the union of both interpretations resolves to exactly
     one trip_id -- if either interpretation alone is ambiguous but the other
     is empty, or both agree on the same trip, it still counts as one; if they
-    disagree, that is a genuine ambiguity and the key is left unpinned."""
+    disagree, that is a genuine ambiguity and the key is left unpinned.
+    """
     if not available():
         return
     try:
@@ -405,9 +417,11 @@ def _load_pins(keys):
 
 
 def _pin_interpretations(dep_ms):
-    """(date, secs) pairs to try for one aimed-departure timestamp: today's
-    calendar date at plain seconds-of-day, and yesterday's at +86400, per the
-    GTFS past-midnight convention -- see _load_pins."""
+    """Return the (date, secs) pairs to try for one aimed-departure timestamp.
+
+    These are today's calendar date at plain seconds-of-day, and yesterday's at +86400,
+    per the GTFS past-midnight convention -- see _load_pins.
+    """
     parsed = _local_date_and_secs(dep_ms)
     if parsed is None:
         return []
@@ -421,8 +435,10 @@ def _pin_interpretations(dep_ms):
 
 
 def prime_pins(keys):
-    """Batch-load trip pins for (operator, line, origin_ref, aimed_dep_ms)
-    keys; keys already cached, or missing a field, are skipped.
+    """Batch-load trip pins for the given keys.
+
+    The keys are (operator, line, origin_ref, aimed_dep_ms); keys already cached, or missing
+    a field, are skipped.
 
     Args:
         keys: Iterable of (operator, line, origin_ref, aimed_dep_ms) tuples.
@@ -437,8 +453,9 @@ def prime_pins(keys):
 
 
 def pin_trip(operator, line, origin_ref, aimed_dep_ms):
-    """{'trip_id', 'anchor_epoch_s', 'stops':
+    """Return the one GTFS trip a vehicle's journey pins to, or None.
 
+    Result is {'trip_id', 'anchor_epoch_s', 'stops':
     [{'atco','seq','arr_secs', 'dep_secs'}, ...]} for the one GTFS trip this vehicle's current
     journey unambiguously matches by (operator, line, origin stop, exact aimed departure) -- or
     None if it does not pin (no match, more than one match, or a missing field). See the module
@@ -479,11 +496,13 @@ def _route_dict(stops, operator, r_dir, direction):
 
 
 def _load_lines(keys):
-    """Fill _lines for many (operator, line, direction) keys, operator present,
-    in one connection. A cold poll has over a thousand distinct keys and a
+    """Fill _lines for many (operator, line, direction) keys in one connection.
+
+    Operator is present on every key. A cold poll has over a thousand distinct keys and a
     connection each took ~80 s. Same resolution as _load_candidates; the pattern
     chosen is the primary one in the requested direction if there is one, else
-    outbound, else the one with most trips."""
+    outbound, else the one with most trips.
+    """
     if not available():
         return
     try:
@@ -531,8 +550,9 @@ def _load_lines(keys):
 
 
 def prime_lines(keys):
-    """Batch-load line routes for (operator, line, direction) keys; keys already
-    cached, or without an operator or line, are skipped.
+    """Batch-load line routes for (operator, line, direction) keys.
+
+    Keys already cached, or without an operator or line, are skipped.
 
     Args:
         keys: Iterable of (operator, line, direction) tuples.
@@ -548,9 +568,9 @@ def prime_lines(keys):
 
 
 def line_route(operator, line, direction=None):
-    """One representative route for a line, for the map's route overlay:
+    """Return one representative route for a line, for the map's route overlay.
 
-    {stops, operator, direction, source}, or None. Chooses among the primary patterns: the
+    Shape: {stops, operator, direction, source}, or None. Chooses among the primary patterns: the
     requested direction if it exists, else outbound, else any; with no operator, the one carrying
     the most trips.
 

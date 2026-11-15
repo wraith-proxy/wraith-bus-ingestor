@@ -106,6 +106,17 @@ Outcome of a comparison.
 - `problems` - One message per mismatch found; empty means identical.
 - `ok` - True when there are no problems.
 
+<a id="cutover_compare.Result.ok"></a>
+
+#### ok
+
+```python
+@property
+def ok()
+```
+
+Whether the comparison found no problems.
+
 <a id="cutover_compare.compare"></a>
 
 ### compare
@@ -154,8 +165,10 @@ Compare the tables named on the command line and print the verdict.
 
 ## incident
 
-Incident recovery for bus_positions: restore an archived day back into
-live QuestDB, or replay a whole day range through extract+dbt.
+Recover bus_positions after an incident, by restore or replay.
+
+Restore an archived day back into live QuestDB, or replay a whole day range
+through extract+dbt.
 
 Runs on the host (not in a container) -- it needs both `docker` (to reach
 into questdb's uid-10001-owned partition dir, same workaround used for
@@ -298,7 +311,9 @@ def parquet_info(path)
 def restore(day)
 ```
 
-Bring a day back from the Parquet archive into live bus_positions.
+Restore a day from the Parquet archive into live bus_positions.
+
+Brings a day back from the Parquet archive into live bus_positions.
 No-op if already present. The row count is checked against the file.
 
 **Arguments**:
@@ -320,7 +335,9 @@ No-op if already present. The row count is checked against the file.
 def extract_day(day_obj)
 ```
 
-Pull one day using extract.py's own build_select/fetch -- same
+Pull one day of rows out of QuestDB using extract.py.
+
+Uses extract.py's own build_select/fetch -- same
 chunking, same column typing, same empty-file handling as the nightly
 run. Reimporting rather than reimplementing: this is the one place that
 logic should live.
@@ -438,7 +455,9 @@ ILP tag values cannot carry spaces, commas or equals signs unescaped.
 def fetch_state()
 ```
 
-Return (state, n_models). Any failure degrades to ("unreachable", 0)
+Return the marts state and model count, degrading to unreachable on failure.
+
+Returns (state, n_models). Any failure degrades to ("unreachable", 0)
 rather than raising, since the API being down is itself worth a row --
 but the real exception is printed first (see main()'s caller), because
 silently collapsing every failure into "unreachable" hid a real bug: no
@@ -461,7 +480,9 @@ always the wrong one) since it was first enabled.
 def build_line(state, n_models, ts_ns)
 ```
 
-Turn a state reading into a single ILP line. Kept separate from the
+Build a single ILP line from a state reading.
+
+Kept separate from the
 POST so it can be exercised without a live QuestDB.
 
 **Arguments**:
@@ -507,6 +528,8 @@ Fetch the state, publish a row, and exit 0 only when the state is 'ok'.
 <a id="ready_gate"></a>
 
 ## ready\_gate
+
+Validate the extract window against its contract and write the readiness marker.
 
 Ready gate: validate the whole extract window against its contract, then write
 the readiness marker only when every error-severity check passes. Warning-severity

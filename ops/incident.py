@@ -1,6 +1,8 @@
 #!/usr/bin/env python
-"""Incident recovery for bus_positions: restore an archived day back into
-live QuestDB, or replay a whole day range through extract+dbt.
+"""Recover bus_positions after an incident, by restore or replay.
+
+Restore an archived day back into live QuestDB, or replay a whole day range
+through extract+dbt.
 
 Runs on the host (not in a container) -- it needs both `docker` (to reach
 into questdb's uid-10001-owned partition dir, same workaround used for
@@ -147,7 +149,9 @@ def parquet_info(path):
 
 
 def restore(day):
-    """Bring a day back from the Parquet archive into live bus_positions.
+    """Restore a day from the Parquet archive into live bus_positions.
+
+    Brings a day back from the Parquet archive into live bus_positions.
     No-op if already present. The row count is checked against the file.
 
     Args:
@@ -200,7 +204,9 @@ def restore(day):
 
 
 def extract_day(day_obj):
-    """Pull one day using extract.py's own build_select/fetch -- same
+    """Pull one day of rows out of QuestDB using extract.py.
+
+    Uses extract.py's own build_select/fetch -- same
     chunking, same column typing, same empty-file handling as the nightly
     run. Reimporting rather than reimplementing: this is the one place that
     logic should live.

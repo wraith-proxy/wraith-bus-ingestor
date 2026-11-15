@@ -33,8 +33,11 @@ class ApiErrorSchema(Schema):
 # ---------------------------------------------------------------------------
 
 class BusFeaturePropertiesSchema(Schema):
-    """bus_properties()'s exact field set -- what every 'bus' Feature on
-    /buses and /route carries, and the base of BusDetailSchema below."""
+    """Schema of bus_properties()'s exact field set.
+
+    This is what every 'bus' Feature on /buses and /route carries, and the base of
+    BusDetailSchema below.
+    """
     bus_id = fields.String(allow_none=True)
     line = fields.String(allow_none=True)
     bearing = fields.Float(allow_none=True)
@@ -91,8 +94,11 @@ class NamesakeSchema(Schema):
 
 
 class BusDetailSchema(BusFeaturePropertiesSchema):
-    """GET /bus/<bus_id>. Extends the properties every bus Feature carries
-    with the position and route detail only a single-bus lookup computes."""
+    """Schema of the GET /bus/<bus_id> response.
+
+    Extends the properties every bus Feature carries
+    with the position and route detail only a single-bus lookup computes.
+    """
     lat = fields.Float(allow_none=True)
     lon = fields.Float(allow_none=True)
     recorded_at = fields.String(allow_none=True, metadata={"format": "date-time"})

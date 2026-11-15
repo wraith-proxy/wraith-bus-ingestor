@@ -4,8 +4,10 @@
 
 ## archive
 
-Moves bus_positions days older than RETENTION_DAYS off the hot QuestDB
-disk and onto cold storage as Parquet, instead of deleting them.
+Moves bus_positions days older than RETENTION_DAYS off the hot QuestDB disk to Parquet.
+
+The days go off the hot QuestDB
+disk and onto cold storage as Parquet, instead of being deleted.
 
 Why Parquet rather than QuestDB's own partition files (docs/adr/0007): a
 DETACHed QuestDB partition is not self-contained. Its SYMBOL columns are
@@ -78,7 +80,9 @@ Run a SQL statement against QuestDB's /exec endpoint.
 def attached_partitions()
 ```
 
-[(name, min_timestamp), ...] for partitions currently in the live
+List [(name, min_timestamp), ...] for the live table's partitions, oldest first.
+
+These are the partitions currently in the live
 table, oldest first. A name that doesn't parse as a date is not ours to
 touch -- this table is PARTITION BY DAY.
 
@@ -113,7 +117,9 @@ Count the rows QuestDB holds for one day.
 def export_day(name, dest)
 ```
 
-Stream QuestDB's own Parquet export of one day into `dest`. Streaming:
+Stream QuestDB's own Parquet export of one day into `dest`.
+
+Streaming:
 the archiver's memory does not grow with the day (curl peaked at 11MB on a
 34M-row day), and QuestDB peaked at ~4GB of its 8GB doing the same.
 
@@ -135,8 +141,9 @@ the archiver's memory does not grow with the day (curl peaked at 11MB on a
 def parquet_stats(path)
 ```
 
-(rows, min_timestamp, max_timestamp) read back out of the file itself --
-the proof, as opposed to trusting that the export worked. Timestamps come
+Return (rows, min_timestamp, max_timestamp) read back out of the file itself.
+
+This is the proof, as opposed to trusting that the export worked. Timestamps come
 back as text: QuestDB writes TIMESTAMPTZ, and fetching one as a Python
 datetime needs pytz, which this slim image does not carry (found the hard
 way on the first real run, 2026-09-19).
@@ -177,7 +184,9 @@ Drop one live partition from QuestDB.
 def archive_one(name)
 ```
 
-'archived' | 'skipped' | 'failed'. 'skipped' means a day left in place
+Return 'archived', 'skipped' or 'failed' for one day.
+
+'skipped' means a day left in place
 that a human should look at, without blocking the days behind it; 'failed'
 stops the run.
 
@@ -214,7 +223,9 @@ Archives every attached partition older than RETENTION_DAYS, oldest first.
 def record_run(status, archived, skipped, detail)
 ```
 
-One row per run: what the Grafana rules read. A failure to record must
+Record one row per run, which is what the Grafana rules read.
+
+A failure to record must
 never take the archiver down -- and if QuestDB is unreachable the missing
 row is itself the signal (the 'no clean run' rule fires).
 

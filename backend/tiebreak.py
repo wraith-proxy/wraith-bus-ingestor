@@ -44,7 +44,9 @@ M_PER_DEG_LON = 111320.0
 
 
 def distance_m(lat, lon, stops):
-    """Metres from a point to the polyline through these stops, in a local flat
+    """Return the distance in metres from a point to the polyline through these stops.
+
+    Measured in a local flat
     projection (fine at bus scale). inf for fewer than one usable stop.
 
     Args:

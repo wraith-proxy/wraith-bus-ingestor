@@ -1,4 +1,6 @@
-"""Load noc_operator_names.csv into QuestDB so Grafana can show real
+"""Load noc_operator_names.csv into QuestDB for Grafana operator names.
+
+This lets Grafana show real
 operator names instead of raw four-letter NOC codes.
 
 Unlike publish_run_results.py and publish_punctuality_summary.py, this is

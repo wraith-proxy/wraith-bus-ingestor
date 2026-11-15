@@ -45,7 +45,9 @@ def esc_tag(val):
 
 
 def fetch_state():
-    """Return (state, n_models). Any failure degrades to ("unreachable", 0)
+    """Return the marts state and model count, degrading to unreachable on failure.
+
+    Returns (state, n_models). Any failure degrades to ("unreachable", 0)
     rather than raising, since the API being down is itself worth a row --
     but the real exception is printed first (see main()'s caller), because
     silently collapsing every failure into "unreachable" hid a real bug: no
@@ -76,7 +78,9 @@ def fetch_state():
 
 
 def build_line(state, n_models, ts_ns):
-    """Turn a state reading into a single ILP line. Kept separate from the
+    """Build a single ILP line from a state reading.
+
+    Kept separate from the
     POST so it can be exercised without a live QuestDB.
 
     Args:

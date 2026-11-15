@@ -223,7 +223,9 @@ Row counts of the serving tables in the currently served database.
 def review_accepts()
 ```
 
-Keys accepted in alias_review.csv with no reject row (reject wins); same rule as
+Return keys accepted in alias_review.csv with no reject row.
+
+Reject wins; same rule as
 build_alias._load_review. Unreadable csv gives an empty set: fail closed.
 
 **Returns**:
@@ -262,7 +264,9 @@ Check the staging database is sane before it may replace the live one.
 def alias_fallback(con, previous_db)
 ```
 
-Degrade path: carry the served DB's alias table over, else an empty one. This
+Carry the served DB's alias table over, else an empty one (degrade path).
+
+This
 stage must never fail a refresh, and an old alias beats none while QuestDB is down.
 
 **Arguments**:
@@ -358,7 +362,9 @@ Download, build, verify and publish a fresh database.
 def record_run(status, n, started, message)
 ```
 
-One row per run for Grafana. Mirrors archiver.record_run: a failure to
+Record one row per run for Grafana.
+
+Mirrors archiver.record_run: a failure to
 record is logged and swallowed, never allowed to mask the real outcome.
 
 **Arguments**:
