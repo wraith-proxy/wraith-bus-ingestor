@@ -61,6 +61,15 @@ EXPECTED_PAGES = [
     "agents/issue-tracker/index.html",
     "agents/triage-labels/index.html",
 ]
+# docs/agents/ is untracked on the owner's machine (excluded in .git/info/exclude), so a
+# clean checkout, which is what CI builds, does not have it. Only expect those pages where
+# the files exist, and use that as the single switch for the agent-notes test.
+HAVE_AGENT_NOTES = subprocess.run(
+    ["git", "ls-files", "--error-unmatch", "docs/agents/domain.md"],
+    cwd=ROOT, capture_output=True,
+).returncode == 0
+if not HAVE_AGENT_NOTES:
+    EXPECTED_PAGES = [p for p in EXPECTED_PAGES if not p.startswith("agents/")]
 MERMAID_PAGES = [
     "adr/0001-line-stops-memory-and-batching/index.html",
     "learn-dbt/index.html",
@@ -378,6 +387,7 @@ def test_abbreviations_snippet_is_not_a_page(site):
     assert not (site / "assets" / "abbreviations.md").exists()
 
 
+@pytest.mark.skipif(not HAVE_AGENT_NOTES, reason="docs/agents/ is not tracked in this checkout")
 def test_agent_notes_are_published_but_out_of_the_nav(site):
     assert (site / "agents" / "issue-tracker" / "index.html").is_file()
     nav = re.search(
