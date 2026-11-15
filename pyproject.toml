@@ -105,7 +105,8 @@ lint = "ruff check ."
 format = "ruff format ."
 tidy = ["lint", "format"]
 # Regenerates the Python API pages docs/api/<area>.md from the public modules' own
-# docstrings (config: pydoc-markdown.yml, one page per area). Generated, never committed.
+# docstrings (config: pydoc-markdown.yml, one page per area). Generated AND committed; CI
+# regenerates and fails on any difference, so run this and commit docs/api after editing a docstring.
 # Fails if a module cannot be found or an area page comes out empty, so a broken
 # reference stops the docs build. PYDOC_CONFIG points it at another config (used by tests).
 docs-api = { shell = '''

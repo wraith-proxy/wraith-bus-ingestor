@@ -29,6 +29,22 @@ jobs:
           ./bin/run_tests.sh --no-venv
         env:
           PYTHONPATH: .
+      - name: Python API reference in sync
+        # docs/api/*.md are generated from the docstrings and committed so the nav
+        # works without a build. Regenerate; any difference (or a missing/untracked page)
+        # means someone changed a docstring without running `poe docs-api`.
+        run: |
+          set -euo pipefail
+          poe docs-api
+          if [ -n "$(git status --porcelain -- docs/api)" ]; then
+            git status --short -- docs/api
+            git diff --stat -- docs/api
+            echo "docs/api is stale: run 'poe docs-api' and commit docs/api" >&2
+            exit 1
+          fi
+      - name: Docs build (strict)
+        # Same site the Pages job publishes, but failing on any warning here, before merge.
+        run: mkdocs build --strict
       - name: Validate data contracts
         # No live QuestDB or built marts file exists on this runner, so most
         # checks here degrade to a graceful skip -- see validate.py's own

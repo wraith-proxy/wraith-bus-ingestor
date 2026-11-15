@@ -132,20 +132,17 @@ def test_every_public_module_is_in_the_api_config():
     assert not listed - public, f"pydoc-markdown.yml lists untracked modules: {listed - public}"
 
 
-# --- generated, not committed ------------------------------------------------
+# --- generated and committed -------------------------------------------------
 
 
-def test_generated_pages_are_ignored_by_git_but_the_overview_is_committed():
-    for area in AREAS:
-        ignored = subprocess.run(
-            ["git", "check-ignore", "-q", f"docs/api/{area}.md"], cwd=ROOT
-        ).returncode
-        assert ignored == 0, f"docs/api/{area}.md must be gitignored"
-    overview = subprocess.run(
-        ["git", "check-ignore", "-q", "docs/api/index.md"], cwd=ROOT
-    ).returncode
-    assert overview != 0, "docs/api/index.md is hand-written and must not be ignored"
-    assert (ROOT / "docs" / "api" / "index.md").is_file()
+def test_generated_pages_are_committed_not_ignored():
+    """The nav must work without a build, so every page is tracked; CI's drift step
+    (test.yml) keeps them equal to a fresh `poe docs-api`."""
+    for area in ["index", *AREAS]:
+        page = f"docs/api/{area}.md"
+        ignored = subprocess.run(["git", "check-ignore", "-q", page], cwd=ROOT).returncode
+        assert ignored != 0, f"{page} must not be gitignored"
+        assert (ROOT / page).is_file(), f"{page} missing; run poe docs-api and commit it"
 
 
 # --- generation --------------------------------------------------------------

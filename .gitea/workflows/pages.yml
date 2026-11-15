@@ -43,7 +43,7 @@ jobs:
           fi
 
       - name: Build Documentation
-        run: mkdocs build
+        run: mkdocs build --strict
 
       - name: Sync to Main Website Repo
         env:
