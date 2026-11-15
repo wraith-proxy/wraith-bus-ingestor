@@ -37,7 +37,9 @@ def test_one_marker_path_across_units():
 
 def test_build_keeps_limits_and_hooks():
     assert lines("wraith-bus-build.service", "MemoryMax") == ["13000M"]
-    assert any("record_build_failure" in x for x in lines("wraith-bus-build.service", "ExecStopPost"))
+    assert any(
+        "record_build_failure" in x for x in lines("wraith-bus-build.service", "ExecStopPost")
+    )
     assert lines("wraith-bus-build.service", "Environment") == ["SKIP_EXTRACT=1"]
 
 
@@ -52,7 +54,9 @@ def test_timer_and_path_unit_not_both_enabled():
     assert any("wraith-bus-extract.path" in ln for ln in enabled)
     assert not any("wraith-bus-build.timer" in ln for ln in enabled)
     assert any("wraith-bus-build.timer" in ln for ln in disabled)
-    ordered = sh.index("disable --now wraith-bus-build.timer") < sh.index("enable --now wraith-bus-extract.path")
+    ordered = sh.index("disable --now wraith-bus-build.timer") < sh.index(
+        "enable --now wraith-bus-extract.path"
+    )
     assert ordered, "old timer must be disabled before the path unit is enabled"
 
 

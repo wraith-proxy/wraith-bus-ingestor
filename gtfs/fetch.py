@@ -34,6 +34,7 @@ SOURCE_URL = 'https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/all/
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 import hostenv  # noqa: E402
+
 DB_PATH = Path(hostenv.get('GTFS_DB_PATH'))
 WORK = Path(hostenv.get('GTFS_WORK_DIR'))
 NAPTAN_CSV = os.environ.get(
@@ -88,7 +89,9 @@ def download(dest):
     # ponytail: no testzip() here -- extract() CRC-checks every member it reads
     # and a BadZipFile there is fatal, so a corrupt body still cannot publish.
     if size < MIN_ZIP_BYTES or not zipfile.is_zipfile(dest):
-        raise RuntimeError(f'download is not the feed: {size} bytes, valid zip={zipfile.is_zipfile(dest)}')
+        raise RuntimeError(
+            f"download is not the feed: {size} bytes, valid zip={zipfile.is_zipfile(dest)}"
+        )
     log(f'downloaded {size / 1e9:.2f}GB')
 
 
@@ -167,15 +170,20 @@ def review_accepts():
     try:
         with open(HERE / 'alias_review.csv', newline='', encoding='utf-8-sig') as f:
             for r in csv.DictReader(f):
-                k = tuple((r[c] or '').strip() for c in ('live_operator', 'live_line', 'gtfs_operator', 'gtfs_line'))
+                k = tuple(
+                    (r[c] or "").strip()
+                    for c in ("live_operator", "live_line", "gtfs_operator", "gtfs_line")
+                )
                 decided.setdefault(k, set()).add((r['decision'] or '').strip().lower())
     except Exception:
         return set()
     return {k for k, d in decided.items() if 'accept' in d and 'reject' not in d}
 
 
-ALIAS_DDL = ('CREATE TABLE gtfs_line_alias(live_operator VARCHAR, live_line VARCHAR, gtfs_operator VARCHAR, '
-             'gtfs_line VARCHAR, n_buses BIGINT, share DOUBLE, source VARCHAR)')
+ALIAS_DDL = (
+    "CREATE TABLE gtfs_line_alias(live_operator VARCHAR, live_line VARCHAR, "
+    "gtfs_operator VARCHAR, gtfs_line VARCHAR, n_buses BIGINT, share DOUBLE, source VARCHAR)"
+)
 KEY = 'operator, line, direction'
 PAT = f'{KEY}, pattern_id'
 
@@ -197,7 +205,9 @@ def verify(con):
     floors = {'gtfs_stop_times': 30_000_000, 'gtfs_trips': 800_000, 'gtfs_agency': 300,
               'gtfs_stops': 150_000, 'gtfs_route_patterns': 0, 'gtfs_route_stops': 100_000,
               'gtfs_line_localities': 0}
-    bad += [f'{t} has {n[t]:,} rows, need > {floor:,}' for t, floor in floors.items() if n[t] <= floor]
+    bad += [
+        f"{t} has {n[t]:,} rows, need > {floor:,}" for t, floor in floors.items() if n[t] <= floor
+    ]
     for t, old in previous_counts().items():
         if old and n[t] < old * 0.7:
             bad.append(f'{t} shrank {old:,} -> {n[t]:,} (more than 30%)')
@@ -206,17 +216,23 @@ def verify(con):
         return con.execute(sql).fetchone()[0]
 
     # A patterns.sql bug (e.g. stop_id type mismatch) shows as NULL keys or broken seq.
-    for t, cols in (('gtfs_route_patterns', f'{PAT}, is_primary, first_atco, last_atco, n_trips, is_circular'),
-                    ('gtfs_route_stops', f'{PAT}, atco_code')):
+    for t, cols in (
+        ("gtfs_route_patterns", f"{PAT}, is_primary, first_atco, last_atco, n_trips, is_circular"),
+        ("gtfs_route_stops", f"{PAT}, atco_code"),
+    ):
         where = ' OR '.join(f'{c.strip()} IS NULL' for c in cols.split(','))
         nulls = one(f'SELECT count(*) FROM {t} WHERE {where}')
         if nulls:
             bad.append(f'{t} has {nulls:,} rows with a NULL key column')
     # The API and build_alias pin live buses on first/last stop; is_circular drives the API's
     # decision to ignore the direction label, so it must agree with them.
-    badcirc = one('SELECT count(*) FROM gtfs_route_patterns WHERE is_circular != (first_atco = last_atco)')
+    badcirc = one(
+        "SELECT count(*) FROM gtfs_route_patterns WHERE is_circular != (first_atco = last_atco)"
+    )
     if badcirc:
-        bad.append(f'{badcirc:,} gtfs_route_patterns rows where is_circular != (first_atco = last_atco)')
+        bad.append(
+            f"{badcirc:,} gtfs_route_patterns rows where is_circular != (first_atco = last_atco)"
+        )
     # Each key: pattern_id is exactly 1..k and pattern 1 is the one primary. Aggregating
     # 50k-odd pattern rows is instant; the row-level checks below are single passes.
     badpat = one(f'SELECT count(*) FROM (SELECT 1 FROM gtfs_route_patterns GROUP BY {KEY} '
@@ -228,10 +244,14 @@ def verify(con):
         bad.append(f'{badpat:,} (operator, line, direction) keys have non-dense pattern_id '
                    'or not exactly one primary')
     # seq per PATTERN: the v1 per-key check would fail on any key with two patterns.
-    badseq = one(f'SELECT count(*) FROM (SELECT 1 FROM gtfs_route_stops GROUP BY {PAT} '
-                 'HAVING min(seq) != 1 OR max(seq) != count(*) OR count(DISTINCT seq) != count(*))')
+    badseq = one(
+        f"SELECT count(*) FROM (SELECT 1 FROM gtfs_route_stops GROUP BY {PAT} "
+        "HAVING min(seq) != 1 OR max(seq) != count(*) OR count(DISTINCT seq) != count(*))"
+    )
     if badseq:
-        bad.append(f'{badseq:,} (operator, line, direction, pattern_id) groups have a non-dense seq')
+        bad.append(
+            f"{badseq:,} (operator, line, direction, pattern_id) groups have a non-dense seq"
+        )
     # Both directions of the link; ANTI JOIN over the distinct pattern keys, not all rows.
     orphan_stops = one(f'SELECT count(*) FROM (SELECT DISTINCT {PAT} FROM gtfs_route_stops) s '
                        f'ANTI JOIN gtfs_route_patterns p USING ({PAT})')
@@ -242,16 +262,34 @@ def verify(con):
                    f'gtfs_route_patterns, {orphan_pats:,} patterns with no route_stops')
     if n['gtfs_line_alias']:
         # Rule rows carry NULL n_buses/share (not learned from buses); learned rows never do.
-        badalias = one("SELECT count(*) FROM gtfs_line_alias WHERE source IS NULL OR source NOT IN ('learned', 'rule') "
-                       "OR (source = 'learned' AND (n_buses IS NULL OR share IS NULL))")
-        dup = one('SELECT count(*) FROM (SELECT 1 FROM gtfs_line_alias GROUP BY live_operator, live_line HAVING count(*) > 1)')
+        badalias = one(
+            "SELECT count(*) FROM gtfs_line_alias WHERE source IS NULL "
+            "OR source NOT IN ('learned', 'rule') "
+            "OR (source = 'learned' AND (n_buses IS NULL OR share IS NULL))"
+        )
+        dup = one(
+            "SELECT count(*) FROM (SELECT 1 FROM gtfs_line_alias "
+            "GROUP BY live_operator, live_line HAVING count(*) > 1)"
+        )
         ok = review_accepts()
-        stale = [r for r in con.execute("SELECT live_operator, live_line, gtfs_operator, gtfs_line "
-                                        "FROM gtfs_line_alias WHERE source = 'learned'").fetchall() if tuple(r) not in ok]
+        stale = [
+            r
+            for r in con.execute(
+                "SELECT live_operator, live_line, gtfs_operator, gtfs_line "
+                "FROM gtfs_line_alias WHERE source = 'learned'"
+            ).fetchall()
+            if tuple(r) not in ok
+        ]
         if stale:
-            bad.append(f'{len(stale):,} learned gtfs_line_alias rows not accepted in alias_review.csv: {stale[:5]}')
+            bad.append(
+                f"{len(stale):,} learned gtfs_line_alias rows not accepted in "
+                f"alias_review.csv: {stale[:5]}"
+            )
         if badalias:
-            bad.append(f'{badalias:,} gtfs_line_alias rows with a bad source or a learned row missing n_buses/share')
+            bad.append(
+                f"{badalias:,} gtfs_line_alias rows with a bad source or a learned row "
+                "missing n_buses/share"
+            )
         if dup:
             bad.append(f'{dup:,} (live_operator, live_line) pairs appear twice in gtfs_line_alias')
     if bad:
@@ -268,24 +306,33 @@ def alias_fallback(con, previous_db):
             con.execute(f"ATTACH '{previous_db}' AS prev (READ_ONLY)")
             try:
                 # Named columns: the old table's order/shape must not leak into the served schema.
-                # A table without `source` predates the review allowlist: its learned rows were never
-                # reviewed, so fail closed and carry nothing from it.
+                # A table without `source` predates the review allowlist: its learned rows
+                # were never reviewed, so fail closed and carry nothing from it.
                 have = {r[0] for r in con.execute('DESCRIBE prev.gtfs_line_alias').fetchall()}
                 con.execute(ALIAS_DDL)
                 if 'source' in have:
-                    # Only learned rows the csv still accepts and whose target still exists. Rule rows
-                    # are not carried (regenerated by the next successful build_alias). This differs
-                    # on purpose from build_alias's own carry, which also re-creates rule rows.
+                    # Only learned rows the csv still accepts and whose target still exists.
+                    # Rule rows are not carried (regenerated by the next successful
+                    # build_alias). This differs on purpose from build_alias's own carry,
+                    # which also re-creates rule rows.
                     ok = review_accepts()
                     rows = con.execute(
-                        "SELECT live_operator, live_line, gtfs_operator, gtfs_line, n_buses, share, source "
-                        "FROM prev.gtfs_line_alias WHERE source = 'learned' AND n_buses IS NOT NULL "
+                        "SELECT live_operator, live_line, gtfs_operator, gtfs_line, n_buses, "
+                        "share, source "
+                        "FROM prev.gtfs_line_alias WHERE source = 'learned' "
+                        "AND n_buses IS NOT NULL "
                         "AND share IS NOT NULL AND (gtfs_operator, gtfs_line) IN "
-                        "(SELECT operator, line FROM gtfs_route_patterns)").fetchall()
+                        "(SELECT operator, line FROM gtfs_route_patterns)"
+                    ).fetchall()
                     rows = [r for r in rows if r[:4] in ok]
                     if rows:
-                        con.executemany('INSERT INTO gtfs_line_alias VALUES (?, ?, ?, ?, ?, ?, ?)', rows)
-                log(f'alias: carried over {count(con, "gtfs_line_alias"):,} rows from {previous_db}')
+                        con.executemany(
+                            "INSERT INTO gtfs_line_alias VALUES (?, ?, ?, ?, ?, ?, ?)", rows
+                        )
+                log(
+                    f"alias: carried over {count(con, 'gtfs_line_alias'):,} rows "
+                    f"from {previous_db}"
+                )
                 return
             finally:
                 con.execute('DETACH prev')
@@ -300,7 +347,9 @@ def alias_stage(con):
     previous = str(DB_PATH) if DB_PATH.exists() else None
     try:
         sys.path.insert(0, str(HERE))
-        from build_alias import build_alias   # imported here: a broken file must not fail the refresh
+        from build_alias import (
+            build_alias,  # imported here: a broken file must not fail the refresh
+        )
         n = build_alias(con, QUESTDB_HTTP, previous)
         log(f'alias: {n:,} rows')
     except Exception:
@@ -348,7 +397,9 @@ def refresh(staging):
         free = shutil.disk_usage(d).free
         log(f'{free / 1e9:.1f}GB free on {d}')
         if free < MIN_FREE_BYTES:
-            raise RuntimeError(f'only {free / 1e9:.1f}GB free on {d}, need {MIN_FREE_BYTES / 1e9:.0f}GB')
+            raise RuntimeError(
+                f"only {free / 1e9:.1f}GB free on {d}, need {MIN_FREE_BYTES / 1e9:.0f}GB"
+            )
     # A failed run leaves its CSVs, zip and spill behind; start clean so a stale
     # feed_info.txt or spill file cannot leak into this run.
     stage('cleaning leftovers from any earlier run')
@@ -421,8 +472,11 @@ def main():
     args = sys.argv[1:]
     if args not in ([], ['--no-record']):
         sys.exit(__doc__)
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s',
-                        handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(LOG_FILE)])
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler(LOG_FILE)],
+    )
     socket.setdefaulttimeout(300)
     # systemd's TimeoutStartSec sends SIGTERM; turn it into SystemExit so the
     # handler below cleans staging and records the 'error' row.

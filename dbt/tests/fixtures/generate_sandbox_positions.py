@@ -59,11 +59,12 @@ JOURNEYS = [
 DAY_START_HOUR = 9   # local wall-clock hour the first journey of a day departs
 
 # One real production check does not fit any small fixture at all: the source
-# expects at least 500,000 rows (generated test tests/generated/bus_positions__extract_row_count.sql), a
-# floor sized for "did a whole-GB extract produce basically nothing", not for
-# a teaching sandbox. ops/dbt_sandbox.sh patches that one number down, in its
-# OWN copy of the project only -- see the comment there. Nothing here works
-# around it; it is a genuinely different, smaller-scale environment.
+# expects at least 500,000 rows (generated test
+# tests/generated/bus_positions__extract_row_count.sql), a floor sized for
+# "did a whole-GB extract produce basically nothing", not for a teaching
+# sandbox. ops/dbt_sandbox.sh patches that one number down, in its OWN copy of
+# the project only -- see the comment there. Nothing here works around it; it
+# is a genuinely different, smaller-scale environment.
 
 
 def _positions(start, end, n):

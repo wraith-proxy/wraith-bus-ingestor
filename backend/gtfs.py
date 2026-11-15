@@ -20,7 +20,7 @@ there.
 import os
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 try:  # optional at import time, same as app.py
     import duckdb
@@ -31,7 +31,7 @@ try:  # same fallback as app.py: tzdata may be missing from a slim image
     from zoneinfo import ZoneInfo
     _LOCAL_TZ = ZoneInfo('Europe/London')
 except Exception:  # pragma: no cover
-    _LOCAL_TZ = timezone.utc
+    _LOCAL_TZ = UTC
 
 GTFS_PATH = os.getenv('GTFS_PATH', '/gtfs/gtfs.duckdb')
 GTFS_TTL = 60                # only stat the file once a minute
