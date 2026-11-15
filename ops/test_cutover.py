@@ -2,6 +2,7 @@
 Never touches the real warehouse, dbt or QuestDB."""
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import duckdb
@@ -14,7 +15,7 @@ STAGES = ["STAGE 0 preflight", "STAGE 1 backup", "STAGE 2 copies", "STAGE 3 buil
 pytestmark = pytest.mark.skipif(os.geteuid() == 0, reason="script refuses root")
 
 # stub build: the baseline gets the old numbers, the candidate the new ones
-STUB = ("python3 - <<'PY'\nimport duckdb, os\n"
+STUB = (sys.executable + " - <<'PY'\nimport duckdb, os\n"
         "role = os.environ['CUTOVER_ROLE']\n"
         "con = duckdb.connect('wraith_bus_ingestor_build.duckdb')\n"
         "con.execute('drop table if exists localities')\n"
@@ -94,3 +95,20 @@ def test_preflight_refuses_low_memory(tmp_path):
     env["CUTOVER_MIN_MEM_MB"] = "99999999"
     r = run(env, "--dry-run")
     assert r.returncode != 0 and "memory" in r.stdout + r.stderr
+
+
+def test_default_build_cmd_is_absolute_and_needs_packages(tmp_path):
+    repo = Path(__file__).resolve().parent.parent
+    _, env = setup(tmp_path, SAME)
+    del env["CUTOVER_BUILD_CMD"]
+    r = run(env, "--dry-run")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"{repo}/.venv/bin/dbt run" in r.stdout
+    assert "../.venv" not in r.stdout
+    # real (non-dry) run without the gitignored packages must fail loudly, early
+    env.pop("CUTOVER_SRC_ONLY")
+    env["CUTOVER_PACKAGES"] = str(tmp_path / "no-such-packages")
+    r = run(env, "--no-prompt")
+    assert r.returncode != 0
+    assert "dbt_packages" in r.stdout and "dbt deps" in r.stdout
+    assert not (tmp_path / "backup").exists()

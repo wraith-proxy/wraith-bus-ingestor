@@ -54,7 +54,10 @@ TABLES="${CUTOVER_TABLES:-eta_models localities line_punctuality}"
 OLD_REF="${CUTOVER_OLD_REF:-origin/main}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOGDIR="${CUTOVER_LOGDIR:-$REPO/ops/logs}/cutover-$STAMP"
-DEFAULT_BUILD='../.venv/bin/dbt run --profiles-dir . --vars "{extract_days: 4}"'
+# absolute: the build runs inside the extracted copies, where ../.venv does not exist
+DEFAULT_BUILD="$REPO/.venv/bin/dbt run --profiles-dir . --vars \"{extract_days: 4}\""
+# git archive omits the gitignored dbt/dbt_packages, so each copy links to the repo's
+PACKAGES="${CUTOVER_PACKAGES:-$REPO/dbt/dbt_packages}"
 BUILD_CMD="${CUTOVER_BUILD_CMD:-$DEFAULT_BUILD}"
 
 mkdir -p "$LOGDIR"
@@ -91,6 +94,9 @@ if [[ -d "$(dirname "$BACKUP_DIR")" ]]; then
 else
   (( DRY )) || die "backup parent $(dirname "$BACKUP_DIR") does not exist"
 fi
+if (( ! DRY )) && [[ -z "${CUTOVER_SRC_ONLY:-}" && ! -d "$PACKAGES" ]]; then
+  die "no dbt_packages at $PACKAGES (gitignored, not in the git archive): run 'dbt deps' in $REPO/dbt first"
+fi
 say "preflight ok"
 
 stage "STAGE 1 backup"
@@ -116,6 +122,7 @@ else
   for d in "$BASE" "$CAND"; do
     cp "$DB" "$d/$(basename "$DB")" || die "copy failed"
     ln -sfn "$DATA" "$d/data"
+    if [[ -z "${CUTOVER_SRC_ONLY:-}" ]]; then ln -sfn "$PACKAGES" "$d/dbt_packages"; fi
   done
   say "copies ready in $WORK"
 fi
