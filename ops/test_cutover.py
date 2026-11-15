@@ -229,3 +229,56 @@ def test_failing_dbt_test_blocks_swap(tmp_path):
     assert "STAGE 5 validate" not in r.stdout and "STAGE 6 swap" not in r.stdout
     assert not list(db.parent.glob("*.pre-cutover-*"))
     assert list((tmp_path / "logs").glob("cutover-*/test-candidate.log"))
+
+
+def _layout(tmp_path, venv_tools=()):
+    """Temp repo copy of the script; PATH holds every command except dbt and datacontract."""
+    repo = tmp_path / "repo"
+    (repo / "ops").mkdir(parents=True)
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (repo / ".venv" / "bin" / "python3").symlink_to(sys.executable)
+    for t in venv_tools:
+        (repo / ".venv" / "bin" / t).write_text("#!/bin/sh\n")
+        (repo / ".venv" / "bin" / t).chmod(0o755)
+    (repo / "ops" / "cutover.sh").write_text(SCRIPT.read_text())
+    (repo / "ops" / "cutover.sh").chmod(0o755)
+    (repo / "ops" / "cutover_compare.py").write_text("")
+    path = tmp_path / "path"
+    path.mkdir()
+    for d in os.environ["PATH"].split(":"):
+        for f in Path(d).glob("*") if Path(d).is_dir() else []:
+            if f.name not in ("dbt", "datacontract") and not (path / f.name).exists():
+                (path / f.name).symlink_to(f)
+    return repo, path
+
+
+def _run_layout(tmp_path, env, venv_tools=(), drop=()):
+    repo, path = _layout(tmp_path, venv_tools)
+    for k in drop:
+        env.pop(k)
+    env["PATH"] = str(path)
+    return subprocess.run([str(repo / "ops" / "cutover.sh"), "--dry-run"], env=env,
+                          capture_output=True, text=True)
+
+
+def test_dbt_resolves_from_venv_like_the_other_tools(tmp_path):
+    _, env = setup(tmp_path, SAME)
+    r = _run_layout(tmp_path, env, ("dbt", "datacontract"),
+                    ("CUTOVER_BUILD_CMD", "CUTOVER_TEST_CMD", "CUTOVER_LINT_CMD"))
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert f"{tmp_path}/repo/.venv/bin/dbt run" in r.stdout
+    assert f"{tmp_path}/repo/.venv/bin/dbt test" in r.stdout
+
+
+def test_preflight_names_missing_tool_and_where_it_looked(tmp_path):
+    _, env = setup(tmp_path, SAME)
+    r = _run_layout(tmp_path, env, ("datacontract",), ("CUTOVER_BUILD_CMD", "CUTOVER_TEST_CMD"))
+    out = r.stdout + r.stderr
+    assert r.returncode != 0 and "dbt" in out and ".venv/bin/dbt" in out and "PATH" in out, out
+    assert "STAGE 1 backup" not in out
+
+
+def test_overridden_commands_do_not_demand_their_tool(tmp_path):
+    _, env = setup(tmp_path, SAME)  # build, test and lint all overridden
+    r = _run_layout(tmp_path, env)  # neither dbt nor datacontract anywhere
+    assert r.returncode == 0, r.stdout + r.stderr
