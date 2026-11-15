@@ -2,7 +2,7 @@
 
 **Status:** Proposed 2026-11-15. Code committed on `feature/TJP-14114`, **unpushed and unmerged**. Not done, because each needs the owner: the weekend cutover (`ops/cutover.sh`), the sudo install (`ops/install_event_trigger.sh`), live-data validation, three green event-triggered nights, and the final gate that wires `dbt/build.sh`. Nothing below has run against the live warehouse or the live systemd units.
 **Date:** 2026-11-15
-**Related:** spec #43, tickets #44-#57, [ADR-0007](0007-parquet-archive.md), [ADR-0009](0009-fast-nightly-build.md), [ADR-0010](0010-eta-from-daily-statistics-and-3-day-hot-window.md), [contracts](../contracts.md), [cutover runbook](../runbook-cutover.md), [spikes](spikes.md), `docs/handoff/2026-11-14-contract-first-dbt/design.md`, `contracts/policy.py`, `contracts/validate.py`, `ops/compile_metrics.py`, `ops/sla_check.py`, `ops/ready_gate.py`, `ops/sql_ratchet.py`, `ops/cutover.sh`
+**Related:** spec #43, tickets #44-#57, [ADR-0007](0007-parquet-archive.md), [ADR-0009](0009-fast-nightly-build.md), [ADR-0010](0010-eta-from-daily-statistics-and-3-day-hot-window.md), [contracts](../contracts.md), [cutover runbook](../runbook-cutover.md), [spikes](spikes.md), `contracts/policy.py`, `contracts/validate.py`, `ops/compile_metrics.py`, `ops/sla_check.py`, `ops/ready_gate.py`, `ops/sql_ratchet.py`, `ops/cutover.sh`
 
 ## Context
 

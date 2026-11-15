@@ -9,6 +9,8 @@ maps/
 
 # Housekeeping
 tree.txt
+# Local dbt build warehouse (dbt/.gitignore covers dbt/; this is the repo-root copy)
+wraith_bus_ingestor_build.duckdb*
 .env
 .DS_Store
 .aider*
