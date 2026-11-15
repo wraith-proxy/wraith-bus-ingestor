@@ -935,3 +935,9 @@ breaking. **After any manual `docker compose down`/`up`, `docker
 stop`/`start`, or `--force-recreate` on this stack, check `/grafana/`,
 `/bus-map/`, and `/tiles/...` from outside the host -- not just `docker
 compose ps`.**
+
+## Contract-first dbt cutover
+
+The one-off weekend switch to the contract-first project, `ops/cutover.sh`, with its
+rollback and the limit on it (lossless only within `EXTRACT_DAYS=4`), is in
+[the cutover runbook](runbook-cutover.md).
