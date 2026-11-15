@@ -112,6 +112,31 @@ def _major(doc):
     return int(str(doc.get("version", "0")).split(".")[0])
 
 
+def _breaking_change(old, new):
+    """What changed incompatibly between two versions of a column, or None."""
+    if new.get("logicalType") != old.get("logicalType"):
+        return "changed type"
+    if new.get("physicalType") != old.get("physicalType"):
+        return "changed physicalType"
+    # Loosening only: tightening (false -> true) is not flagged.
+    if old.get("required") is True and not new.get("required"):
+        return "loosened required"
+    if old.get("primaryKey") and (
+        not new.get("primaryKey") or new.get("primaryKeyPosition") != old.get("primaryKeyPosition")
+    ):
+        return "dropped or changed its primaryKey"
+    old_enum = {e.get("value") for e in old.get("enum") or []}
+    new_enum = {e.get("value") for e in new.get("enum") or []}
+    if old_enum - new_enum:
+        return "removed enum values " + ", ".join(sorted(map(str, old_enum - new_enum)))
+    return None
+
+
+def removed_contracts(base_listing, root: Path) -> list[str]:
+    """Contract files on base (paths like contracts/x.odcs.yaml) missing under root."""
+    return [f for f in base_listing if f.endswith(".odcs.yaml") and not (Path(root) / f).exists()]
+
+
 def check_change(
     base: Path, head: Path, *, today: date | None = None, compiled_sql_dir: Path | None = None
 ) -> list[Violation]:
@@ -151,11 +176,11 @@ def check_change(
                         f"{name} removed but still read by {', '.join(readers)}",
                     )
                 )
-        elif head_cols[key].get("logicalType") != col.get("logicalType") and needs_major:
+        elif needs_major and (what := _breaking_change(col, head_cols[key])):
             violations.append(
                 Violation(
                     "breaking-without-major-bump",
-                    f"{name} changed type without a major version bump",
+                    f"{name} {what} without a major version bump",
                 )
             )
     base_tables = {key[0] for key in base_cols}
@@ -178,6 +203,12 @@ def check_change(
 
 
 def main(argv):
+    if argv and argv[0] == "--deleted":
+        listing, root = argv[1], argv[2] if len(argv) > 2 else "."
+        gone = removed_contracts(Path(listing).read_text().split(), Path(root))
+        for f in gone:
+            print(f"contract-deleted: {f} exists on origin/main but is missing at HEAD")
+        return 1 if gone else 0
     base, head, *rest = argv
     violations = check_change(
         Path(base), Path(head), compiled_sql_dir=Path(rest[0]) if rest else None

@@ -22,6 +22,7 @@ def contract(columns, version="1.0.0", table="t"):
     for name, spec in columns.items():
         spec = {"type": spec} if isinstance(spec, str) else spec
         p = {"name": name, "logicalType": spec.get("type", "string")}
+        p.update(spec.get("extra", {}))
         if spec.get("props"):
             p["customProperties"] = [{"property": k, "value": v} for k, v in spec["props"]]
         props.append(p)
@@ -248,3 +249,63 @@ def test_read_parquet_of_unrelated_files_is_not_a_reader(tmp_path):
     base, head = extract_pair(tmp_path)
     sql = compiled(tmp_path, other="select b from read_parquet('data/other_*.parquet')")
     assert policy.check_change(base, head, today=date(2026, 12, 1), compiled_sql_dir=sql) == []
+
+
+def _change(tmp_path, base_extra, head_extra, version="1.1.0"):
+    base = write(tmp_path, "base.yaml", contract({"a": {"extra": base_extra}}))
+    head = write(tmp_path, "head.yaml", contract({"a": {"extra": head_extra}}, version=version))
+    return policy.check_change(base, head)
+
+
+def test_physical_type_change_needs_major_bump(tmp_path):
+    v = _change(tmp_path, {"physicalType": "INT"}, {"physicalType": "LONG"})
+    assert codes(v) == ["breaking-without-major-bump"]
+    assert _change(tmp_path, {"physicalType": "INT"}, {"physicalType": "LONG"}, "2.0.0") == []
+
+
+def test_required_loosening_needs_major_bump(tmp_path):
+    v = _change(tmp_path, {"required": True}, {"required": False})
+    assert codes(v) == ["breaking-without-major-bump"]
+    assert _change(tmp_path, {"required": True}, {"required": False}, "2.0.0") == []
+
+
+def test_required_tightening_is_not_flagged(tmp_path):
+    assert _change(tmp_path, {}, {"required": True}) == []
+
+
+def test_primary_key_dropped_or_changed_needs_major_bump(tmp_path):
+    dropped = _change(tmp_path, {"primaryKey": True, "primaryKeyPosition": 1}, {})
+    assert codes(dropped) == ["breaking-without-major-bump"]
+    moved = _change(
+        tmp_path,
+        {"primaryKey": True, "primaryKeyPosition": 1},
+        {"primaryKey": True, "primaryKeyPosition": 2},
+    )
+    assert codes(moved) == ["breaking-without-major-bump"]
+    assert _change(tmp_path, {"primaryKey": True}, {}, "2.0.0") == []
+
+
+def test_enum_value_removed_needs_major_bump_but_widening_is_fine(tmp_path):
+    two = {"enum": [{"value": "x"}, {"value": "y"}]}
+    one = {"enum": [{"value": "x"}]}
+    assert codes(_change(tmp_path, two, one)) == ["breaking-without-major-bump"]
+    assert _change(tmp_path, two, one, "2.0.0") == []
+    assert _change(tmp_path, one, two) == []
+
+
+def test_removed_contract_files_listed(tmp_path):
+    (tmp_path / "contracts").mkdir()
+    (tmp_path / "contracts" / "keep.odcs.yaml").write_text("x")
+    gone = policy.removed_contracts(
+        ["contracts/keep.odcs.yaml", "contracts/gone.odcs.yaml", "contracts/README.md"],
+        tmp_path,
+    )
+    assert gone == ["contracts/gone.odcs.yaml"]
+
+
+def test_main_check_deleted_exits_1_naming_the_file(tmp_path, capsys):
+    (tmp_path / "contracts").mkdir()
+    listing = tmp_path / "ls.txt"
+    listing.write_text("contracts/gone.odcs.yaml\n")
+    assert policy.main(["--deleted", str(listing), str(tmp_path)]) == 1
+    assert "contracts/gone.odcs.yaml" in capsys.readouterr().out

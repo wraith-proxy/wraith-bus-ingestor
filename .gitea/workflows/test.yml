@@ -62,6 +62,15 @@ jobs:
               python3 contracts/policy.py "$base" "$f"
             fi
           done
+      - name: Contract change policy (deleted contracts)
+        # A whole contract file deleted on this branch is never reached by the
+        # loops above. Fails; an intentional deletion needs the owner to bump
+        # this workflow.
+        run: |
+          set -euo pipefail
+          ls_file="$(mktemp)"
+          git ls-tree --name-only origin/main contracts/ > "$ls_file"
+          python3 contracts/policy.py --deleted "$ls_file" .
       - name: Contract change policy (compiled readers)
         # Same comparison as the step above, plus reader detection: the sandbox
         # is compiled so policy.py can scan the compiled SQL for readers.

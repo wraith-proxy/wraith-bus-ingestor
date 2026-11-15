@@ -35,7 +35,11 @@ gated before `dbt/build.sh` moves it into place.
   `text` rules are reported, never failed.
 - **Policy gate** (`contracts/policy.py`, CI step "Contract change policy"):
   compares each changed contract with its `origin/main` version. Fails on a
-  breaking change without a major version bump, a removal without a `sunset` or
+  breaking change without a major version bump (column removal, `logicalType` or
+  `physicalType` change, `required` loosened true to false, `primaryKey` dropped
+  or its position changed, an enum value removed; widening an enum or tightening
+  `required` is not flagged), a whole contract file deleted relative to `origin/main`
+  (CI step "deleted contracts"), a removal without a `sunset` or
   before its sunset date, a column removed while compiled SQL still reads it
   (a second CI step, "Contract change policy (compiled readers)", scans
   `dbt compile` output with sqlglot and names the reader), and a new column
