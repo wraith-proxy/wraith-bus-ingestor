@@ -31,7 +31,10 @@ def test_dry_run_creates_nothing(tmp_path):
 def test_leading_zero_hhmm_is_not_octal(tmp_path):
     work = Path(os.environ["HOME"]) / f"spike-oct-{os.getpid()}"
     try:
-        for hhmm, inside in (("0809", False), ("0230", False), ("0429", True), ("0431", False), ("0008", False)):
+        for hhmm, inside in (
+            ("0809", False), ("0229", False), ("0230", True),
+            ("0430", True), ("0431", False), ("0008", False),
+        ):
             r = _run(tmp_path, work, "--dry-run", NOW_HHMM=hhmm)
             out = r.stdout + r.stderr
             assert "value too great" not in out and "syntax error" not in out, (hhmm, out)
