@@ -108,9 +108,9 @@ def make_extract(data_dir, newest):
     con.close()
 
 
-def publish_cli(tmp_path, newest, version="3.1.1", sla_hours=26):
+def publish_cli(tmp_path, newest, version="3.1.1", sla_hours=26, unit="h"):
     contract = write_contract(
-        tmp_path, [{"property": "latency", "value": sla_hours, "unit": "h"}], version=version
+        tmp_path, [{"property": "latency", "value": sla_hours, "unit": unit}], version=version
     )
     data = tmp_path / "data"
     make_extract(data, newest)
@@ -166,3 +166,11 @@ def test_build_sh_publishes_through_the_sla_stamp():
     )
     r = subprocess.run(["bash", "-n", str(BUILD_SH)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_cli_publish_survives_an_sla_check_that_cannot_run(tmp_path):
+    newest = datetime.now(UTC).replace(microsecond=0, tzinfo=None) - timedelta(hours=1)
+    r, staged, served = publish_cli(tmp_path, newest, unit="fortnights")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "SLA check could not run" in r.stdout + r.stderr
+    assert not staged.exists() and sla_check.contract_version(served) == "3.1.1"

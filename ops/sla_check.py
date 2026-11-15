@@ -116,7 +116,13 @@ def main(argv=None) -> int:
     version = str(yaml.safe_load(args.contract.read_text())["version"])
     publish(args.staged, args.served, as_of, version)
     print(f"published {args.served} (data as of {as_of:%Y-%m-%d %H:%M} UTC, contract {version})")
-    for breach in check_slas(args.contract, datetime.now(UTC), as_of=as_of):
+    # The swap is done: reporting must never fail a completed publish.
+    try:
+        breaches = check_slas(args.contract, datetime.now(UTC), as_of=as_of)
+    except Exception as exc:  # malformed slaProperties, unknown unit, ...
+        print(f"SLA check could not run: {type(exc).__name__}: {exc}")
+        return 0
+    for breach in breaches:
         print(f"SLA breach: {breach.property}: {breach.message}")
     return 0
 
