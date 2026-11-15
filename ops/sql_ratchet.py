@@ -1,8 +1,11 @@
-"""SQL ratchet: fail CI when hand-written dbt model SQL grows past the baseline.
+"""SQL ratchet: fail CI when hand-written dbt SQL drifts from the baseline.
 
-Gate: non-blank code lines (SQL block comments, Jinja {# #} comments and
--- line comments stripped). Raw line count is recorded in the baseline for
-context but does not gate. Usage: python3 ops/sql_ratchet.py"""
+Counts dbt/models, dbt/macros and dbt/tests (generated/ subtrees excluded, the
+drift test covers those). Gate: non-blank code lines (SQL block comments, Jinja
+{# #} comments and -- line comments stripped). Growth fails; a measured count
+below the baseline also fails until the baseline is lowered, so shrunk SQL cannot
+quietly regrow. Lower it with: python3 ops/sql_ratchet.py --update
+Raw line count is recorded in the baseline for context but does not gate."""
 
 import argparse
 import re
@@ -10,7 +13,7 @@ import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-MODELS = REPO / "dbt" / "models"
+ROOTS = [REPO / "dbt" / "models", REPO / "dbt" / "macros", REPO / "dbt" / "tests"]
 BASELINE = REPO / "ops" / "sql_baseline.txt"
 
 _BLOCK = re.compile(r"/\*.*?\*/", re.S)
@@ -37,17 +40,19 @@ def raw_lines(text):
     return len(text.splitlines())
 
 
-def sql_files(models):
-    return sorted(Path(models).rglob("*.sql"))
+def sql_files(root):
+    root = Path(root)
+    return sorted(p for p in root.rglob("*.sql") if "generated" not in p.relative_to(root).parts)
 
 
-def measure(models):
-    """Return (code_lines, raw_lines) summed over every .sql file under models."""
+def measure(*roots):
+    """Return (code_lines, raw_lines) summed over every hand-written .sql under roots."""
     code = raw = 0
-    for path in sql_files(models):
-        text = path.read_text()
-        code += code_lines(text)
-        raw += raw_lines(text)
+    for root in roots:
+        for path in sql_files(root):
+            text = path.read_text()
+            code += code_lines(text)
+            raw += raw_lines(text)
     return code, raw
 
 
@@ -62,24 +67,49 @@ def read_baseline(path):
     return values["code"], values["raw"]
 
 
-def check(models, baseline):
-    """Return (ok, message). ok is False only when code lines exceed the baseline."""
-    code, raw = measure(models)
+def _as_roots(roots):
+    return [roots] if isinstance(roots, (str, Path)) else list(roots)
+
+
+def check(roots, baseline):
+    """Return (ok, message). ok is False when code lines differ from the baseline."""
+    code, raw = measure(*_as_roots(roots))
     base_code, base_raw = read_baseline(baseline)
     if code > base_code:
         return False, (
             f"SQL ratchet: {code} code lines exceed baseline {base_code} "
             f"(raw {raw}, baseline raw {base_raw})."
         )
-    return True, f"SQL ratchet ok: {code} code lines within baseline {base_code} (raw {raw})"
+    if code < base_code:
+        return False, (
+            f"SQL ratchet: {code} code lines are below baseline {base_code}; "
+            "lower the baseline with: python3 ops/sql_ratchet.py --update"
+        )
+    return True, f"SQL ratchet ok: {code} code lines at baseline {base_code} (raw {raw})"
+
+
+def write_baseline(path, code, raw):
+    path = Path(path)
+    header = []
+    if path.exists():
+        header = [ln for ln in path.read_text().splitlines() if ln.startswith("#")]
+    path.write_text("\n".join(header + [f"code={code}", f"raw={raw}"]) + "\n")
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--models", type=Path, default=MODELS)
+    parser.add_argument("--roots", type=Path, nargs="+", default=ROOTS)
     parser.add_argument("--baseline", type=Path, default=BASELINE)
+    parser.add_argument(
+        "--update", action="store_true", help="rewrite the baseline to the measured counts"
+    )
     args = parser.parse_args(argv)
-    ok, message = check(args.models, args.baseline)
+    if args.update:
+        code, raw = measure(*args.roots)
+        write_baseline(args.baseline, code, raw)
+        print(f"SQL ratchet baseline updated: code={code} raw={raw}")
+        return 0
+    ok, message = check(args.roots, args.baseline)
     print(message, file=sys.stdout if ok else sys.stderr)
     return 0 if ok else 1
 

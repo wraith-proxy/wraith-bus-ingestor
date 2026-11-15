@@ -144,3 +144,13 @@ def test_refuses_before_touching_anything(warehouse, hold):
     assert rc == 1, log
     assert ("has the warehouse open" if hold else "refusing inside 01:30-05:00") in log
     assert not (archive / "build_db_backup").exists()
+
+
+def test_no_stale_archive_path_in_script_or_docs():
+    """/mnt/archive does not exist on this host; the archive disk is /mnt/vault2."""
+    here = os.path.dirname(os.path.abspath(SCRIPT))
+    for rel in ("compact_build_db.sh", "../docs/operations.md"):
+        with open(os.path.join(here, rel)) as f:
+            text = f.read()
+        assert "/mnt/archive" not in text, rel
+        assert "/mnt/<archive>/build_db_backup" not in text, rel

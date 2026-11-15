@@ -17,8 +17,10 @@
 #                      code: OLD_REF for baseline, HEAD for candidate, both
 #                      sharing the same data/ (so SKIP_EXTRACT semantics)
 #   STAGE 3 build      dbt run in each copy, sequentially, low priority
-#   STAGE 4 compare    ops/cutover_compare.py: keys and counts EXACT, DOUBLE
-#                      columns within tolerance. Any mismatch aborts here.
+#   STAGE 4 compare    ops/cutover_compare.py on the three marts and the two history
+#                      tables (they ride in the copy): keys and counts EXACT, DOUBLE
+#                      columns within tolerance. Then dbt test against the
+#                      candidate copy. Any mismatch or failing test aborts here.
 #   STAGE 5 validate   datacontract lint (offline) and contracts/validate.py
 #                      on the candidate. The validate step is printed and
 #                      waits for the owner's "go"; it never runs unasked.
@@ -30,7 +32,7 @@
 # Env overrides (used by ops/test_cutover.py): CUTOVER_DB CUTOVER_DATA
 # CUTOVER_WORK CUTOVER_BACKUP_DIR CUTOVER_LOGDIR CUTOVER_UNIT
 # CUTOVER_MIN_MEM_MB CUTOVER_TABLES CUTOVER_OLD_REF CUTOVER_BUILD_CMD
-# CUTOVER_SRC_ONLY CUTOVER_STATE_CMD CUTOVER_LINT_CMD CUTOVER_VALIDATE_CMD
+# CUTOVER_SRC_ONLY CUTOVER_TEST_CMD CUTOVER_STATE_CMD CUTOVER_LINT_CMD CUTOVER_VALIDATE_CMD
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
@@ -57,7 +59,7 @@ BACKUP_DIR="${CUTOVER_BACKUP_DIR:-/mnt/vault2/wraith-bus-ingestor-build-backup}"
 UNIT="${CUTOVER_UNIT:-wraith-bus-build.service}"
 # 13000M is the build unit's MemoryMax (spike c: MetricFlow adds ~0.2G on top).
 MIN_MEM_MB="${CUTOVER_MIN_MEM_MB:-13000}"
-TABLES="${CUTOVER_TABLES:-eta_models localities line_punctuality}"
+TABLES="${CUTOVER_TABLES:-eta_models localities line_punctuality int_eta_daily_stats int_journey_delays}"
 OLD_REF="${CUTOVER_OLD_REF:-origin/main}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOGDIR="${CUTOVER_LOGDIR:-$REPO/ops/logs}/cutover-$STAMP"
@@ -66,6 +68,8 @@ DEFAULT_BUILD="$REPO/.venv/bin/dbt run --profiles-dir . --vars \"{extract_days: 
 # git archive omits the gitignored dbt/dbt_packages, so each copy links to the repo's
 PACKAGES="${CUTOVER_PACKAGES:-$REPO/dbt/dbt_packages}"
 BUILD_CMD="${CUTOVER_BUILD_CMD:-$DEFAULT_BUILD}"
+DEFAULT_TEST="$REPO/.venv/bin/dbt test --profiles-dir . --vars \"{extract_days: 4}\""
+TEST_CMD="${CUTOVER_TEST_CMD:-$DEFAULT_TEST}"
 
 mkdir -p "$LOGDIR"
 LOG="$LOGDIR/cutover.log"
@@ -175,12 +179,16 @@ for role in baseline candidate; do
   fi
 done
 
-stage "STAGE 4 compare  (keys and counts exact, doubles within tolerance)"
+stage "STAGE 4 compare  (keys and counts exact, doubles within tolerance; then dbt test on the candidate)"
 if (( DRY )); then
   say "   (dry-run) would: compare $TABLES"
+  say "   (dry-run) would: in the candidate copy $CAND run: $TEST_CMD"
 else
   (cd "$REPO" && "$PY" ops/cutover_compare.py "$BASE/$(basename "$DB")" \
       "$CAND/$(basename "$DB")" $TABLES) || die "compare failed; live file untouched"
+  say "dbt test on the candidate"
+  ( cd "$CAND" && nice -n 10 bash -c "$TEST_CMD" ) > "$LOGDIR/test-candidate.log" 2>&1 \
+    || die "dbt test failed on the candidate, see $LOGDIR/test-candidate.log; live file untouched"
 fi
 
 stage "STAGE 5 validate  (lint offline; live validate needs the owner's go)"

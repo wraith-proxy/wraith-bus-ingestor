@@ -12,6 +12,9 @@ every quality rule must hold.
     contracts/validate.py --gtfs /tmp/candidate_gtfs.duckdb   # gate a GTFS refresh
 
 Exit code 0 if every obligation holds, 1 otherwise, so it can gate a build.
+Passing --marts selects gate mode: the marts file must open and at least one
+obligation must actually be checked, or the run fails ("nothing checked"). A bare
+run still degrades to a skip when an engine is unreachable (CI has none).
 Rules whose severity is 'info', and `text` rules, are reported but never fail.
 """
 import argparse
@@ -640,7 +643,8 @@ def main():
     ap.add_argument("--contract", action="append", default=None,
                     help="ODCS contract to validate (repeatable; default: both)")
     ap.add_argument("--ontology", default=os.path.join(HERE, "wraith-bus-ingestor.ontology.yaml"))
-    ap.add_argument("--marts", default=DEFAULT_MARTS, help="path to the DuckDB marts file")
+    ap.add_argument("--marts", default=None,
+                    help="path to the DuckDB marts file (gate mode: nothing checked is a failure)")
     ap.add_argument("--gtfs", default=DEFAULT_GTFS, help="path to the served GTFS DuckDB file")
     ap.add_argument("--questdb", default=DEFAULT_QUESTDB)
     ap.add_argument("--questdb-window", type=int, default=5, metavar="MINUTES",
@@ -663,9 +667,10 @@ def main():
                               ("bus-positions.odcs.yaml", "bus-marts.odcs.yaml",
                                "gtfs-timetable.odcs.yaml")]
 
+    gate = args.marts is not None
     engines, res = {}, Result()
     try:
-        engines["duckdb"] = DuckDBEngine(args.marts)
+        engines["duckdb"] = DuckDBEngine(args.marts or DEFAULT_MARTS)
     except Exception as exc:
         print(f"\033[31mmarts unavailable:\033[0m {exc}")
     try:
@@ -701,6 +706,11 @@ def main():
         onto = validate_ontology(args.ontology, contracts, res)
         if os.path.exists(args.ossie):
             validate_ossie_model(args.ossie, onto, contracts, res)
+
+    if gate and "duckdb" not in engines:
+        res.fail("gate", "the marts file requested with --marts is unavailable: nothing checked")
+    elif gate and res.passes == 0 and not res.failures:
+        res.fail("gate", "no obligation was checked (every contract skipped): nothing checked")
 
     print(f"\n\033[1m{res.passes} passed, {len(res.failures)} failed, "
           f"{len(res.warnings)} warned, {res.skips} skipped\033[0m")

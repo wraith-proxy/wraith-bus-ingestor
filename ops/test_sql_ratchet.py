@@ -60,16 +60,61 @@ def test_cli_exit_code_is_nonzero_above_baseline(tmp_path):
     models = tmp_path / "models"
     write_model(models, "a.sql", "select 1\nselect 2\n")
     baseline = write_baseline(tmp_path, code=1, raw=2)
-    assert sql_ratchet.main(["--models", str(models), "--baseline", str(baseline)]) == 1
+    assert sql_ratchet.main(["--roots", str(models), "--baseline", str(baseline)]) == 1
 
 
-def test_baseline_file_holds_both_numbers():
+def test_measure_sums_every_root(tmp_path):
+    models, macros, tests = (tmp_path / n for n in ("models", "macros", "tests"))
+    write_model(models, "a.sql", "select 1\n")
+    write_model(macros, "m.sql", "{% macro m() %}\nselect 2\n{% endmacro %}\n")
+    write_model(tests, "t.sql", "select 3\n")
+    assert sql_ratchet.measure(models, macros, tests) == (5, 5)
+
+
+def test_missing_root_counts_as_zero(tmp_path):
+    assert sql_ratchet.measure(tmp_path / "nope") == (0, 0)
+
+
+def test_generated_sql_is_not_hand_written(tmp_path):
+    tests = tmp_path / "tests"
+    write_model(tests, "t.sql", "select 1\n")
+    write_model(tests, "generated/g.sql", "select 2\nselect 3\n")
+    assert sql_ratchet.measure(tests) == (1, 1)
+
+
+def test_macro_growth_alone_fails(tmp_path):
+    models, macros = tmp_path / "models", tmp_path / "macros"
+    write_model(models, "a.sql", "select 1\n")
+    write_model(macros, "m.sql", "select 2\nselect 3\n")
+    baseline = write_baseline(tmp_path, code=1, raw=1)
+    ok, _ = sql_ratchet.check([models, macros], baseline)
+    assert ok is False
+
+
+def test_fails_below_baseline_until_it_is_lowered(tmp_path):
+    models = tmp_path / "models"
+    write_model(models, "a.sql", "select 1\n")
+    baseline = write_baseline(tmp_path, code=5, raw=5)
+    ok, message = sql_ratchet.check(models, baseline)
+    assert ok is False
+    assert "--update" in message
+
+
+def test_update_rewrites_baseline_to_measured(tmp_path):
+    models = tmp_path / "models"
+    write_model(models, "a.sql", "select 1\n-- c\n")
+    baseline = write_baseline(tmp_path, code=5, raw=5)
+    assert sql_ratchet.main(["--roots", str(models), "--baseline", str(baseline), "--update"]) == 0
+    assert sql_ratchet.read_baseline(baseline) == (1, 2)
+    assert sql_ratchet.main(["--roots", str(models), "--baseline", str(baseline)]) == 0
+
+
+def test_baseline_file_matches_measured_tree():
     code, raw = sql_ratchet.read_baseline(BASELINE)
-    assert (code, raw) == (653, 1512)
+    measured = sql_ratchet.measure(*sql_ratchet.ROOTS)
+    assert (code, raw) == measured
 
 
 def test_real_models_tree_within_baseline():
-    measured = sql_ratchet.measure(REPO / "dbt" / "models")
-    ok, message = sql_ratchet.check(REPO / "dbt" / "models", BASELINE)
+    ok, message = sql_ratchet.check(sql_ratchet.ROOTS, BASELINE)
     assert ok, message
-    assert measured[0] <= 653

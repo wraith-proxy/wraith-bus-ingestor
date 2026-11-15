@@ -59,8 +59,9 @@ gated before `dbt/build.sh` moves it into place.
   atomic swap, then compares the marts contract's `latency` `slaProperties` with
   that stamp. A breach is reported, never a failed publish; a failure to stamp
   stops the build and the previous marts keep serving.
-- **SQL ratchet** (`ops/sql_ratchet.py`): hand-written model SQL may not grow past
-  `ops/sql_baseline.txt`.
+- **SQL ratchet** (`ops/sql_ratchet.py`): hand-written SQL in models, macros and dbt
+  tests must equal `ops/sql_baseline.txt`. Growth fails; a lower count also fails until
+  the baseline is lowered with `python3 ops/sql_ratchet.py --update`.
 
 See [ADR-0011](adr/0011-contract-first-dbt.md) for why.
 

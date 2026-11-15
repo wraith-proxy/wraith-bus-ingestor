@@ -1,4 +1,4 @@
 # SQL ratchet baseline (ops/sql_ratchet.py). code: non-blank SQL lines after comments are stripped; this is the gate.
-# raw: total lines in dbt/models/**/*.sql; recorded only.
-code=653
-raw=1512
+# raw: total lines in dbt/{models,macros,tests}/**/*.sql (generated/ excluded); recorded only.
+code=954
+raw=2138
