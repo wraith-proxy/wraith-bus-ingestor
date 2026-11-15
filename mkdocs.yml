@@ -2,19 +2,63 @@ site_name: wraith-bus-ingestor
 site_description: Live UK bus tracking data platform -- BODS ingest, QuestDB, dbt/DuckDB ETA model, Flask API
 site_author: Thomas Peoples
 repo_url: https://git.thomaspeoples.com/thomaspeoples/wraith-bus-ingestor
+repo_name: thomaspeoples/wraith-bus-ingestor
 edit_uri: edit/main/docs/
 site_url: https://www.thomaspeoples.com/gitea-repos/wraith-bus-ingestor/
 use_directory_urls: true
 
+copyright: Part of the Ghost Stack. Sovereign. Self-hosted. No nonsense.
+
 theme:
   name: material
+  language: en
+  # Sovereign: no Google Fonts. System font stacks are set in docs/stylesheets/extra.css.
+  font: false
+  logo: assets/ghost.svg
+  favicon: assets/favicon.svg
+  icon:
+    repo: simple/gitea
   palette:
+    # Colours for both schemes live in docs/stylesheets/extra.css (primary/accent: custom).
+    # Dark is listed first with no media query, so every first-time visitor gets
+    # dark whatever their system setting. The toggle switches and is remembered.
     - scheme: slate
-      primary: teal
-      accent: cyan
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    - scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
   features:
+    # Wayfinding
     - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.path
+    - navigation.top
+    - navigation.footer
+    - navigation.tracking
+    # Speed: single-page navigation, prefetch on hover, progress bar on slow links.
+    # Any script added later must subscribe to Material's document$ observable.
+    - navigation.instant
+    - navigation.instant.prefetch
+    - navigation.instant.progress
+    - toc.follow
+    # Search
+    - search.suggest
+    - search.highlight
+    - search.share
+    # Content
     - content.code.copy
+    - content.tooltips
+
+extra_css:
+  - stylesheets/extra.css
 
 nav:
   - Home: index.md
@@ -53,22 +97,81 @@ nav:
       - Landing: learn-dbt/landing.md
       - Cheat sheet: learn-dbt/cheatsheet.md
 
+# Agent-facing notes stay published at their URLs but out of the reader's nav.
+not_in_nav: |
+  /agents/
+
+# Snippet-only file: appended to every page by pymdownx.snippets, never a page.
+exclude_docs: |
+  /assets/abbreviations.md
+
+# Broken links and anchors surface as WARNING lines in the build.
+validation:
+  nav:
+    omitted_files: info
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
+
 plugins:
-  - search
+  - search:
+      lang: en
+      # Also split on underscores, dots and camelCase, so bus_positions,
+      # servers.type and physicalType are findable by any part.
+      separator: '[\s\-_,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+  # Bundled with mkdocs-material. At BUILD time it downloads every third-party
+  # asset into assets/external/ and rewrites the references, so the published
+  # site makes no third-party request. Needs network on a cold cache only when
+  # there is something external to fetch (.cache/, gitignored).
+  - privacy:
+      assets_fetch_dir: assets/external
+      # Material's bundle names a CDN copy of Mermaid, used only when `mermaid`
+      # is undefined. It is defined (vendored), so skip the 3.5 MB download and
+      # the build's need for network. Anything else external is still fetched.
+      assets_exclude:
+        - unpkg.com/mermaid@*
+
+# Defines `mermaid` before Material's bundle runs, so Material never fetches
+# its own copy from unpkg. See docs/javascripts/vendor/SOURCE.txt.
+extra_javascript:
+  - javascripts/vendor/mermaid.min.js
 
 markdown_extensions:
   - pymdownx.snippets:
       base_path: ["."]
+      check_paths: true
+      # Glossary terms and acronyms get a hover definition on every page.
+      auto_append:
+        - docs/assets/abbreviations.md
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
           class: mermaid
           format: !!python/name:pymdownx.superfences.fence_code_format
-  - admonition
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
   - pymdownx.details
+  - admonition
+  - abbr
+  - toc:
+      permalink: "#"
+      permalink_title: Link to this section
 
 extra:
-  links:
+  social:
     - icon: material/home
       link: https://www.thomaspeoples.com/
       name: Back to Main Site
+    - icon: simple/gitea
+      link: https://git.thomaspeoples.com/thomaspeoples/wraith-bus-ingestor
+      name: Source on Gitea
+    - icon: material/bug-outline
+      link: https://git.thomaspeoples.com/thomaspeoples/wraith-bus-ingestor/issues
+      name: Issues

@@ -44,3 +44,6 @@ dist/
 
 # verify_build.sh logs (one directory per run)
 ops/logs/
+
+# mkdocs privacy plugin download cache (docs sovereignty, #62)
+.cache/
