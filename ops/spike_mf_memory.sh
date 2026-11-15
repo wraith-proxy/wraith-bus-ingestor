@@ -12,7 +12,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-BUILD="$REPO/dbt/wraith_bus_ingestor_build.duckdb"
+BUILD="${BUILD:-$REPO/dbt/wraith_bus_ingestor_build.duckdb}"
 WORK="${WORK:-$HOME/spike-mf-memory}"
 MEMMAX="${MEMMAX:-13000M}"
 MIN_FREE_GB=20

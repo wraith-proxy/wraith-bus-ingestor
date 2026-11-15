@@ -9,7 +9,10 @@ SCRIPT = Path(__file__).resolve().parent / "spike_mf_memory.sh"
 def _run(tmp_path, work, *args, **extra_env):
     # PGREP=false stubs the "build or extract running" guard: the real pgrep -f matches
     # any host process whose cmdline mentions build.sh / dbt run / extract.py.
-    env = dict(os.environ, WORK=str(work), PGREP="false", **extra_env)
+    # BUILD points at a stand-in file: the real warehouse exists only on the host, not on CI.
+    build = Path(tmp_path) / "stand-in.duckdb"
+    build.write_bytes(b"")
+    env = dict(os.environ, WORK=str(work), PGREP="false", BUILD=str(build), **extra_env)
     return subprocess.run([str(SCRIPT), *args], env=env, capture_output=True, text=True)
 
 

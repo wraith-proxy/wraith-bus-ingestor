@@ -112,3 +112,12 @@ def test_default_build_cmd_is_absolute_and_needs_packages(tmp_path):
     assert r.returncode != 0
     assert "dbt_packages" in r.stdout and "dbt deps" in r.stdout
     assert not (tmp_path / "backup").exists()
+
+
+def test_tools_do_not_depend_on_uv(tmp_path):
+    """CI's image has no .venv; `uv run` there would resolve and download the project."""
+    _, env = setup(tmp_path, SAME)
+    r = run(env, "--dry-run")
+    line = next(ln for ln in (r.stdout + r.stderr).splitlines() if "tools: python=" in ln)
+    assert "uv" not in line.split("python=")[1].split()[0].split("/")
+    assert "uv run" not in (Path(__file__).parent / "cutover.sh").read_text()

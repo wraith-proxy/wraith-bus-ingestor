@@ -34,6 +34,13 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
+# Tools: the repo venv on a dev box, else whatever is on PATH (the CI image bakes them and has
+# no .venv, and a uv-managed run there would resolve and download the whole project).
+if [[ -x "$REPO/.venv/bin/python3" ]]; then
+  PY="$REPO/.venv/bin/python3"; DCLI="$REPO/.venv/bin/datacontract"
+else
+  PY=python3; DCLI=datacontract
+fi
 DRY=0; PROMPT=1
 for a in "$@"; do
   case "$a" in
@@ -97,6 +104,7 @@ fi
 if (( ! DRY )) && [[ -z "${CUTOVER_SRC_ONLY:-}" && ! -d "$PACKAGES" ]]; then
   die "no dbt_packages at $PACKAGES (gitignored, not in the git archive): run 'dbt deps' in $REPO/dbt first"
 fi
+say "tools: python=$PY datacontract=$DCLI"
 say "preflight ok"
 
 stage "STAGE 1 backup"
@@ -143,13 +151,13 @@ stage "STAGE 4 compare  (keys and counts exact, doubles within tolerance)"
 if (( DRY )); then
   say "   (dry-run) would: compare $TABLES"
 else
-  (cd "$REPO" && uv run python3 ops/cutover_compare.py "$BASE/$(basename "$DB")" \
+  (cd "$REPO" && "$PY" ops/cutover_compare.py "$BASE/$(basename "$DB")" \
       "$CAND/$(basename "$DB")" $TABLES) || die "compare failed; live file untouched"
 fi
 
 stage "STAGE 5 validate  (lint offline; live validate needs the owner's go)"
-LINT="${CUTOVER_LINT_CMD:-for f in contracts/*.odcs.yaml; do uv run datacontract lint \"\$f\" || exit 1; done}"
-VAL="${CUTOVER_VALIDATE_CMD:-uv run python3 contracts/validate.py --marts \"$CAND/$(basename "$DB")\" --contract contracts/bus-positions.odcs.yaml --contract contracts/bus-marts.odcs.yaml}"
+LINT="${CUTOVER_LINT_CMD:-for f in contracts/*.odcs.yaml; do $DCLI lint \"\$f\" || exit 1; done}"
+VAL="${CUTOVER_VALIDATE_CMD:-$PY contracts/validate.py --marts \"$CAND/$(basename "$DB")\" --contract contracts/bus-positions.odcs.yaml --contract contracts/bus-marts.odcs.yaml}"
 if (( DRY )); then
   say "   (dry-run) would: lint, then print and wait for go: $VAL"
 else
