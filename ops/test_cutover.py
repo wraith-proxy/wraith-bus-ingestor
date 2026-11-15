@@ -124,6 +124,24 @@ def test_tools_do_not_depend_on_uv(tmp_path):
     assert "uv run" not in (Path(__file__).parent / "cutover.sh").read_text()
 
 
+def test_each_tool_falls_back_to_path_when_venv_lacks_it(tmp_path):
+    """Live run 2026-11-15 died at stage 5: the repo .venv had python but not datacontract
+    (it lives in ~/.local/bin), and the script assumed both came from the venv."""
+    _, env = setup(tmp_path, SAME)
+    repo = tmp_path / "repo"
+    (repo / "ops").mkdir(parents=True)
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (repo / ".venv" / "bin" / "python3").symlink_to(sys.executable)
+    (repo / "ops" / "cutover.sh").write_text(SCRIPT.read_text())
+    (repo / "ops" / "cutover.sh").chmod(0o755)
+    (repo / "ops" / "cutover_compare.py").write_text("")
+    r = subprocess.run([str(repo / "ops" / "cutover.sh"), "--dry-run"], env=env,
+                       capture_output=True, text=True)
+    line = next(ln for ln in (r.stdout + r.stderr).splitlines() if "tools: python=" in ln)
+    assert "datacontract=datacontract" in line, line
+    assert ".venv/bin/python3" in line, line
+
+
 def _stub(tmp_path, marker=None):
     s = tmp_path / "state.sh"
     cond = f'[ -e "{marker}" ] && ' if marker else ""

@@ -38,11 +38,11 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # Tools: the repo venv on a dev box, else whatever is on PATH (the CI image bakes them and has
 # no .venv, and a uv-managed run there would resolve and download the whole project).
-if [[ -x "$REPO/.venv/bin/python3" ]]; then
-  PY="$REPO/.venv/bin/python3"; DCLI="$REPO/.venv/bin/datacontract"
-else
-  PY=python3; DCLI=datacontract
-fi
+# Resolved one tool at a time: the repo venv has python but not always datacontract (the
+# 2026-11-15 live run found it in ~/.local/bin only), so each falls back to PATH on its own.
+PY=python3; DCLI=datacontract
+[[ -x "$REPO/.venv/bin/python3" ]] && PY="$REPO/.venv/bin/python3"
+[[ -x "$REPO/.venv/bin/datacontract" ]] && DCLI="$REPO/.venv/bin/datacontract"
 DRY=0; PROMPT=1
 for a in "$@"; do
   case "$a" in
