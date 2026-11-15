@@ -3,8 +3,8 @@
   colouring on the map.
 
   delay = when the bus actually finished - when it was scheduled to arrive,
-  in seconds, positive meaning late. CONTRACT.md s3 keeps the late/early/on_time
-  thresholds in backend/app.py, not here: this mart reports the distribution,
+  in seconds, positive meaning late. the late/early/on_time
+  thresholds live in backend/app.py, not here: this mart reports the distribution,
   the API decides what counts as late.
 
   The per-journey delays, and the filters on which journeys count, live in

@@ -1174,7 +1174,15 @@ def test_live_buses_keys_on_operator_and_bus_id():
     seen = []
     try:
         app.qdb_rows = lambda sql: seen.append(sql) or []
-        app.available_columns = lambda: {'bus_id', 'line', 'lat', 'lon', 'bearing', 'timestamp', 'operator'}
+        app.available_columns = lambda: {
+            "bus_id",
+            "line",
+            "lat",
+            "lon",
+            "bearing",
+            "timestamp",
+            "operator",
+        }
         app.live_buses()
         assert seen[-1].endswith('PARTITION BY bus_id, operator')
         app.live_buses('154', 'SWWD')
@@ -1201,7 +1209,9 @@ def test_bus_detail_disambiguates_namesakes():
     ]
     try:
         app.live_buses = lambda bus_id=None, operator=None: (
-            calls.append((bus_id, operator)) or [dict(r) for r in rows if operator in (None, r['operator'])])
+            calls.append((bus_id, operator))
+            or [dict(r) for r in rows if operator in (None, r["operator"])]
+        )
         client = app.app.test_client()
 
         r = client.get('/bus/154')
@@ -1215,7 +1225,10 @@ def test_bus_detail_disambiguates_namesakes():
         assert body['operator'] == 'SWWD' and 'same_bus_id' not in body
         assert calls[-1] == ('154', 'SWWD')
 
-        assert client.get('/bus/154', query_string={'operator': "x'; drop table t"}).status_code == 400
+        assert (
+            client.get("/bus/154", query_string={"operator": "x'; drop table t"}).status_code
+            == 400
+        )
     finally:
         app.live_buses = real
 

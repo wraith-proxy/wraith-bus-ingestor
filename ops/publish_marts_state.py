@@ -86,7 +86,10 @@ def main():
         print(f"ERROR: could not publish marts_state to QuestDB: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"published marts_state={state} n_models={n_models} to {QUESTDB_ILP_URL} (questdb {status})")
+    print(
+        f"published marts_state={state} n_models={n_models} to {QUESTDB_ILP_URL} "
+        f"(questdb {status})"
+    )
     sys.exit(0 if state == "ok" else 1)
 
 

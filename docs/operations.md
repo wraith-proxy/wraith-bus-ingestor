@@ -2,19 +2,37 @@
 
 ## The nightly rebuild
 
-`dbt/build.sh` runs from a host systemd timer at **03:00** every night —
-`ops/systemd/wraith-bus-build.{service,timer}`, installed to
-`/etc/systemd/system/` (a host unit, not a container, since it needs the
-repo root's `.venv` environment). Replaced the old host crontab entry
-2026-09-15 — the unit also auto-stops `ghost-osrm`/`ghost-backend`/
-`ghost-tiles` for the build window and restarts them after
-(`ExecStartPre`/`ExecStopPost`), which cron never did:
+Two host units, installed by the owner with `sudo ops/install_event_trigger.sh`
+(stage echoes, log in `ops/logs/`), which also disables the old build timer:
+
+1. `wraith-bus-extract.{timer,service}` at **03:00** runs `dbt/extract.py`, then
+   `ops/ready_gate.py`, which writes the marker `dbt/data/.extract_ready` only
+   when the extract meets its contract.
+2. `wraith-bus-extract.path` (`PathExists=` that marker) starts
+   `wraith-bus-build.service`, which keeps its `MemoryMax`, window and failure
+   hook. Its first `ExecStartPre` deletes the marker, so a failing build cannot
+   retrigger itself. It sets `SKIP_EXTRACT=1` (the extract already ran).
+
+For a fresh run by hand, start `wraith-bus-extract.service`, not the build unit:
+`sudo systemctl start wraith-bus-build.service` sets `SKIP_EXTRACT=1` and silently
+reuses whatever is already in `dbt/data/`. Stale input shows up as an `SLA breach`
+line in `build.log` (from `ops/sla_check.py`); the build stops and the previous
+marts keep serving.
+
+The timer and the path unit are never both enabled for the build. Alerts: no
+successful build row in 25.5 hours is the non-paging "waiting on the
+extract" rule; a failed build is a warning; only `marts state not ok` (the API
+cannot serve) pages.
 
 ```
-sudo systemctl status wraith-bus-build.timer
-sudo systemctl list-timers wraith-bus-build.timer
-journalctl -u wraith-bus-build.service
+sudo systemctl status wraith-bus-extract.timer wraith-bus-extract.path
+sudo systemctl list-timers wraith-bus-extract.timer
+journalctl -u wraith-bus-extract.service -u wraith-bus-build.service
 ```
+
+(History: the build ran from `wraith-bus-build.timer` at 03:00 until this change;
+the unit auto-stops `ghost-osrm`/`ghost-backend`/`ghost-tiles` for the window and
+restarts them after, which the old cron entry never did.)
 
 A run does four things in order: extract each of the last `EXTRACT_DAYS`
 (default 4) of `bus_positions` that has no `data/bus_positions_<day>.done`
@@ -215,8 +233,9 @@ new-shape keys and has no detector.
 **Dry runs.** `SKIP_EXTRACT=1 ./build.sh` reuses the parquet already in `dbt/data/`.
 That is fine once the new extract has run (the files then carry `recorded_at` and
 operator-keyed rows). Against parquet written by the OLD extract it still builds
-(staging types the missing column `NULL`), but the two source tests in
-`_bods__sources.yml` that pin the column set and the uniqueness key will report the
+(staging types the missing column `NULL`), but the source tests in
+`_wraith_bus_extract_positions__sources.yml` (`columns_match_set`) and the generated
+`bus_positions__extract_unique_key` test that pin the column set and the uniqueness key will report the
 old shape.
 
 ### Test results are recorded, pass or fail
@@ -259,7 +278,8 @@ A clean isolated `dbt run` proved little on 2026-09-18/19: the failures only
 showed under the real nightly conditions. This runs **Run 1**, `SKIP_EXTRACT=1
 ./build.sh` as your user under `time -v` (peak RSS of the biggest process, the
 DuckDB one that hits `memory_limit`), then **Run 2**, `systemctl start
-wraith-bus-build.service` (the production path: extract, build, test, publish,
+wraith-bus-build.service` (the production path after the event-trigger install: it
+reuses `dbt/data` rather than extracting; build, test, publish,
 under the unit's `MemoryMax`, sampling peak RSS from its cgroup). It stops the
 containers the unit stops plus ollama/immich (all restored by a trap however it
 exits), reclaims swap first, and afterwards checks the marts were republished,
@@ -922,3 +942,9 @@ breaking. **After any manual `docker compose down`/`up`, `docker
 stop`/`start`, or `--force-recreate` on this stack, check `/grafana/`,
 `/bus-map/`, and `/tiles/...` from outside the host -- not just `docker
 compose ps`.**
+
+## Contract-first dbt cutover
+
+The one-off weekend switch to the contract-first project, `ops/cutover.sh`, with its
+rollback and the limit on it (lossless only within `EXTRACT_DAYS=4`), is in
+[the cutover runbook](runbook-cutover.md).

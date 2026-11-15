@@ -1,8 +1,20 @@
 # Contracts
 
-`contracts/` documents the two boundaries in the bus platform as
+`contracts/` holds six
 [Open Data Contract Standard v3.2.0](https://bitol-io.github.io/open-data-contract-standard/v3.2.0/)
-specs, plus a Foundry-style ontology layered over both. Validate all three
+specs, plus a Foundry-style ontology layered over them:
+
+| Contract | Layer |
+|---|---|
+| `bus-positions.odcs.yaml` | Raw ingest table (QuestDB) |
+| `bus-positions-extract.odcs.yaml` | Parquet extract dbt reads |
+| `bus-cdp.odcs.yaml` | Staging models |
+| `bus-fdp.odcs.yaml` | Intermediate models, incl. the two history tables |
+| `bus-marts.odcs.yaml` | Marts the API reads |
+| `gtfs-timetable.odcs.yaml` | Published timetable |
+
+The CDP and FDP contracts are derived from the dbt SQL (types inferred, each
+column's upstream `consumes` recorded) and are not enforced by dbt yet. Validate
 against live data with:
 
 ```bash
@@ -13,6 +25,44 @@ Exit code 0 means every schema, key, and quality rule holds; 1 gates a
 build or a PR. `contracts/validate.py --marts /path/to/candidate.duckdb`
 checks a not-yet-published marts file, which is how a rebuild could be
 gated before `dbt/build.sh` moves it into place.
+
+## Checks around the contracts
+
+- **Validation** (`contracts/validate.py`): every declared object and property
+  exists with a compatible type, required properties are non-null, declared keys
+  are unique, every quality rule holds, and the ontology's bindings, link
+  `through` joins and primary keys agree with the contracts. `info`-severity and
+  `text` rules are reported, never failed.
+- **Policy gate** (`contracts/policy.py`, CI step "Contract change policy"):
+  compares each changed contract with its `origin/main` version. Fails on a
+  breaking change without a major version bump (column removal, `logicalType` or
+  `physicalType` change, `required` loosened true to false, `primaryKey` dropped
+  or its position changed, an enum value removed; widening an enum or tightening
+  `required` is not flagged), a whole contract file deleted relative to `origin/main`
+  (CI step "deleted contracts"), a removal without a `sunset` or
+  before its sunset date, a column removed while compiled SQL still reads it
+  (a second CI step, "Contract change policy (compiled readers)", scans
+  `dbt compile` output with sqlglot and names the reader), and a new column
+  on an existing table without a valid `backfill` (`derive`, `null-before`,
+  `replay`); the columns of a brand-new table are exempt, since they have no
+  history. `sunset`,
+  `backfill` and `consumes` are `customProperties` on the contract.
+- **Generated-file drift gate** (CI step "Generated files in sync"): runs
+  `modelgen check --from-contract --diff`, falling back to
+  `python3 contracts/validate.py --generated`, which regenerates the dbt sources,
+  schema yml and singular tests and fails if a committed generated file differs.
+  A difference in the version header alone passes. Never hand-edit a generated
+  file; change the contract and regenerate.
+- **SLA checks** (`ops/sla_check.py`): `dbt/build.sh` publishes through
+  `sla_check.py publish`, which stamps a `_meta` table (`data_as_of` = the newest
+  ping in the extract, `contract_version`) into the staged warehouse before the
+  atomic swap, then compares the marts contract's `latency` `slaProperties` with
+  that stamp. A breach is reported, never a failed publish; a failure to stamp
+  stops the build and the previous marts keep serving.
+- **SQL ratchet** (`ops/sql_ratchet.py`): hand-written model SQL may not grow past
+  `ops/sql_baseline.txt`.
+
+See [ADR-0011](adr/0011-contract-first-dbt.md) for why.
 
 ## `bus-positions.odcs.yaml` — the ingest boundary
 
@@ -120,6 +170,16 @@ vehicle to the journey it's currently running), `journeyOnLine`,
 `journeyStartsAt`. This is what turns "a table with a `line` column" into
 "a Journey runs on exactly one Line" — a claim `validate.py` can check
 against the actual data, not just assert in prose.
+
+**Display metadata is kept on purpose.** The ontology serves an MCP for agent
+queries, and a UI may follow. `pluralDisplayName`, `icon`, `renderHints`,
+`displayName`, `reverseDisplayName` and `unit` are therefore deliberately kept
+even though no code in this repo reads them today.
+
+**Function pointers are validated.** Each `functions[].implementation`
+(`path::symbol`) must name a real file and a top-level def or class in it;
+`validate_ontology` fails otherwise. `rateVehicle` and `predictArrival`
+deliberately share `backend/app.py::predict`.
 
 The contracts say what the **columns** are; the ontology says what the
 **things** are.

@@ -262,7 +262,13 @@ echo "==> validating contracts against the candidate marts"
 
 # Atomic within a filesystem: readers never see a partial file. The old .wal
 # must go with the old file, or DuckDB will try to replay it against the new one.
-mv -f "$STAGED" "$SERVED"
+# The swap goes through ops/sla_check.py so the served file carries its own
+# `_meta` stamp (data-as-of, contract version) written INTO the staged file
+# first: the file can never disagree with its own freshness. It reports an SLA
+# latency breach but never fails the publish for one; it does fail (leaving the
+# previous marts serving) if it cannot stamp.
+"$PY" ../ops/sla_check.py publish "$STAGED" "$SERVED" \
+    --data-dir data --contract ../contracts/bus-marts.odcs.yaml
 rm -f "$SERVED.wal"
 
 # Reads $SERVED, the file just published above -- the same snapshot the API

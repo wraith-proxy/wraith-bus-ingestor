@@ -11,3 +11,5 @@ logs/
 __pycache__/
 .user.yml
 dbt_internal_packages/
+data/.extract_ready
+cutover-work/

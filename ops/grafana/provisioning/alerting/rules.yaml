@@ -59,8 +59,8 @@ groups:
             bus_positions for 15 minutes, which never happens during normal
             service hours.
 
-      - uid: wraith-nightly-build
-        title: nightly build missing or failed
+      - uid: wraith-extract-waiting
+        title: waiting on the extract
         condition: B
         data:
           - refId: A
@@ -72,14 +72,20 @@ groups:
               refId: A
               format: table
               rawQuery: true
-              # 26h not 24h -- gives the nightly job slack to drift or run long
-              # without flapping. count() = 0 catches "never ran", last(result)
-              # catches "ran and failed"; last() follows the designated
-              # timestamp, so it is the most recent run.
+              # Waiting = no successful build row in the last 25.5 hours, i.e.
+              # the ready marker never arrived or the build it starts has not
+              # finished. The window is measured from the last success, not
+              # from 03:00, so the alert fires 25.5h after that build row
+              # (about 04:30 only when the last build finished near 03:00; a
+              # later finish pushes it later). The marker is consumed when
+              # the build starts, so the observable outcome is the build row.
+              # Bounded: after 25.5h it is a failure for the owner to read,
+              # not an open-ended wait.
               rawSql: >-
-                select case when count() = 0 or last(result) != 'success'
-                then 1 else 0 end from dbt_build_runs
-                where timestamp > dateadd('h', -26, now())
+                select case when count() = 0 then 1 else 0 end
+                from dbt_build_runs
+                where result = 'success'
+                and timestamp > dateadd('m', -1530, now())
           - refId: B
             datasourceUid: __expr__
             model:
@@ -95,17 +101,57 @@ groups:
         execErrState: Alerting
         for: 5m
         labels:
-          severity: critical
+          severity: waiting
         annotations:
-          summary: The nightly dbt build failed, or has not succeeded in 26 hours.
+          summary: Waiting on the extract - no successful build in the last 25.5 hours.
           description: >-
-            Either the nightly dbt job did not run or its most recent run did
-            not succeed. A failed run now records itself the moment it ends
-            (ops/record_build_failure.sh, an ExecStopPost hook), so this fires
-            within ~10 minutes of a failure rather than 26 hours later. After the September repo split the nightly job pointed
-            at a deleted directory and failed silently for weeks -- nobody
-            noticed because a build that never runs produces no output to read.
-            That is exactly the class of failure this rule catches.
+            Does not page: the API keeps serving the previous marts. The extract
+            (wraith-bus-extract.service) writes the ready marker only for a valid
+            extract, and the marker starts the build. Read dbt/extract.log.
+
+      - uid: wraith-nightly-build
+        title: nightly build failed
+        condition: B
+        data:
+          - refId: A
+            datasourceUid: questdb
+            relativeTimeRange:
+              from: 93600
+              to: 0
+            model:
+              refId: A
+              format: table
+              rawQuery: true
+              # last(result) catches "ran and failed"; last() follows the
+              # designated timestamp. A build that never ran is the
+              # 'waiting on the extract' rule above, not this one.
+              rawSql: >-
+                select case when count() > 0 and last(result) != 'success'
+                then 1 else 0 end from dbt_build_runs
+                where timestamp > dateadd('h', -26, now())
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0
+        noDataState: OK
+        execErrState: Alerting
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The nightly dbt build failed; the previous marts are still serving.
+          description: >-
+            The most recent build did not succeed (ops/record_build_failure.sh
+            records it the moment it ends). Not a page: the API still serves the
+            previous good marts. Only wraith-marts-state pages, when the API
+            cannot serve.
 
       - uid: wraith-dbt-test-failures
         title: dbt test failures or warnings

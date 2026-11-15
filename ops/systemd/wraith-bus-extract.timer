@@ -1,0 +1,10 @@
+[Unit]
+Description=Run wraith-bus-ingestor extract nightly at 03:00
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+Unit=wraith-bus-extract.service
+
+[Install]
+WantedBy=timers.target

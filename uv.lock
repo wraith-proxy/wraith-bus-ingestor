@@ -2738,6 +2738,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "sqlglot" },
     { name = "ty" },
     { name = "typer" },
 ]
@@ -2767,6 +2768,7 @@ requires-dist = [
     { name = "pyyaml" },
     { name = "requests" },
     { name = "ruff", marker = "extra == 'dev'" },
+    { name = "sqlglot", marker = "extra == 'dev'" },
     { name = "ty", marker = "extra == 'dev'" },
     { name = "typer", marker = "extra == 'dev'" },
     { name = "tzdata" },

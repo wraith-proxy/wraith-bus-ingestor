@@ -169,6 +169,7 @@ stack-wide restart.
 
 ## Data contracts and ontology
 
-`contracts/` holds two Open Data Contract Standard (ODCS) specs — one at the
-ingest boundary, one at the marts boundary — plus a Foundry-style ontology
-layered over both. See [Contracts](contracts.md).
+`contracts/` holds six Open Data Contract Standard (ODCS) specs — the raw
+ingest table, the extract Parquet, the staging (CDP) and intermediate (FDP)
+layers, the marts the API reads, and the GTFS timetable — plus a Foundry-style
+ontology layered over them. See [Contracts](contracts.md).

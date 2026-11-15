@@ -17,9 +17,11 @@ Rules whose severity is 'info', and `text` rules, are reported but never fail.
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import yaml
 
@@ -211,7 +213,7 @@ def check_quality(engine, res, rule, table, prop=None):
                 keys = ", ".join(engine.quote(c) for c in cols)
                 value = engine.scalar(
                     f"SELECT coalesce(sum(n - 1), 0) FROM "
-                    f"(SELECT count(*) AS n FROM {t} GROUP BY {keys} HAVING count(*) > 1)")
+                    f"(SELECT count(*) AS n FROM {t} GROUP BY {keys}) WHERE n > 1")
             elif metric == "invalidValues":
                 col = engine.quote(prop)
                 valid = args.get("validValues")
@@ -300,6 +302,68 @@ def validate_contract(path, engines, res):
     return contract
 
 
+# Contract logicalTypes each ontology base type can faithfully hold (integer fits a Double,
+# a number does not fit an Integer). Base types not listed are not judged.
+_BASE_TYPE_HOLDS = {
+    "String": {"string"},
+    "Double": {"number", "integer"},
+    "Long": {"integer"},
+    "Integer": {"integer"},
+    "Boolean": {"boolean"},
+    "Timestamp": {"date"},
+    "GeoPoint": {"object"},
+}
+
+
+def _check_through(link, by_alias, unvalidated, res):
+    """A link's `through` join table must resolve: known contract alias, an object
+    that exists in it, and every named column present.
+    A contract not validated this run cannot be judged, which is not drift."""
+    through = link.get("through")
+    if not through or through["contract"] in unvalidated:
+        return
+    name = link["apiName"]
+    schemas = by_alias.get(through["contract"])
+    if schemas is None:
+        res.fail(name, f"through references unknown contract alias {through['contract']!r}")
+        return
+    cols = schemas.get(through["object"])
+    if cols is None:
+        res.fail(name, f"through: contract has no object {through['object']!r}")
+        return
+    wanted = [through.get("fromProperty"), through.get("toProperty"),
+              *through.get("properties", [])]
+    missing = [c for c in wanted if c and c not in cols]
+    for col in missing:
+        res.fail(name, f"through: {through['object']} has no property {col!r}")
+
+
+def _check_pk_parity(obj, by_alias, unvalidated, res):
+    """The columns behind an object's primaryKey must be exactly the contract
+    object's primaryKey columns, for objects whose backingDatasets declare
+    `grain: row`. Skips what it cannot judge:
+    unbound keys, keys spread over several contract objects, or a contract
+    object that declares no primaryKey at all."""
+    if not any(b.get("grain") == "row" for b in obj.get("backingDatasets", [])):
+        return  # derived view (distinct values, an aggregate): its key may differ
+    bindings = {p["apiName"]: p.get("binding") for p in obj.get("properties", [])}
+    keys = [bindings.get(k) for k in obj.get("primaryKey", [])]
+    if not keys or any(b is None for b in keys):
+        return
+    targets = {(b["contract"], b["object"]) for b in keys}
+    if len(targets) != 1:
+        return
+    alias, table = next(iter(targets))
+    if alias in unvalidated or table not in by_alias.get(alias, {}):
+        return
+    contract_pk = {n for n, p in by_alias[alias][table].items() if p.get("primaryKey")}
+    onto_pk = {b["property"] for b in keys}
+    if contract_pk and onto_pk != contract_pk:
+        res.fail(obj["apiName"],
+                 f"primaryKey maps to columns {sorted(onto_pk)} but the contract's "
+                 f"{table} primaryKey is {sorted(contract_pk)}")
+
+
 def validate_ontology(path, contracts, res):
     """Every ontology binding must resolve to a real contract property, and any
     enum stated in both places must agree. This is what stops the semantic layer
@@ -325,38 +389,32 @@ def validate_ontology(path, contracts, res):
 
     value_types = {v["apiName"]: v for v in onto.get("valueTypes", [])}
     object_types = {o["apiName"]: o for o in onto.get("objectTypes", [])}
-    bound = broken = 0
+    bound, failed_before = 0, len(res.failures)
 
     for obj in onto.get("objectTypes", []):
         for prop in obj.get("properties", []):
             ref = f"{obj['apiName']}.{prop['apiName']}"
             vt = prop.get("valueType")
-            if vt and vt not in value_types and vt not in {
-                    "String", "Integer", "Long", "Double", "Boolean", "Timestamp", "GeoPoint"}:
+            if vt and vt not in value_types and vt not in _BASE_TYPE_HOLDS:
                 res.fail(ref, f"unknown valueType {vt!r}")
-                broken += 1
             binding = prop.get("binding")
             if not binding:
                 if not prop.get("computed"):
                     res.fail(ref, "no binding and not marked computed")
-                    broken += 1
                 continue
             if binding["contract"] in unvalidated:
                 continue
             schemas = by_alias.get(binding["contract"])
             if schemas is None:
                 res.fail(ref, f"unknown contract alias {binding['contract']!r}")
-                broken += 1
                 continue
             props = schemas.get(binding["object"])
             if props is None:
                 res.fail(ref, f"contract has no object {binding['object']!r}")
-                broken += 1
                 continue
             cprop = props.get(binding["property"])
             if cprop is None:
                 res.fail(ref, f"{binding['object']} has no property {binding['property']!r}")
-                broken += 1
                 continue
             bound += 1
             # Where both sides state an enum, they must agree.
@@ -367,16 +425,42 @@ def validate_ontology(path, contracts, res):
                 if extra:
                     res.fail(ref,
                              f"valueType {vt} allows {sorted(extra)} which the contract does not")
-                    broken += 1
+                missing = c_enum - onto_enum
+                if missing:
+                    res.fail(ref,
+                             f"contract allows {sorted(missing)} which valueType {vt} does not")
+
+            # Nullability must agree: the contract is the truth. A primary-key column is
+            # exempt (its null stream, if any, is handled by the key's own convention).
+            if not cprop.get("primaryKey"):
+                if cprop.get("required") and prop.get("nullable"):
+                    res.fail(ref, "marked nullable but the contract column is required")
+                elif not cprop.get("required") and not prop.get("nullable"):
+                    res.fail(ref, "contract column is not required, so the property "
+                                  "must be marked `nullable: true`")
+            # The valueType's base type must be one the contract column can hold,
+            # unless the binding declares `cast: true` (a deliberate conversion).
+            base = value_types.get(vt, {}).get("baseType", vt)
+            holds = _BASE_TYPE_HOLDS.get(base)
+            logical = cprop.get("logicalType")
+            if holds and logical and logical not in holds and not binding.get("cast"):
+                res.fail(ref, f"valueType {vt} ({base}) over contract logicalType "
+                              f"{logical!r}; declare `cast: true` on the binding if intended")
+            # Every example the contract gives must satisfy the valueType's pattern.
+            pattern = (value_types.get(vt, {}).get("constraints") or {}).get("pattern")
+            if pattern:
+                for ex in cprop.get("examples") or []:
+                    if not re.search(pattern, str(ex)):
+                        res.fail(ref, f"contract example {ex!r} does not match valueType "
+                                      f"{vt} pattern {pattern}")
 
         for key in obj.get("primaryKey", []):
             if key not in {p["apiName"] for p in obj.get("properties", [])}:
                 res.fail(obj["apiName"], f"primaryKey references unknown property {key!r}")
-                broken += 1
+        _check_pk_parity(obj, by_alias, unvalidated, res)
         title = obj.get("titleProperty")
         if title and title not in {p["apiName"] for p in obj.get("properties", [])}:
             res.fail(obj["apiName"], f"titleProperty {title!r} is not a property")
-            broken += 1
 
     for link in onto.get("linkTypes", []):
         for side in ("from", "to"):
@@ -385,18 +469,169 @@ def validate_ontology(path, contracts, res):
             if ot is None:
                 res.fail(link["apiName"],
                          f"{side} references unknown objectType {spec['objectType']!r}")
-                broken += 1
             elif spec.get("property") and spec["property"] not in {
                     p["apiName"] for p in ot.get("properties", [])}:
                 res.fail(link["apiName"],
                          f"{side} references {spec['objectType']}.{spec['property']} "
                          "which does not exist")
-                broken += 1
+        _check_through(link, by_alias, unvalidated, res)
 
-    if not broken:
+    # A function's `implementation: path::symbol` must name a real top-level def/class,
+    # so the pointer an agent follows cannot rot silently.
+    repo = Path(__file__).resolve().parent.parent
+    for fn in onto.get("functions", []):
+        impl = fn.get("implementation")
+        if not impl:
+            continue
+        rel, _, symbol = impl.partition("::")
+        src = repo / rel
+        if not src.is_file():
+            res.fail(fn["apiName"], f"implementation file {rel!r} does not exist")
+        elif not re.search(rf"^(?:async\s+)?(?:def|class)\s+{re.escape(symbol)}\b",
+                           src.read_text(), re.M):
+            res.fail(fn["apiName"], f"implementation symbol {symbol!r} not defined in {rel}")
+
+    if len(res.failures) == failed_before:
         res.ok(f"{bound} ontology property bindings resolve; "
                f"{len(onto.get('linkTypes', []))} link types consistent")
     return onto
+
+
+_METRIC_REF_RE = re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b(?!\s*\()")
+
+
+def validate_ossie_model(path, onto, contracts, res):
+    """The Ossie model (objects, links, metrics) must agree with the Foundry-style ontology,
+    which stays the source of bindings, and through it with the contracts: every dataset
+    source names a real contract object, every field reads a real column and the column the
+    Foundry binding names, relationships and metrics use only declared datasets and fields."""
+    model = yaml.safe_load(open(path))
+    print(f"\n\033[1m{model.get('name')} Ossie model v{model.get('version')}\033[0m")
+    by_alias, unvalidated = {}, set()
+    for entry in onto.get("contracts", []):
+        c = contracts.get(os.path.basename(entry["path"]))
+        if c is None:
+            unvalidated.add(entry["alias"])
+            res.skip(f"ossie bindings to {entry['alias']}", "contract not validated this run")
+            continue
+        by_alias[entry["alias"]] = {
+            o["name"]: {p["name"] for p in o.get("properties", [])} for o in c.get("schema", [])
+        }
+    objects = {o["apiName"]: o for o in onto.get("objectTypes", [])}
+    bridges = {
+        (t["contract"], t["object"])
+        for lk in onto.get("linkTypes", []) if (t := lk.get("through"))
+    }
+    failed_before = len(res.failures)
+    declared = {}
+    for ds in model.get("datasets", []):
+        name = ds["name"]
+        declared[name] = {f["name"] for f in ds.get("fields", [])}
+        alias, _, obj = ds["source"].partition(".")
+        foundry = objects.get(name)
+        if foundry is None and (alias, obj) not in bridges:
+            res.fail(name, "dataset has no Foundry objectType and is not a link join table")
+        cols = None
+        if alias in unvalidated:
+            pass
+        elif alias not in by_alias:
+            res.fail(name, f"source {ds['source']!r} names unknown contract alias {alias!r}")
+        elif obj not in by_alias[alias]:
+            res.fail(name, f"source object {obj!r} is not in contract {alias!r}")
+        else:
+            cols = by_alias[alias][obj]
+        props = {p["apiName"]: p for p in foundry.get("properties", [])} if foundry else {}
+        for f in ds.get("fields", []):
+            ref, col = f"{name}.{f['name']}", f["expression"].get("sql")
+            if cols is not None and col not in cols:
+                res.fail(ref, f"reads column {col!r}, not in {ds['source']}")
+            if foundry is not None:
+                binding = (props.get(f["name"]) or {}).get("binding")
+                if not binding:
+                    res.fail(ref, "no Foundry property with a binding of this name")
+                elif binding["property"] != col:
+                    res.fail(ref, f"reads {col!r} but the Foundry binding says "
+                                  f"{binding['property']!r}")
+        for k in ds.get("primary_key", []):
+            if k not in declared[name]:
+                res.fail(name, f"primary_key names undeclared field {k!r}")
+    for rel in model.get("relationships", []):
+        for side, cols in (("from", "from_columns"), ("to", "to_columns")):
+            ds = rel[side]
+            if ds not in declared:
+                res.fail(rel["name"], f"{side} names unknown dataset {ds!r}")
+                continue
+            for c in rel.get(cols, []):
+                if c not in declared[ds]:
+                    res.fail(rel["name"], f"{cols} names undeclared field {c!r} of {ds}")
+    for m in model.get("metrics", []):
+        for ds, fld in _METRIC_REF_RE.findall(m["expression"].get("sql", "")):
+            if ds not in declared or fld not in declared[ds]:
+                res.fail(m["name"], f"expression names undeclared {ds}.{fld}")
+    if len(res.failures) == failed_before:
+        res.ok(f"{len(declared)} Ossie datasets, {len(model.get('relationships', []))} "
+               f"relationships, {len(model.get('metrics', []))} metrics consistent")
+
+GENERATED_MARK = "GENERATED by modelgen"
+_VERSION_RE = re.compile(r"(GENERATED by modelgen )\S+")
+
+
+def _modelgen_run(workdir):
+    """Regenerate from the contracts into workdir (the committed tree is untouched)."""
+    import shutil
+    import subprocess
+    shutil.copy(os.path.join(ROOT, ".modelgen.yml"), workdir)
+    shutil.copytree(os.path.join(ROOT, "contracts"), os.path.join(workdir, "contracts"))
+    subprocess.run(["modelgen", "run", "--from-contract"], cwd=workdir, check=True,
+                   stdout=subprocess.DEVNULL)
+
+
+def _normalise(text):
+    """Blank the modelgen version in the header: a header-only version bump is not drift."""
+    first, _, rest = text.partition("\n")
+    return _VERSION_RE.sub(r"\1<version>", first) + "\n" + rest
+
+
+def _generated_files(root, cfg):
+    """Committed files carrying the generated header under the configured outputs."""
+    found = {}
+    for key in ("sources_output", "schema_output", "tests_output", "raw_output", "staging_output"):
+        base = os.path.join(root, cfg[key]) if cfg.get(key) else None
+        for dirpath, _, names in os.walk(base) if base else ():
+            for n in names:
+                path = os.path.join(dirpath, n)
+                with open(path, errors="replace") as fh:
+                    if GENERATED_MARK in fh.readline():
+                        found[os.path.relpath(path, root)] = path
+    return found
+
+
+def check_generated(root, generate=None):
+    """Problems (list of str) where committed generated files differ from a fresh regeneration.
+
+    Only the modelgen version in the header line is tolerated; any other difference,
+    a missing file or a stale generated file is a problem. `generate(workdir)` is injectable.
+    """
+    import tempfile
+    root = str(root)
+    with open(os.path.join(root, ".modelgen.yml")) as fh:
+        cfg = yaml.safe_load(fh) or {}
+    with tempfile.TemporaryDirectory() as work:
+        (generate or _modelgen_run)(work)
+        fresh = _generated_files(work, cfg)
+        committed = _generated_files(root, cfg)
+        problems = []
+        for rel in sorted(set(fresh) | set(committed)):
+            if rel not in committed:
+                problems.append(f"{rel}: not committed; run modelgen run")
+            elif rel not in fresh:
+                problems.append(f"{rel}: generated file no contract produces any more")
+            else:
+                with open(fresh[rel]) as a, open(committed[rel]) as b:
+                    if _normalise(a.read()) != _normalise(b.read()):
+                        problems.append(f"{rel}: differs from regeneration "
+                                    "(hand edit or stale); run modelgen run")
+        return problems
 
 
 def main():
@@ -410,8 +645,19 @@ def main():
     ap.add_argument("--questdb", default=DEFAULT_QUESTDB)
     ap.add_argument("--questdb-window", type=int, default=5, metavar="MINUTES",
                     help="validate QuestDB over this recent window (default 5)")
+    ap.add_argument("--ossie", default=os.path.join(HERE, "metrics.ossie.yaml"))
     ap.add_argument("--no-ontology", action="store_true")
+    ap.add_argument("--generated", action="store_true",
+                    help="only check generated dbt files against a fresh modelgen run")
     args = ap.parse_args()
+
+    if args.generated:
+        problems = check_generated(ROOT)
+        for p in problems:
+            print(f"  - {p}")
+        print("generated files in sync" if not problems
+              else f"{len(problems)} generated file(s) drifted")
+        return 1 if problems else 0
 
     paths = args.contract or [os.path.join(HERE, f) for f in
                               ("bus-positions.odcs.yaml", "bus-marts.odcs.yaml",
@@ -452,7 +698,9 @@ def main():
         contracts[os.path.basename(path)] = validate_contract(path, engines, res)
 
     if not args.no_ontology and os.path.exists(args.ontology) and contracts:
-        validate_ontology(args.ontology, contracts, res)
+        onto = validate_ontology(args.ontology, contracts, res)
+        if os.path.exists(args.ossie):
+            validate_ossie_model(args.ossie, onto, contracts, res)
 
     print(f"\n\033[1m{res.passes} passed, {len(res.failures)} failed, "
           f"{len(res.warnings)} warned, {res.skips} skipped\033[0m")

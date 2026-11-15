@@ -1,0 +1,9 @@
+[Unit]
+Description=Start the dbt rebuild when the extract ready marker appears
+
+[Path]
+PathExists=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/data/.extract_ready
+Unit=wraith-bus-build.service
+
+[Install]
+WantedBy=multi-user.target

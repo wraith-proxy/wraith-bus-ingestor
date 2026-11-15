@@ -1,0 +1,311 @@
+"""Expand/contract gate: behaviour of check_change(base, head) on two contract files.
+
+dbt is never run here. Reader detection (seam 2) works on injected compiled SQL.
+"""
+
+import importlib.util
+from datetime import date
+from pathlib import Path
+
+import yaml
+
+_SPEC = importlib.util.spec_from_file_location(
+    "policy", Path(__file__).resolve().parent.parent / "contracts" / "policy.py"
+)
+policy = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(policy)
+
+
+def contract(columns, version="1.0.0", table="t"):
+    """columns: {name: {"type": ..., "props": [(property, value), ...]}} or name -> type str."""
+    props = []
+    for name, spec in columns.items():
+        spec = {"type": spec} if isinstance(spec, str) else spec
+        p = {"name": name, "logicalType": spec.get("type", "string")}
+        p.update(spec.get("extra", {}))
+        if spec.get("props"):
+            p["customProperties"] = [{"property": k, "value": v} for k, v in spec["props"]]
+        props.append(p)
+    return {
+        "apiVersion": "v3.2.0",
+        "kind": "DataContract",
+        "name": "c",
+        "version": version,
+        "schema": [{"name": table, "properties": props}],
+    }
+
+
+def write(tmp_path, name, doc):
+    path = tmp_path / name
+    path.write_text(yaml.safe_dump(doc))
+    return path
+
+
+def codes(violations):
+    return [v.code for v in violations]
+
+
+def test_additive_without_backfill_fails(tmp_path):
+    base = write(tmp_path, "base.yaml", contract({"a": "string"}))
+    head = write(tmp_path, "head.yaml", contract({"a": "string", "b": "string"}, version="1.1.0"))
+    violations = policy.check_change(base, head)
+    assert codes(violations) == ["expand-without-backfill"]
+    assert "t.b" in violations[0].message
+
+
+def test_new_table_needs_no_backfill(tmp_path):
+    """A table that did not exist on base has no history to backfill: its columns are exempt."""
+    base_doc = contract({"a": "string"})
+    head_doc = contract({"a": "string"}, version="1.1.0")
+    head_doc["schema"].append(
+        {"name": "t2", "properties": [{"name": "x", "logicalType": "string"}]}
+    )
+    base = write(tmp_path, "base.yaml", base_doc)
+    head = write(tmp_path, "head.yaml", head_doc)
+    assert policy.check_change(base, head) == []
+
+
+def test_new_column_on_existing_table_still_needs_backfill_beside_a_new_table(tmp_path):
+    base_doc = contract({"a": "string"})
+    head_doc = contract({"a": "string", "b": "string"}, version="1.1.0")
+    head_doc["schema"].append(
+        {"name": "t2", "properties": [{"name": "x", "logicalType": "string"}]}
+    )
+    base = write(tmp_path, "base.yaml", base_doc)
+    head = write(tmp_path, "head.yaml", head_doc)
+    violations = policy.check_change(base, head)
+    assert codes(violations) == ["expand-without-backfill"]
+    assert "t.b" in violations[0].message
+
+
+def test_additive_with_backfill_passes(tmp_path):
+    base = write(tmp_path, "base.yaml", contract({"a": "string"}))
+    for mode in ("derive", "null-before", "replay"):
+        new = {"a": "string", "b": {"type": "string", "props": [("backfill", mode)]}}
+        head = write(tmp_path, f"head-{mode}.yaml", contract(new, version="1.1.0"))
+        assert policy.check_change(base, head) == []
+
+
+def test_additive_with_unknown_backfill_fails(tmp_path):
+    base = write(tmp_path, "base.yaml", contract({"a": "string"}))
+    new = {"a": "string", "b": {"type": "string", "props": [("backfill", "yolo")]}}
+    head = write(tmp_path, "head.yaml", contract(new, version="1.1.0"))
+    violations = policy.check_change(base, head)
+    assert codes(violations) == ["invalid-backfill"]
+    assert "yolo" in violations[0].message
+
+
+def test_type_change_without_major_bump_fails(tmp_path):
+    base = write(tmp_path, "base.yaml", contract({"a": "string"}))
+    head = write(tmp_path, "head.yaml", contract({"a": "integer"}, version="1.1.0"))
+    violations = policy.check_change(base, head)
+    assert codes(violations) == ["breaking-without-major-bump"]
+    assert "t.a" in violations[0].message
+
+
+def test_type_change_with_major_bump_passes(tmp_path):
+    base = write(tmp_path, "base.yaml", contract({"a": "string"}))
+    head = write(tmp_path, "head.yaml", contract({"a": "integer"}, version="2.0.0"))
+    assert policy.check_change(base, head) == []
+
+
+TODAY = date(2026, 11, 14)
+
+
+def sunset_base(tmp_path, sunset):
+    cols = {"a": "string", "b": {"type": "string", "props": [("sunset", sunset)]}}
+    return write(tmp_path, "base.yaml", contract(cols))
+
+
+def test_removal_before_sunset_fails(tmp_path):
+    base = sunset_base(tmp_path, date(2026, 12, 1))
+    head = write(tmp_path, "head.yaml", contract({"a": "string"}, version="2.0.0"))
+    violations = policy.check_change(base, head, today=TODAY)
+    assert codes(violations) == ["removed-before-sunset"]
+    assert "t.b" in violations[0].message
+
+
+def test_removal_without_declared_sunset_fails(tmp_path):
+    base = write(tmp_path, "base.yaml", contract({"a": "string", "b": "string"}))
+    head = write(tmp_path, "head.yaml", contract({"a": "string"}, version="2.0.0"))
+    assert codes(policy.check_change(base, head, today=TODAY)) == ["removal-without-sunset"]
+
+
+def test_removal_after_sunset_without_major_bump_fails(tmp_path):
+    base = sunset_base(tmp_path, date(2026, 11, 1))
+    head = write(tmp_path, "head.yaml", contract({"a": "string"}, version="1.1.0"))
+    assert codes(policy.check_change(base, head, today=TODAY)) == ["breaking-without-major-bump"]
+
+
+def test_removal_after_sunset_with_major_bump_passes(tmp_path):
+    base = sunset_base(tmp_path, date(2026, 11, 1))
+    head = write(tmp_path, "head.yaml", contract({"a": "string"}, version="2.0.0"))
+    assert policy.check_change(base, head, today=TODAY) == []
+
+
+def compiled(tmp_path, **files):
+    d = tmp_path / "compiled"
+    d.mkdir(exist_ok=True)
+    for name, sql in files.items():
+        (d / f"{name}.sql").write_text(sql)
+    return d
+
+
+def removal_pair(tmp_path):
+    base = sunset_base(tmp_path, date(2026, 11, 1))
+    head = write(tmp_path, "head.yaml", contract({"a": "string"}, version="2.0.0"))
+    return base, head
+
+
+def test_removal_read_by_hand_sql_is_blocked_naming_the_reader(tmp_path):
+    base, head = removal_pair(tmp_path)
+    sql = compiled(tmp_path, int_uses_b='select x.b, x.a from "db"."main"."t" as x')
+    violations = policy.check_change(base, head, today=TODAY, compiled_sql_dir=sql)
+    assert codes(violations) == ["removal-with-readers"]
+    assert "int_uses_b" in violations[0].message and "t.b" in violations[0].message
+
+
+def test_select_star_reader_is_detected(tmp_path):
+    base, head = removal_pair(tmp_path)
+    sql = compiled(tmp_path, int_star="select * from main.t")
+    violations = policy.check_change(base, head, today=TODAY, compiled_sql_dir=sql)
+    assert codes(violations) == ["removal-with-readers"]
+    assert "int_star" in violations[0].message
+
+
+def test_same_column_name_on_another_table_is_not_a_reader(tmp_path):
+    base, head = removal_pair(tmp_path)
+    sql = compiled(tmp_path, int_other="select o.b from main.other as o")
+    assert policy.check_change(base, head, today=TODAY, compiled_sql_dir=sql) == []
+
+
+def test_main_exits_1_and_prints_each_violation(tmp_path, capsys):
+    base = write(tmp_path, "base.yaml", contract({"a": "string"}))
+    head = write(tmp_path, "head.yaml", contract({"a": "string", "b": "string"}, version="1.1.0"))
+    assert policy.main([str(base), str(head)]) == 1
+    assert "expand-without-backfill" in capsys.readouterr().out
+
+
+def test_main_exits_0_and_prints_nothing_for_a_clean_change(tmp_path, capsys):
+    base = write(tmp_path, "base.yaml", contract({"a": "string"}))
+    head = write(tmp_path, "head.yaml", contract({"a": "string"}, version="1.0.1"))
+    assert policy.main([str(base), str(head)]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_script_entry_point_exits_1_on_violation(tmp_path):
+    import subprocess
+    import sys
+
+    base = write(tmp_path, "base.yaml", contract({"a": "string"}))
+    head = write(tmp_path, "head.yaml", contract({"a": "string", "b": "string"}, version="1.1.0"))
+    script = Path(__file__).resolve().parent.parent / "contracts" / "policy.py"
+    run = subprocess.run(
+        [sys.executable, str(script), str(base), str(head)], capture_output=True, text=True
+    )
+    assert run.returncode == 1
+    assert "expand-without-backfill" in run.stdout
+
+
+def test_main_passes_compiled_dir_to_the_gate(tmp_path, capsys):
+    base, head = removal_pair(tmp_path)
+    sql = compiled(tmp_path, int_star="select * from main.t")
+    assert policy.main([str(base), str(head), str(sql)]) == 1
+    assert "removal-with-readers" in capsys.readouterr().out
+
+
+def test_reader_in_nested_compiled_directory_is_found(tmp_path):
+    base, head = removal_pair(tmp_path)
+    nested = tmp_path / "compiled" / "models" / "staging"
+    nested.mkdir(parents=True)
+    (nested / "stg_deep.sql").write_text("select * from main.t")
+    root = tmp_path / "compiled"
+    violations = policy.check_change(base, head, today=TODAY, compiled_sql_dir=root)
+    assert "stg_deep" in violations[0].message
+
+
+def extract_pair(tmp_path):
+    base_doc = contract(
+        {"a": "string", "b": {"type": "string", "props": [("sunset", "2026-11-01")]}}
+    )
+    base_doc["schema"][0].update(name="bus_positions", physicalName="bus_positions_*.parquet")
+    head_doc = contract({"a": "string"}, version="2.0.0")
+    head_doc["schema"][0].update(name="bus_positions", physicalName="bus_positions_*.parquet")
+    return write(tmp_path, "base.yaml", base_doc), write(tmp_path, "head.yaml", head_doc)
+
+
+def test_read_parquet_reader_matched_via_physical_name(tmp_path):
+    base, head = extract_pair(tmp_path)
+    sql = compiled(
+        tmp_path,
+        stg="select a, b from read_parquet('data/bus_positions_*.parquet', union_by_name=true)",
+    )
+    violations = policy.check_change(base, head, today=date(2026, 12, 1), compiled_sql_dir=sql)
+    assert codes(violations) == ["removal-with-readers"]
+    assert "stg" in violations[0].message
+
+
+def test_read_parquet_of_unrelated_files_is_not_a_reader(tmp_path):
+    base, head = extract_pair(tmp_path)
+    sql = compiled(tmp_path, other="select b from read_parquet('data/other_*.parquet')")
+    assert policy.check_change(base, head, today=date(2026, 12, 1), compiled_sql_dir=sql) == []
+
+
+def _change(tmp_path, base_extra, head_extra, version="1.1.0"):
+    base = write(tmp_path, "base.yaml", contract({"a": {"extra": base_extra}}))
+    head = write(tmp_path, "head.yaml", contract({"a": {"extra": head_extra}}, version=version))
+    return policy.check_change(base, head)
+
+
+def test_physical_type_change_needs_major_bump(tmp_path):
+    v = _change(tmp_path, {"physicalType": "INT"}, {"physicalType": "LONG"})
+    assert codes(v) == ["breaking-without-major-bump"]
+    assert _change(tmp_path, {"physicalType": "INT"}, {"physicalType": "LONG"}, "2.0.0") == []
+
+
+def test_required_loosening_needs_major_bump(tmp_path):
+    v = _change(tmp_path, {"required": True}, {"required": False})
+    assert codes(v) == ["breaking-without-major-bump"]
+    assert _change(tmp_path, {"required": True}, {"required": False}, "2.0.0") == []
+
+
+def test_required_tightening_is_not_flagged(tmp_path):
+    assert _change(tmp_path, {}, {"required": True}) == []
+
+
+def test_primary_key_dropped_or_changed_needs_major_bump(tmp_path):
+    dropped = _change(tmp_path, {"primaryKey": True, "primaryKeyPosition": 1}, {})
+    assert codes(dropped) == ["breaking-without-major-bump"]
+    moved = _change(
+        tmp_path,
+        {"primaryKey": True, "primaryKeyPosition": 1},
+        {"primaryKey": True, "primaryKeyPosition": 2},
+    )
+    assert codes(moved) == ["breaking-without-major-bump"]
+    assert _change(tmp_path, {"primaryKey": True}, {}, "2.0.0") == []
+
+
+def test_enum_value_removed_needs_major_bump_but_widening_is_fine(tmp_path):
+    two = {"enum": [{"value": "x"}, {"value": "y"}]}
+    one = {"enum": [{"value": "x"}]}
+    assert codes(_change(tmp_path, two, one)) == ["breaking-without-major-bump"]
+    assert _change(tmp_path, two, one, "2.0.0") == []
+    assert _change(tmp_path, one, two) == []
+
+
+def test_removed_contract_files_listed(tmp_path):
+    (tmp_path / "contracts").mkdir()
+    (tmp_path / "contracts" / "keep.odcs.yaml").write_text("x")
+    gone = policy.removed_contracts(
+        ["contracts/keep.odcs.yaml", "contracts/gone.odcs.yaml", "contracts/README.md"],
+        tmp_path,
+    )
+    assert gone == ["contracts/gone.odcs.yaml"]
+
+
+def test_main_check_deleted_exits_1_naming_the_file(tmp_path, capsys):
+    (tmp_path / "contracts").mkdir()
+    listing = tmp_path / "ls.txt"
+    listing.write_text("contracts/gone.odcs.yaml\n")
+    assert policy.main(["--deleted", str(listing), str(tmp_path)]) == 1
+    assert "contracts/gone.odcs.yaml" in capsys.readouterr().out

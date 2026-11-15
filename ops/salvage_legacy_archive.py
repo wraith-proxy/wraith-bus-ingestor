@@ -29,11 +29,11 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import hostenv  # noqa: E402
-
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+import hostenv  # noqa: E402
 
 US_PER_DAY = 86_400 * 1_000_000
 NOTE = (

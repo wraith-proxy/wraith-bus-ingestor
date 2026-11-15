@@ -38,6 +38,53 @@ jobs:
         # The gate that checks real data is dbt/build.sh, which runs this
         # same script against the live marts before every publish.
         run: python3 contracts/validate.py
+      - name: Generated files in sync (modelgen check)
+        # modelgen 0.16.0 is baked into the image. `modelgen check` fails when a
+        # generated file was hand-edited or no longer matches its contract.
+        # when check fails, validate.py --generated arbitrates: same comparison
+        # but a header-only modelgen version difference passes (check_generated).
+        run: |
+          set -euo pipefail
+          modelgen check --from-contract --diff || python3 contracts/validate.py --generated
+      - name: Contract change policy (expand/contract)
+        # Compares each contract changed on this branch with its version on
+        # origin/main: breaking change without a major bump, removal before its
+        # sunset date, new column without a backfill. A contract that does not
+        # exist on main yet has nothing to compare against and is skipped.
+        # Reader detection over compiled SQL is not wired in yet (needs a
+        # `dbt compile`); see contracts/policy.py.
+        run: |
+          set -euo pipefail
+          for f in contracts/*.odcs.yaml; do
+            base="$(mktemp)"
+            if git show "origin/main:$f" > "$base" 2>/dev/null; then
+              echo "policy: $f"
+              python3 contracts/policy.py "$base" "$f"
+            fi
+          done
+      - name: Contract change policy (deleted contracts)
+        # A whole contract file deleted on this branch is never reached by the
+        # loops above. Fails; an intentional deletion needs the owner to bump
+        # this workflow.
+        run: |
+          set -euo pipefail
+          ls_file="$(mktemp)"
+          git ls-tree --name-only origin/main contracts/ > "$ls_file"
+          python3 contracts/policy.py --deleted "$ls_file" .
+      - name: Contract change policy (compiled readers)
+        # Same comparison as the step above, plus reader detection: the sandbox
+        # is compiled so policy.py can scan the compiled SQL for readers.
+        run: |
+          set -euo pipefail
+          DEST="$(mktemp -d)/dbt-sandbox"
+          ./ops/dbt_sandbox.sh "$DEST"
+          (cd "$DEST" && dbt compile)
+          for f in contracts/*.odcs.yaml; do
+            base="$(mktemp)"
+            if git show "origin/main:$f" > "$base" 2>/dev/null; then
+              python3 contracts/policy.py "$base" "$f" "$DEST/target/compiled"
+            fi
+          done
       - name: dbt build + test (Learn dbt sandbox)
         # ROADMAP.md 1.1.0. Same limitation as "Validate data contracts"
         # above -- no live QuestDB or NaPTAN register on this runner -- so
@@ -58,6 +105,10 @@ jobs:
           cd "$DEST"
           dbt run
           dbt test
+      - name: SQL ratchet (hand-written model SQL)
+        # Fails when non-blank model SQL code lines (comments stripped) exceed
+        # ops/sql_baseline.txt. Raw line count is recorded there, not gated.
+        run: python3 ops/sql_ratchet.py
 
   auto-merge:
     needs: test-and-verify

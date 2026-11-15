@@ -284,5 +284,7 @@ def test_prime_pins_batches_and_caches():
         gtfs.prime_pins(keys)
         assert gtfs._pins[('OP1', '88', 'A', MON_0800)]['trip_id'] == 'T1'
         assert gtfs._pins[('OP1', '88', 'nowhere', MON_0800)] is None
-        assert ('OP1', '88', 'A', None) not in gtfs._pins    # incomplete key skipped
-        assert gtfs.pin_trip('OP1', '88', 'A', MON_0800) is gtfs._pins[('OP1', '88', 'A', MON_0800)]
+        assert ('OP1', '88', 'A', None) not in gtfs._pins  # incomplete key skipped
+        assert (
+            gtfs.pin_trip("OP1", "88", "A", MON_0800) is gtfs._pins[("OP1", "88", "A", MON_0800)]
+        )

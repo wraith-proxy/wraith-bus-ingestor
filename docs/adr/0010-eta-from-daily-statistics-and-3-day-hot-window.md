@@ -1,6 +1,6 @@
 # ADR 0010: ETA from daily statistics, and a 3-day hot window
 
-**Status:** Accepted 2026-10-25, not yet implemented. Lands in steps (PR1, its seeding nightly, PR2, the compaction, then the `.env` change; see "Rollout"); record each here as it happens.
+**Status:** Accepted 2026-10-25. Code implemented and merged: PR1 `ccc06ff` (daily history tables) and PR2 `d9b1a30` (window 8 to 4 days, compaction script), both 2026-10-25. The owner-run steps (compaction, `.env` change; see "Rollout") are operational, not in git; this file does not record their completion.
 **Date:** 2026-10-25
 **Related:** [ADR-0003](0003-replay-verified-by-construction.md), [ADR-0006](0006-bus-positions-schema-optimisation.md), [ADR-0007](0007-parquet-archive.md), [ADR-0009](0009-fast-nightly-build.md), `dbt/models/intermediate/int_eta_daily_stats.sql`, `dbt/models/intermediate/int_journey_delays.sql`, `dbt/models/marts/eta_models.sql`, `dbt/models/marts/line_punctuality.sql`, `dbt/tests/assert_eta_stats_match_raw_fit.sql`, `dbt/extract.py`, `dbt/build.sh`, `ops/test_extract_markers.py`, `ops/incident.py`, `ops/compact_build_db.sh` (PR2), `contracts/bus-marts.odcs.yaml`
 

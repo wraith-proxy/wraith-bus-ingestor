@@ -5,7 +5,7 @@
 # key and a title property, typed link types with explicit cardinality, and
 # functions. There is no open standard for this the way there is for the data
 # contract itself, so the shape below is Foundry-conventional rather than
-# normative -- it is documented in contracts/README.md.
+# normative -- it is documented in docs/contracts.md.
 #
 # The point of it: the contracts say what the COLUMNS are, this says what the
 # THINGS are. Every property here binds to a contract + schema object + property,
@@ -38,10 +38,14 @@ contracts:
 valueTypes:
   - apiName: AtcoCode
     baseType: String
-    description: NaPTAN national stop identifier. The join key between the live feed, NaPTAN and every stop-shaped mart.
+    description: >-
+      NaPTAN national stop identifier. The join key between the live feed, NaPTAN
+      and every stop-shaped mart. Deliberately loose: the live feed's origin and
+      destination refs are not guaranteed to be ATCO codes (one operator sends its
+      internal line code, e.g. 'k28'), and a miss is "unknown", never an error.
     constraints:
-      pattern: '^[0-9]{4}[A-Za-z0-9]+$'
-    examples: ['1800STIN0P1', '0600MA6154']
+      pattern: '^[A-Za-z0-9]+$'
+    examples: ['1800STIN0P1', '0600MA6154', 'k28']
 
   - apiName: ServiceNumber
     baseType: String
@@ -77,6 +81,23 @@ valueTypes:
     description: Local-time band. night 22:00-05:59, am_peak 06:00-09:59, inter 10:00-15:59, pm_peak 16:00-18:59, evening 19:00-21:59.
     enum: ['night', 'am_peak', 'inter', 'pm_peak', 'evening']
 
+  # The pooled fallback rows of eta_models use '*' for "all". Journey and Vehicle
+  # never do, so these are separate types and the strict enums above stay strict.
+  - apiName: DirectionOrAll
+    baseType: String
+    description: Direction as above, or '*' for a model fitted across every direction.
+    enum: ['inbound', 'outbound', 'clockwise', 'anticlockwise', '*']
+
+  - apiName: DayTypeOrAll
+    baseType: String
+    description: Day type as above, or '*' for a model fitted across every day type.
+    enum: ['weekday', 'sat', 'sun', '*']
+
+  - apiName: HourBandOrAll
+    baseType: String
+    description: Hour band as above, or '*' for a model fitted across every hour band.
+    enum: ['night', 'am_peak', 'inter', 'pm_peak', 'evening', '*']
+
   - apiName: RagStatus
     baseType: String
     description: >-
@@ -99,6 +120,11 @@ valueTypes:
     baseType: Integer
     unit: seconds
     description: Signed lateness. Positive is late, negative is early.
+
+  - apiName: DelaySecondsStat
+    baseType: Double
+    unit: seconds
+    description: A statistic over delays (median, percentile). Fractional, because the median of an even count can fall between two whole seconds, so it is not DelaySeconds.
 
   - apiName: EpochMillis
     baseType: Long
@@ -127,7 +153,8 @@ objectTypes:
       - contract: positions
         object: bus_positions
         note: >-
-          The live tail only -- newest row per vehicle inside a five-minute
+          A derived view, not row grain (a bus_positions row is one ping, many per
+          vehicle). The live tail only -- newest row per vehicle inside a five-minute
           ingest window, further filtered to those whose recorded_at is under
           10 minutes old. Vehicles failing that filter are not Vehicle objects;
           they are replayed dead records.
@@ -152,6 +179,7 @@ objectTypes:
         displayName: Position measured at
         valueType: EpochMillis
         binding: {contract: positions, object: bus_positions, property: recorded_at}
+        nullable: true
       - apiName: lineId
         displayName: Working line
         valueType: ServiceNumber
@@ -226,24 +254,30 @@ objectTypes:
       - apiName: journeyRef
         valueType: String
         binding: {contract: positions, object: bus_positions, property: journey_ref}
+        nullable: true
       - apiName: lineId
         valueType: ServiceNumber
         binding: {contract: positions, object: bus_positions, property: line}
       - apiName: direction
         valueType: Direction
         binding: {contract: positions, object: bus_positions, property: direction}
+        nullable: true
       - apiName: originRef
         valueType: AtcoCode
         binding: {contract: positions, object: bus_positions, property: origin_ref}
+        nullable: true
       - apiName: destinationRef
         valueType: AtcoCode
         binding: {contract: positions, object: bus_positions, property: dest_ref}
+        nullable: true
       - apiName: originAimedDeparture
         valueType: EpochMillis
         binding: {contract: positions, object: bus_positions, property: origin_aimed_dep}
+        nullable: true
       - apiName: destinationAimedArrival
         valueType: EpochMillis
         binding: {contract: positions, object: bus_positions, property: dest_aimed_arr}
+        nullable: true
       - apiName: isCircular
         valueType: Boolean
         computed: true
@@ -285,6 +319,7 @@ objectTypes:
     properties:
       - apiName: operatorRef
         valueType: String
+        nullable: true
         binding: {contract: positions, object: bus_positions, property: operator}
 
   - apiName: Stop
@@ -308,15 +343,19 @@ objectTypes:
       - apiName: stopName
         valueType: String
         binding: {contract: gtfs, object: naptan_stops, property: CommonName}
+        nullable: true
       - apiName: localityName
         valueType: String
         binding: {contract: gtfs, object: naptan_stops, property: LocalityName}
+        nullable: true
       - apiName: latitude
         valueType: Double
-        binding: {contract: gtfs, object: naptan_stops, property: Latitude}
+        binding: {contract: gtfs, object: naptan_stops, property: Latitude, cast: true}
+        nullable: true
       - apiName: longitude
         valueType: Double
-        binding: {contract: gtfs, object: naptan_stops, property: Longitude}
+        binding: {contract: gtfs, object: naptan_stops, property: Longitude, cast: true}
+        nullable: true
 
   - apiName: LineStop
     displayName: Stop on a line
@@ -356,6 +395,7 @@ objectTypes:
       - apiName: scheduledSecondsFromOrigin
         valueType: Double
         binding: {contract: gtfs, object: gtfs_route_stops, property: sched_secs_from_origin}
+        nullable: true
         description: Scheduled, not observed. Anchored on the pattern's first stop.
 
   - apiName: Locality
@@ -385,6 +425,7 @@ objectTypes:
       - apiName: stopCount
         valueType: Long
         binding: {contract: marts, object: localities, property: n_stops}
+        nullable: true
 
   - apiName: TravelTimeModel
     displayName: Travel time model
@@ -394,23 +435,28 @@ objectTypes:
     description: >-
       A fitted linear regression of remaining seconds on remaining kilometres for
       one temporal grain. The coefficients are the model; there is no artefact.
-    primaryKey: [lineId, direction, dayType, hourBand]
+    primaryKey: [operatorRef, lineId, direction, dayType, hourBand]
     titleProperty: lineId
     backingDatasets:
       - contract: marts
         object: eta_models
+        grain: row
     properties:
+      - apiName: operatorRef
+        valueType: String
+        description: The operator the model was fitted for, or '*' for the pooled fit across operators.
+        binding: {contract: marts, object: eta_models, property: operator}
       - apiName: lineId
         valueType: ServiceNumber
         binding: {contract: marts, object: eta_models, property: line}
       - apiName: direction
-        valueType: Direction
+        valueType: DirectionOrAll
         binding: {contract: marts, object: eta_models, property: direction}
       - apiName: dayType
-        valueType: DayType
+        valueType: DayTypeOrAll
         binding: {contract: marts, object: eta_models, property: day_type}
       - apiName: hourBand
-        valueType: HourBand
+        valueType: HourBandOrAll
         binding: {contract: marts, object: eta_models, property: hour_band}
       - apiName: slopeSecondsPerKm
         valueType: Double
@@ -422,12 +468,14 @@ objectTypes:
       - apiName: rSquared
         valueType: Double
         binding: {contract: marts, object: eta_models, property: r2}
+        nullable: true
       - apiName: observations
         valueType: Long
         binding: {contract: marts, object: eta_models, property: n_obs}
       - apiName: meanSpeedKmh
         valueType: Double
         binding: {contract: marts, object: eta_models, property: mean_speed_kmh}
+        nullable: true
 
   - apiName: PunctualityProfile
     displayName: Punctuality profile
@@ -457,14 +505,17 @@ objectTypes:
         valueType: HourBand
         binding: {contract: marts, object: line_punctuality, property: hour_band}
       - apiName: medianDelaySeconds
-        valueType: DelaySeconds
+        valueType: DelaySecondsStat
         binding: {contract: marts, object: line_punctuality, property: median_delay_s}
+        nullable: true
       - apiName: p90DelaySeconds
-        valueType: DelaySeconds
+        valueType: DelaySecondsStat
         binding: {contract: marts, object: line_punctuality, property: p90_delay_s}
+        nullable: true
       - apiName: journeyCount
         valueType: Long
         binding: {contract: marts, object: line_punctuality, property: n_journeys}
+        nullable: true
 
 # ---------------------------------------------------------------------------
 # Link types

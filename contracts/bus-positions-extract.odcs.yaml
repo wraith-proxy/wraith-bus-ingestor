@@ -30,12 +30,11 @@ description:
     grouped by (timestamp, bus_id, operator, line); other columns are last().
     One .done marker per day is written once every chunk landed and QuestDB had
     applied its writes; empty chunks are dropped, so an ingest gap is a gap in
-    the files. The sources yml wording 'one per day' is imprecise: it is one
-    file per 4-hour chunk.
+    the files.
   limitations: >-
     `timestamp` is the END of the 3-minute bucket, not ingest time. recorded_at
     is NULL in any file written before 2026-09-20, when extract.py began
-    carrying it (_bods__sources.yml:112); the schedule columns are NULL in files
+    carrying it; the schedule columns are NULL in files
     written before 2026-09-12. published_line and block_ref are not extracted.
 
 servers:
@@ -55,9 +54,13 @@ support:
     url: mailto:hello@thomaspeoples.com
 
 customProperties:
+  - property: dbtSourceName
+    value: bods
+  - property: dbtColumnSetTest
+    value: columns_match_set
   - property: externalLocation
     value: "read_parquet('data/bus_positions_*.parquet', union_by_name=true)"
-    description: dbt source meta.external_location (_bods__sources.yml:30-41).
+    description: dbt source meta.external_location.
   - property: loadedAtField
     value: '"timestamp"'
   - property: freshnessWarnAfter
@@ -84,7 +87,7 @@ schema:
         severity: error
         description: >-
           A near-empty glob means extraction silently produced almost nothing
-          (expect_table_row_count_to_be_between, _bods__sources.yml:141-143).
+          (expect_table_row_count_to_be_between).
         query: |
           SELECT count(*) FROM {object}
         mustBeGreaterOrEqualTo: 500000
@@ -92,7 +95,7 @@ schema:
         type: sql
         dimension: accuracy
         severity: warning
-        description: lat within 49.8..61.0; warn only, staging filters bad fixes (_bods__sources.yml lat test).
+        description: lat within 49.8..61.0; warn only, staging filters bad fixes.
         query: |
           SELECT count(*) FROM {object} WHERE lat < 49.8 OR lat > 61.0
         mustBe: 0
@@ -100,7 +103,7 @@ schema:
         type: sql
         dimension: accuracy
         severity: warning
-        description: lon within -8.7..2.0; warn only (_bods__sources.yml lon test).
+        description: lon within -8.7..2.0; warn only.
         query: |
           SELECT count(*) FROM {object} WHERE lon < -8.7 OR lon > 2.0
         mustBe: 0
@@ -119,7 +122,7 @@ schema:
         physicalType: TIMESTAMP WITH TIME ZONE
         required: true
         description: >-
-          End of the 3-minute sample bucket, UTC (TIMESTAMPTZ on disk). NOT ingest time and not the time the position was measured: extract.py's SAMPLE BY 3m labels each bucket and this is the bucket's end (_bods__sources.yml:44). Do not use it as a freshness signal for vehicles; use recorded_at.
+          End of the 3-minute sample bucket, UTC (TIMESTAMPTZ on disk). NOT ingest time and not the time the position was measured: extract.py's SAMPLE BY 3m labels each bucket and this is the bucket's end. Do not use it as a freshness signal for vehicles; use recorded_at.
       - id: ex_bus_id
         name: bus_id
         logicalType: string
@@ -210,7 +213,7 @@ schema:
         logicalType: integer
         physicalType: BIGINT
         description: >-
-          The feed's own per-record observation time, epoch MILLIS (last value in the bucket). Often stale: a dead record keeps its original RecordedAtTime, so it is only a sort tiebreak in int_pings_segmented_to_journeys. NULL in any file written before extract.py carried it, 2026-09-20 (_bods__sources.yml:112).
+          The feed's own per-record observation time, epoch MILLIS (last value in the bucket). Often stale: a dead record keeps its original RecordedAtTime, so it is only a sort tiebreak in int_pings_segmented_to_journeys. NULL in any file written before extract.py carried it, 2026-09-20.
 
 slaProperties:
   - property: frequency

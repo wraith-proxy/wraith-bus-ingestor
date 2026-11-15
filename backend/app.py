@@ -22,13 +22,13 @@ try:  # stdlib, but the zone DATA is a separate package on slim images
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 
+import schemas
 import tiebreak
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify
 from flask_cors import CORS
 from flask_smorest import Api, Blueprint
 
 import gtfs
-import schemas
 
 try:  # duckdb is optional at import time so a missing driver degrades, not crashes
     import duckdb
@@ -1279,8 +1279,12 @@ def buses():
 @buses_blp.route('/bus/<bus_id>')
 @buses_blp.arguments(schemas.BusDetailQuerySchema, location='query')
 @buses_blp.response(200, schemas.BusDetailSchema)
-@buses_blp.alt_response(400, schema=schemas.ApiErrorSchema, description='Invalid bus_id or operator.')
-@buses_blp.alt_response(404, schema=schemas.ApiErrorSchema, description='bus_id not currently live.')
+@buses_blp.alt_response(
+    400, schema=schemas.ApiErrorSchema, description="Invalid bus_id or operator."
+)
+@buses_blp.alt_response(
+    404, schema=schemas.ApiErrorSchema, description="bus_id not currently live."
+)
 @buses_blp.alt_response(503, schema=schemas.ApiErrorSchema, description='QuestDB unavailable.')
 def bus_detail(args, bus_id):
     """One vehicle. bus_id alone is not unique across operators, so an optional

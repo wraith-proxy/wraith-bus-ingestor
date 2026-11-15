@@ -54,9 +54,12 @@ def _learn(con, rows):
     with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
         json.dump([dict(zip("operator line origin_ref dest_ref bus".split(), r)) for r in rows], f)
         f.flush()
-        con.execute("create or replace temp table _live as select operator::varchar as operator, "
-                    "line::varchar as line, origin_ref::varchar as origin_ref, dest_ref::varchar as dest_ref, "
-                    f"bus::varchar as bus from read_json('{f.name}')")
+        con.execute(
+            "create or replace temp table _live as select operator::varchar as operator, "
+            "line::varchar as line, origin_ref::varchar as origin_ref, "
+            "dest_ref::varchar as dest_ref, "
+            f"bus::varchar as bus from read_json('{f.name}')"
+        )
     # One candidate per (bus, gtfs op/line). Another operator is allowed only
     # when the live operator has no same-operator match on ANY of its rows AND
     # the live operator exists in GTFS at all (a renamed/consolidated NOC).
@@ -97,13 +100,20 @@ def _learn(con, rows):
 def _load_review(con):
     """Allowlist from the review csv: only accepted pairs with no reject row (reject wins).
     Missing/unparseable csv means an empty allowlist: fail closed, never fail the refresh."""
-    con.execute("create or replace temp table _allow(lo varchar, ll varchar, go varchar, gl varchar)")
-    con.execute("create or replace temp table _reviewed(lo varchar, ll varchar, go varchar, gl varchar)")
+    con.execute(
+        "create or replace temp table _allow(lo varchar, ll varchar, go varchar, gl varchar)"
+    )
+    con.execute(
+        "create or replace temp table _reviewed(lo varchar, ll varchar, go varchar, gl varchar)"
+    )
     try:
         decided = {}
         with open(REVIEW_CSV, newline="", encoding="utf-8-sig") as f:
             for r in csv.DictReader(f):
-                k = tuple((r[c] or "").strip() for c in ("live_operator", "live_line", "gtfs_operator", "gtfs_line"))
+                k = tuple(
+                    (r[c] or "").strip()
+                    for c in ("live_operator", "live_line", "gtfs_operator", "gtfs_line")
+                )
                 d = (r["decision"] or "").strip().lower()
                 decided.setdefault(k, set()).add(d)
         for k, ds in decided.items():
@@ -118,12 +128,14 @@ def _load_review(con):
 
 
 def _apply_allowlist(con):
-    """Drop learned rows not accepted in the review csv; log the never-reviewed ones as proposals."""
+    """Drop learned rows not accepted in the review csv; log never-reviewed ones as proposals."""
     keys = "(live_operator, live_line, gtfs_operator, gtfs_line)"
     bad = f"source = 'learned' and {keys} not in (select lo, ll, go, gl from _allow)"
-    new = con.execute(f"select live_operator, live_line, gtfs_operator, gtfs_line from gtfs_line_alias "
-                      f"where {bad} and {keys} not in (select lo, ll, go, gl from _reviewed) "
-                      "order by 1, 2, 3, 4").fetchall()
+    new = con.execute(
+        f"select live_operator, live_line, gtfs_operator, gtfs_line from gtfs_line_alias "
+        f"where {bad} and {keys} not in (select lo, ll, go, gl from _reviewed) "
+        "order by 1, 2, 3, 4"
+    ).fetchall()
     con.execute(f"delete from gtfs_line_alias where {bad}")
     if new:
         pairs = ", ".join(f"{a}/{b}->{c}/{d}" for a, b, c, d in new[:20])
@@ -151,19 +163,29 @@ def _carry(con, previous_db_path, seen_live=False):
         print("build_alias: no previous DB, nothing carried over", flush=True)
         return
     try:
-        con.execute(f"attach '{previous_db_path.replace(chr(39), chr(39)*2)}' as _prev (read_only)")
+        con.execute(
+            f"attach '{previous_db_path.replace(chr(39), chr(39) * 2)}' as _prev (read_only)"
+        )
         pool = "select * from _prev.gtfs_line_alias"
         n_prev = con.execute(f"select count(*) from ({pool})").fetchone()[0]
-        skip = "and (live_operator, live_line) not in (select operator, line from _live)" if seen_live else ""
+        skip = (
+            "and (live_operator, live_line) not in (select operator, line from _live)"
+            if seen_live
+            else ""
+        )
         cols = {r[0] for r in con.execute("describe _prev.gtfs_line_alias").fetchall()}
         # Rule rows are regenerated from GTFS every run, never carried. A
         # pre-source table has only learned rows.
         learned = "and source = 'learned'" if "source" in cols else ""
         con.execute(f"""insert into gtfs_line_alias
-            select live_operator, live_line, gtfs_operator, gtfs_line, n_buses, share, 'learned' from ({pool})
-            where (live_operator, live_line) not in (select operator, line from gtfs_route_patterns)
-              and (gtfs_operator, gtfs_line) in (select operator, line from gtfs_route_patterns)
-              and (live_operator, live_line) not in (select live_operator, live_line from gtfs_line_alias)
+            select live_operator, live_line, gtfs_operator, gtfs_line, n_buses, share,
+                   'learned' from ({pool})
+            where (live_operator, live_line)
+                  not in (select operator, line from gtfs_route_patterns)
+              and (gtfs_operator, gtfs_line)
+                  in (select operator, line from gtfs_route_patterns)
+              and (live_operator, live_line)
+                  not in (select live_operator, live_line from gtfs_line_alias)
               {learned} {skip}""")
         print(f"build_alias: carried previous aliases over (previous table had {n_prev}; "
               "rows now invalid, re-learned or superseded were not copied)", flush=True)

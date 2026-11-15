@@ -1,0 +1,436 @@
+# Wraith Bus Ingestor -- Ossie semantic model: objects, links and metrics ONLY.
+#
+# Pinned to the Apache Ossie spec at
+#   apache/ossie            e53fda3c61ebe1bfb169e2c341529426fb348ee7
+# and to the converter at
+#   apache/ossie-converters c6ecd781c3ec43326432b00a938e5bfe24584877
+# (ossie-converters at that SHA targets the Ossie python package as of
+# 21d14d7a4044e71a19ea46d024c974a57323174a, version 0.2.0.dev0 with
+# OssieCustomExtension; the pinned spec SHA above is newer and incompatible with it.
+# This file uses no extensions. Its `version` follows the pinned spec; the
+# converter run needs `version: 0.2.0.dev0`. Time dimension: none, see ticket #52.)
+#
+# The Foundry-style file, wraith-bus-ingestor.ontology.yaml, stays the SOURCE of
+# bindings, enums, nullability, computed properties and functions. This file is a
+# projection of its objects and links plus the metrics; contracts/validate.py
+# (validate_ossie_model) proves every dataset and field here agrees with that
+# file's bindings and, through them, with the ODCS contracts.
+#
+# A dataset source is "<contract alias>.<contract object>" using the aliases in
+# the Foundry file's `contracts:` list. Fields are named by the Foundry apiName and
+# read the bound contract column. Left out on purpose:
+#   - vehicleWorking: Vehicle -> Journey joins on a 4-field key; Ossie
+#     relationships need the "to" side to be a key, and (operatorRef, journeyRef)
+#     is not one.
+#   - lineServesLocality: many-to-many, modelled as the LineLocality join table.
+#   - median/p90 delay: not additive across grains, so not a metric.
+# No field is marked a time dimension: no mart has a time column (see ticket #52).
+---
+version: 0.3.0.dev0
+name: wraith_bus_ingestor
+description: Objects, links and metrics of the Wraith bus network, projected from the Foundry-style ontology.
+datasets:
+- name: Vehicle
+  source: positions.bus_positions
+  primary_key:
+  - operatorRef
+  - busId
+  description: 'A physical bus currently reporting its position. Identified by (operatorRef, busId), NOT
+    busId: operators mint their own vehicle references, so one busId can be several unrelated buses (bus
+    ''154'' is a Hampshire, a Cornwall and a Luton vehicle at the same instant). operatorRef is null only
+    for data before 2026-09-12; treat that as its own stream.'
+  fields:
+  - name: busId
+    expression:
+      sql: bus_id
+    datatype: String
+  - name: latitude
+    expression:
+      sql: lat
+    datatype: Float
+  - name: longitude
+    expression:
+      sql: lon
+    datatype: Float
+  - name: bearing
+    expression:
+      sql: bearing
+    datatype: Float
+  - name: recordedAt
+    expression:
+      sql: recorded_at
+    datatype: Integer
+  - name: lineId
+    expression:
+      sql: line
+    datatype: String
+  - name: operatorRef
+    expression:
+      sql: operator
+    datatype: String
+  - name: journeyRef
+    expression:
+      sql: journey_ref
+    datatype: String
+- name: Journey
+  source: positions.bus_positions
+  primary_key:
+  - operatorRef
+  - journeyRef
+  - originRef
+  - originAimedDeparture
+  description: One working of a line by an operator, from an origin stop at an aimed departure time to
+    a destination stop at an aimed arrival time. journeyRef is an operator's own code ('0910', '22'),
+    so it repeats across operators and identifies a journey only together with operatorRef.
+  fields:
+  - name: operatorRef
+    expression:
+      sql: operator
+    datatype: String
+  - name: journeyRef
+    expression:
+      sql: journey_ref
+    datatype: String
+  - name: lineId
+    expression:
+      sql: line
+    datatype: String
+  - name: direction
+    expression:
+      sql: direction
+    datatype: String
+  - name: originRef
+    expression:
+      sql: origin_ref
+    datatype: String
+  - name: destinationRef
+    expression:
+      sql: dest_ref
+    datatype: String
+  - name: originAimedDeparture
+    expression:
+      sql: origin_aimed_dep
+    datatype: Integer
+  - name: destinationAimedArrival
+    expression:
+      sql: dest_aimed_arr
+    datatype: Integer
+- name: Line
+  source: gtfs.gtfs_line_localities
+  primary_key:
+  - lineId
+  description: A published service number. See ServiceNumber -- this is not a unique route. Known from
+    the timetable, so London (no timetable) has no Line objects.
+  fields:
+  - name: lineId
+    expression:
+      sql: line
+    datatype: String
+- name: Operator
+  source: positions.bus_positions
+  primary_key:
+  - operatorRef
+  description: A bus company, identified by its National Operator Code.
+  fields:
+  - name: operatorRef
+    expression:
+      sql: operator
+    datatype: String
+- name: Stop
+  source: gtfs.naptan_stops
+  primary_key:
+  - atcoCode
+  description: 'A NaPTAN bus stop. National, London included: this is what places a bus''s origin and
+    destination. Latitude and longitude are text in NaPTAN; the API casts them.'
+  fields:
+  - name: atcoCode
+    expression:
+      sql: ATCOCode
+    datatype: String
+  - name: stopName
+    expression:
+      sql: CommonName
+    datatype: String
+  - name: localityName
+    expression:
+      sql: LocalityName
+    datatype: String
+  - name: latitude
+    expression:
+      sql: Latitude
+    datatype: String
+  - name: longitude
+    expression:
+      sql: Longitude
+    datatype: String
+- name: LineStop
+  source: gtfs.gtfs_route_stops
+  primary_key:
+  - operatorRef
+  - lineId
+  - direction
+  - patternId
+  - sequence
+  description: 'A stop''s place in one timetable pattern of a line, with its scheduled time from the pattern''s
+    first stop. Modelled as an object rather than a plain link because it carries properties of its own.
+    Timetable-only: none exist for London.'
+  fields:
+  - name: operatorRef
+    expression:
+      sql: operator
+    datatype: String
+  - name: lineId
+    expression:
+      sql: line
+    datatype: String
+  - name: direction
+    expression:
+      sql: direction
+    datatype: String
+  - name: patternId
+    expression:
+      sql: pattern_id
+    datatype: Integer
+  - name: atcoCode
+    expression:
+      sql: atco_code
+    datatype: String
+  - name: sequence
+    expression:
+      sql: seq
+    datatype: Integer
+  - name: scheduledSecondsFromOrigin
+    expression:
+      sql: sched_secs_from_origin
+    datatype: Float
+- name: Locality
+  source: marts.localities
+  primary_key:
+  - localityNorm
+  description: A settlement with at least one bus stop. The unit the user searches by.
+  fields:
+  - name: localityNorm
+    expression:
+      sql: locality_norm
+    datatype: String
+  - name: localityName
+    expression:
+      sql: locality
+    datatype: String
+  - name: latitude
+    expression:
+      sql: lat
+    datatype: Float
+  - name: longitude
+    expression:
+      sql: lon
+    datatype: Float
+  - name: stopCount
+    expression:
+      sql: n_stops
+    datatype: Integer
+- name: TravelTimeModel
+  source: marts.eta_models
+  primary_key:
+  - operatorRef
+  - lineId
+  - direction
+  - dayType
+  - hourBand
+  description: A fitted linear regression of remaining seconds on remaining kilometres for one temporal
+    grain. The coefficients are the model; there is no artefact.
+  fields:
+  - name: operatorRef
+    expression:
+      sql: operator
+    datatype: String
+  - name: lineId
+    expression:
+      sql: line
+    datatype: String
+  - name: direction
+    expression:
+      sql: direction
+    datatype: String
+  - name: dayType
+    expression:
+      sql: day_type
+    datatype: String
+  - name: hourBand
+    expression:
+      sql: hour_band
+    datatype: String
+  - name: slopeSecondsPerKm
+    expression:
+      sql: slope_s_per_km
+    datatype: Float
+  - name: interceptSeconds
+    expression:
+      sql: intercept_s
+    datatype: Float
+  - name: rSquared
+    expression:
+      sql: r2
+    datatype: Float
+  - name: observations
+    expression:
+      sql: n_obs
+    datatype: Integer
+  - name: meanSpeedKmh
+    expression:
+      sql: mean_speed_kmh
+    datatype: Float
+- name: PunctualityProfile
+  source: marts.line_punctuality
+  primary_key:
+  - lineId
+  - direction
+  - dayType
+  - hourBand
+  description: 'Observed lateness at journey end for a line and temporal grain. Proposed rather than active:
+    it needs aimed times, which have only been captured since 2026-09-12, so it is legitimately empty
+    on a fresh install.'
+  fields:
+  - name: lineId
+    expression:
+      sql: line
+    datatype: String
+  - name: direction
+    expression:
+      sql: direction
+    datatype: String
+  - name: dayType
+    expression:
+      sql: day_type
+    datatype: String
+  - name: hourBand
+    expression:
+      sql: hour_band
+    datatype: String
+  - name: medianDelaySeconds
+    expression:
+      sql: median_delay_s
+    datatype: Float
+  - name: p90DelaySeconds
+    expression:
+      sql: p90_delay_s
+    datatype: Float
+  - name: journeyCount
+    expression:
+      sql: n_journeys
+    datatype: Integer
+- name: LineLocality
+  source: gtfs.gtfs_line_localities
+  primary_key:
+  - lineId
+  - localityNorm
+  description: Join table behind lineServesLocality (many-to-many in the Foundry file; Ossie relationships
+    are many-to-one, so it is two relationships through this dataset). Published from the timetable, not
+    observed.
+  fields:
+  - name: lineId
+    expression:
+      sql: line
+    datatype: String
+  - name: localityNorm
+    expression:
+      sql: locality_norm
+    datatype: String
+  - name: stopCount
+    expression:
+      sql: n_stops
+    datatype: Integer
+relationships:
+- name: vehicleOperatedBy
+  from: Vehicle
+  from_columns:
+  - operatorRef
+  to: Operator
+  to_columns:
+  - operatorRef
+- name: journeyOnLine
+  from: Journey
+  from_columns:
+  - lineId
+  to: Line
+  to_columns:
+  - lineId
+- name: journeyStartsAt
+  from: Journey
+  from_columns:
+  - originRef
+  to: Stop
+  to_columns:
+  - atcoCode
+- name: journeyEndsAt
+  from: Journey
+  from_columns:
+  - destinationRef
+  to: Stop
+  to_columns:
+  - atcoCode
+- name: lineCallsAt
+  from: LineStop
+  from_columns:
+  - lineId
+  to: Line
+  to_columns:
+  - lineId
+- name: lineStopIsStop
+  from: LineStop
+  from_columns:
+  - atcoCode
+  to: Stop
+  to_columns:
+  - atcoCode
+- name: lineHasTravelTimeModel
+  from: TravelTimeModel
+  from_columns:
+  - lineId
+  to: Line
+  to_columns:
+  - lineId
+- name: lineHasPunctualityProfile
+  from: PunctualityProfile
+  from_columns:
+  - lineId
+  to: Line
+  to_columns:
+  - lineId
+- name: lineLocalityIsLine
+  from: LineLocality
+  from_columns:
+  - lineId
+  to: Line
+  to_columns:
+  - lineId
+- name: lineLocalityIsLocality
+  from: LineLocality
+  from_columns:
+  - localityNorm
+  to: Locality
+  to_columns:
+  - localityNorm
+metrics:
+- name: journey_count
+  expression:
+    sql: SUM(PunctualityProfile.journeyCount)
+  description: 'Journeys observed (sum of n_journeys across grains). Delay summaries are
+    not metrics: they do not add up across grains.'
+  datatype: Float
+- name: eta_observations
+  expression:
+    sql: SUM(TravelTimeModel.observations) FILTER (WHERE TravelTimeModel.operatorRef != '*')
+  description: "Pings behind the fitted travel-time models, real operators only. eta_models carries
+    '*' rollup rows that repeat the same pings, so any metric over it must filter operator != '*'."
+  datatype: Float
+- name: locality_stop_count
+  expression:
+    sql: SUM(Locality.stopCount)
+  description: Stops (n_stops) across all localities with a bus stop.
+  datatype: Float
+- name: locality_count
+  expression:
+    sql: COUNT(DISTINCT Locality.localityNorm)
+  description: Localities with at least one bus stop.
+  datatype: Float

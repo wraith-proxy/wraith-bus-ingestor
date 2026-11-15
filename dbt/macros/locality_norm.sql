@@ -4,7 +4,7 @@
   ("Ashton-under-Lyne", "St. Helens", "Newcastle  upon Tyne"), so a user typing
   "ASHTON UNDER LYNE" must land on the same key.
 
-  Rule (frozen in CONTRACT.md s2): uppercase, strip everything that is not a
+  Rule (frozen in contracts/bus-cdp.odcs.yaml): uppercase, strip everything that is not a
   letter/digit/space, collapse runs of spaces, trim.
 #}
 {% macro locality_norm(expr) -%}
