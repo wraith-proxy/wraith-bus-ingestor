@@ -18,8 +18,10 @@
 #          root-owned .duckdb files in dbt/), under `time -v`. Reuses the parquet
 #          already in dbt/data/. Peak RSS is the largest single process, i.e. the
 #          DuckDB one that OOM'd at profiles.yml's 4GB memory_limit on 2026-09-19.
-#   Run 2  the real thing: `systemctl start wraith-bus-build.service` -- extract
-#          from QuestDB, build, test, publish, under the unit's MemoryMax cap, with
+#   Run 2  the real thing: `systemctl start wraith-bus-build.service` -- build,
+#          test, publish, under the unit's MemoryMax cap. Once the event trigger
+#          is installed the unit sets SKIP_EXTRACT=1, so this REUSES dbt/data and
+#          does not extract (start wraith-bus-extract.service for a fresh pull); with
 #          the unit's own container stop/start and nginx reload. Peak memory is
 #          sampled from the unit's cgroup and read from the journal.
 #
@@ -225,7 +227,7 @@ sample_rss() {   # every 5s: largest single process + total RSS in the unit's cg
 }
 run2() {
   major "STAGE 4  RUN 2 of 2 -- full production run via systemd  (~1.5h)"
-  minor "extracts from QuestDB (it restarts between days), builds, tests, publishes, under the unit's cap"
+  minor "builds (reuses dbt/data if SKIP_EXTRACT=1 is set by the unit), tests, publishes, under the unit's cap"
   local t0 since; t0=$(date +%s); since=$(date '+%Y-%m-%d %H:%M:%S'); RUN2_T0=$t0
   local before_mtime; before_mtime=$(mtime "$MARTS")
   : > "$LOGDIR/rss2.txt"

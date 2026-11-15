@@ -13,6 +13,12 @@ Two host units, installed by the owner with `sudo ops/install_event_trigger.sh`
    hook. Its first `ExecStartPre` deletes the marker, so a failing build cannot
    retrigger itself. It sets `SKIP_EXTRACT=1` (the extract already ran).
 
+For a fresh run by hand, start `wraith-bus-extract.service`, not the build unit:
+`sudo systemctl start wraith-bus-build.service` sets `SKIP_EXTRACT=1` and silently
+reuses whatever is already in `dbt/data/`. Stale input shows up as an `SLA breach`
+line in `build.log` (from `ops/sla_check.py`); the build stops and the previous
+marts keep serving.
+
 The timer and the path unit are never both enabled for the build. Alerts: no
 successful build row in 25.5 hours is the non-paging "waiting on the
 extract" rule; a failed build is a warning; only `marts state not ok` (the API
@@ -272,7 +278,8 @@ A clean isolated `dbt run` proved little on 2026-09-18/19: the failures only
 showed under the real nightly conditions. This runs **Run 1**, `SKIP_EXTRACT=1
 ./build.sh` as your user under `time -v` (peak RSS of the biggest process, the
 DuckDB one that hits `memory_limit`), then **Run 2**, `systemctl start
-wraith-bus-build.service` (the production path: extract, build, test, publish,
+wraith-bus-build.service` (the production path after the event-trigger install: it
+reuses `dbt/data` rather than extracting; build, test, publish,
 under the unit's `MemoryMax`, sampling peak RSS from its cgroup). It stops the
 containers the unit stops plus ollama/immich (all restored by a trap however it
 exits), reclaims swap first, and afterwards checks the marts were republished,
