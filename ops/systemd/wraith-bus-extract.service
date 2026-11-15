@@ -15,3 +15,23 @@ ExecStart=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/.venv
 ExecStart=/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/.venv/bin/python3 /home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/ops/ready_gate.py /home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/contracts/bus-positions-extract.odcs.yaml /home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/data /home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/data/.extract_ready
 StandardOutput=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/extract.log
 StandardError=append:/home/thomaspeoples/pjt-nas/nas/compose-data/wraith-bus-ingestor/dbt/extract.log
+
+# Resource limits (2026-11-15, review finding #4 on #59). The extract used to run
+# inside wraith-bus-build.service, under its MemoryMax and after the container
+# stops. As its own unit it shares the host with osrm, backend, tiles, immich and
+# ollama, so it gets a cap and low priority instead.
+#
+# MemoryMax=6000M is NOT measured on the current 4-day window. It comes from the
+# 2026-09-15 retest (see wraith-bus-build.service history): the extraction got 7
+# of 8 days through clean under 6000M, and the window is half that now. Time one
+# real extract (peak cgroup memory) before relying on it, and move the number to
+# the measured peak plus margin. MemorySwapMax=0 makes a breach fail fast and
+# contained, as in the build unit.
+#
+# No container stops here, deliberately: the build unit stops them seconds later,
+# and a start/stop pair in between would reassign their IPs on ghost-net and 502
+# nginx until it is reloaded. QuestDB must stay up for the extract itself.
+MemoryMax=6000M
+MemorySwapMax=0
+Nice=10
+IOSchedulingClass=idle

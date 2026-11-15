@@ -43,6 +43,19 @@ def test_build_keeps_limits_and_hooks():
     assert lines("wraith-bus-build.service", "Environment") == ["SKIP_EXTRACT=1"]
 
 
+def test_extract_is_capped_and_does_not_stop_containers():
+    """The extract shares the host with osrm/backend/tiles/immich/ollama, so it carries a
+    cgroup cap and low CPU/IO priority. It must NOT stop containers: the build unit does that
+    seconds later, and a start/stop pair in between would reassign IPs and 502 nginx."""
+    unit = "wraith-bus-extract.service"
+    assert lines(unit, "MemoryMax") == ["6000M"]
+    assert lines(unit, "MemorySwapMax") == ["0"]
+    assert lines(unit, "Nice") == ["10"]
+    assert lines(unit, "IOSchedulingClass") == ["idle"]
+    text = (SYSTEMD / unit).read_text()
+    assert "docker stop" not in text and "build_window.sh" not in text
+
+
 def test_extract_on_old_schedule():
     assert "03:00:00" in (SYSTEMD / "wraith-bus-extract.timer").read_text()
 
