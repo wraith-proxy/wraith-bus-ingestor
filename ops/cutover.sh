@@ -40,9 +40,10 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 # no .venv, and a uv-managed run there would resolve and download the whole project).
 # Resolved one tool at a time: the repo venv has python but not always datacontract (the
 # 2026-11-15 live run found it in ~/.local/bin only), so each falls back to PATH on its own.
-PY=python3; DCLI=datacontract
+PY=python3; DCLI=datacontract; DBT=dbt
 [[ -x "$REPO/.venv/bin/python3" ]] && PY="$REPO/.venv/bin/python3"
 [[ -x "$REPO/.venv/bin/datacontract" ]] && DCLI="$REPO/.venv/bin/datacontract"
+[[ -x "$REPO/.venv/bin/dbt" ]] && DBT="$REPO/.venv/bin/dbt"
 DRY=0; PROMPT=1
 for a in "$@"; do
   case "$a" in
@@ -64,11 +65,11 @@ OLD_REF="${CUTOVER_OLD_REF:-origin/main}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 LOGDIR="${CUTOVER_LOGDIR:-$REPO/ops/logs}/cutover-$STAMP"
 # absolute: the build runs inside the extracted copies, where ../.venv does not exist
-DEFAULT_BUILD="$REPO/.venv/bin/dbt run --profiles-dir . --vars \"{extract_days: 4}\""
+DEFAULT_BUILD="$DBT run --profiles-dir . --vars \"{extract_days: 4}\""
 # git archive omits the gitignored dbt/dbt_packages, so each copy links to the repo's
 PACKAGES="${CUTOVER_PACKAGES:-$REPO/dbt/dbt_packages}"
 BUILD_CMD="${CUTOVER_BUILD_CMD:-$DEFAULT_BUILD}"
-DEFAULT_TEST="$REPO/.venv/bin/dbt test --profiles-dir . --vars \"{extract_days: 4}\""
+DEFAULT_TEST="$DBT test --profiles-dir . --vars \"{extract_days: 4}\""
 TEST_CMD="${CUTOVER_TEST_CMD:-$DEFAULT_TEST}"
 
 mkdir -p "$LOGDIR"
@@ -137,7 +138,17 @@ if [[ -z "${CUTOVER_SRC_ONLY:-}" ]]; then
   [[ "$(git -C "$REPO" rev-parse "$OLD_REF^{tree}")" != "$(git -C "$REPO" rev-parse 'HEAD^{tree}')" ]] \
     || die "baseline $OLD_REF and HEAD have the same tree: the compare would prove nothing. Set CUTOVER_OLD_REF to the commit or tag from before the merge"
 fi
-say "tools: python=$PY datacontract=$DCLI"
+# every tool a stage will really run must resolve now, not hours into the build; a tool whose
+# stage is replaced by a CUTOVER_*_CMD override is not demanded
+need() {
+  if [[ "$1" == */* ]]; then [[ -x "$1" ]] && return 0
+  else command -v "$1" >/dev/null && return 0; fi
+  die "$2 not found: looked in $REPO/.venv/bin/$2, then PATH=$PATH"
+}
+[[ -n "${CUTOVER_VALIDATE_CMD:-}" ]] || need "$PY" python3
+[[ -n "${CUTOVER_LINT_CMD:-}" ]] || need "$DCLI" datacontract
+[[ -n "${CUTOVER_BUILD_CMD:-}" && -n "${CUTOVER_TEST_CMD:-}" ]] || need "$DBT" dbt
+say "tools: python=$PY datacontract=$DCLI dbt=$DBT"
 say "preflight ok"
 
 stage "STAGE 1 backup"
