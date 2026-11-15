@@ -345,7 +345,7 @@ schema:
     logicalType: string
     physicalType: VARCHAR
     required: true
-    description: The search key. Uppercased, punctuation stripped, spaces collapsed, so that "ASHTON UNDER LYNE" typed into the box matches "Ashton-under-Lyne" in the register. Frozen in CONTRACT.md s2 because backend/app.py normalises the query the same way.
+    description: The search key. Uppercased, punctuation stripped, spaces collapsed, so that "ASHTON UNDER LYNE" typed into the box matches "Ashton-under-Lyne" in the register. Frozen in this contract because backend/app.py normalises the query the same way.
     customProperties:
     - property: typeInferredFrom
       value: 'dbt/models/staging/naptan/stg_naptan__stops.sql:52 (macros/locality_norm.sql: trim(regexp_replace(upper(..)))'

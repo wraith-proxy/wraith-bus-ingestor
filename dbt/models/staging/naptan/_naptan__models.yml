@@ -41,6 +41,6 @@ models:
         description: >
           The search key. Uppercased, punctuation stripped, spaces collapsed, so
           that "ASHTON UNDER LYNE" typed into the box matches
-          "Ashton-under-Lyne" in the register. Frozen in CONTRACT.md s2 because
+          "Ashton-under-Lyne" in the register. Frozen in contracts/bus-cdp.odcs.yaml because
           backend/app.py normalises the query the same way.
         tests: [not_null]

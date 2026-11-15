@@ -13,7 +13,7 @@ CREATE OR REPLACE TEMP MACRO gtfs_secs(t) AS
             + try_cast(split_part(t, ':', 3) AS INTEGER)
     END;
 
--- Same rule as the dbt locality_norm macro (frozen in CONTRACT.md s2):
+-- Same rule as the dbt locality_norm macro (frozen in contracts/bus-cdp.odcs.yaml):
 -- uppercase, non-alphanumerics to space, collapse runs, trim. Keep in step
 -- with dbt/macros/locality_norm.sql or the search keys stop matching.
 CREATE OR REPLACE TEMP MACRO gtfs_locality_norm(x) AS

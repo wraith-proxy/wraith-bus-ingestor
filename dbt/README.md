@@ -115,10 +115,11 @@ Useful during development:
 ../.venv/bin/dbt test --profiles-dir . --select eta_models
 ```
 
-There is no `packages.yml` and no `dbt deps` step: this project needs no
-packages. It would have taken a dependency on `dbt_utils` for exactly one macro
-(`unique_combination_of_columns`), and writing those assertions as singular
-tests in `tests/` was cheaper than carrying the dependency.
+`packages.yml` pins one package, `metaplane/dbt_expectations` (`>=0.10.0,<0.11.0`,
+added 2026-09-15 for the `bus_positions` data-quality tests), and `build.sh`
+runs `dbt deps` when the file is present. The project takes no dependency on
+`dbt_utils`: the one macro it would have used (`unique_combination_of_columns`)
+is written as singular tests in `tests/`.
 
 ---
 
