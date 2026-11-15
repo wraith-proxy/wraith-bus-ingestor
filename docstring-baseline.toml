@@ -1,0 +1,7 @@
+# Files not yet converted to Google-style docstrings (#60).
+#
+# Ruff reads this through `extend` in pyproject.toml and lets exactly these files fail
+# the D rules. The list may only shrink: when a conversion slice makes a file pass, delete
+# its line here (tests/test_docstring_baseline.py fails if a passing file is left, or if
+# a file is added). Do not list tests or generated files; they are exempt already.
+[lint.extend-per-file-ignores]

@@ -43,7 +43,7 @@ build output in `build-baseline.log` and `build-candidate.log`):
 | 1 backup | whole file to `/mnt/vault2/wraith-bus-ingestor-build-backup/` | nothing changed |
 | 2 copies | BASELINE (old code, `CUTOVER_OLD_REF`, the pre-merge commit) and CANDIDATE (this code), each a copy of the file, sharing `data/` | live file untouched |
 | 3 build | `dbt run` in each copy | live file untouched |
-| 4 compare | `ops/cutover_compare.py` on `eta_models`, `localities`, `line_punctuality`: row counts and every non-DOUBLE column exactly; DOUBLE columns within `1e-6 + 1e-9*|x|` (3-thread sums are not bit-reproducible) | live file untouched |
+| 4 compare, then test | `ops/cutover_compare.py` on `eta_models`, `localities`, `line_punctuality` and the history tables `int_eta_daily_stats`, `int_journey_delays`: row counts and every non-DOUBLE column exactly; DOUBLE columns within `1e-6 + 1e-9*|x|` (3-thread sums are not bit-reproducible). Then `dbt test` in the candidate copy (`test-candidate.log`; override with `CUTOVER_TEST_CMD`) | live file untouched |
 | 5 validate | offline `datacontract lint`, then `contracts/validate.py` on the candidate | live file untouched |
 | 6 swap | hard-link the old file to `<file>.pre-cutover-<stamp>`, then one atomic `mv` | old file in place |
 
@@ -57,8 +57,8 @@ the `MISMATCH` lines, fix on the branch, and rerun; nothing live has changed.
 ## After the swap
 
 Three nightly builds on the ready event must pass with zero pages. Then delete
-`dbt/cutover-work/` and the `.pre-cutover-*` file, and record the SQL ratchet
-baseline (`ops/sql_ratchet.py`).
+`dbt/cutover-work/` and the `.pre-cutover-*` file, and lower the SQL ratchet
+baseline: it counts models, macros and dbt tests, and fails when the measured count differs from `ops/sql_baseline.txt`, so run `python3 ops/sql_ratchet.py --update` and commit the new baseline (`ops/sql_ratchet.py`).
 
 ## Rollback
 

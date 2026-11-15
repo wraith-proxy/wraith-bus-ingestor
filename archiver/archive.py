@@ -1,5 +1,7 @@
-"""Moves bus_positions days older than RETENTION_DAYS off the hot QuestDB
-disk and onto cold storage as Parquet, instead of deleting them.
+"""Moves bus_positions days older than RETENTION_DAYS off the hot QuestDB disk to Parquet.
+
+The days go off the hot QuestDB
+disk and onto cold storage as Parquet, instead of being deleted.
 
 Why Parquet rather than QuestDB's own partition files (docs/adr/0007): a
 DETACHed QuestDB partition is not self-contained. Its SYMBOL columns are
@@ -17,6 +19,13 @@ read back and matches QuestDB row for row.
 
 Each run also records itself in QuestDB (`archiver_runs`), which is what the
 Grafana alert rules read: Grafana can see QuestDB, not this drive.
+
+This module must never drop a partition before its Parquet file has been read
+back and verified, and must never write unless the archive sentinel file is
+present.
+
+Environment:
+    QUESTDB_URL, RETENTION_DAYS, ARCHIVE_OWNER (uid:gid for written files).
 """
 import glob
 import json
@@ -71,19 +80,42 @@ except OSError:
 
 
 def log(msg):
+    """Log a line to stdout and the archive log file.
+
+    Args:
+        msg: Message to log.
+    """
     _logger.info(msg)
 
 
 def qdb_exec(query, timeout=30):
+    """Run a SQL statement against QuestDB's /exec endpoint.
+
+    Args:
+        query: SQL text.
+        timeout: Request timeout in seconds.
+
+    Returns:
+        The decoded JSON response.
+
+    Raises:
+        urllib.error.URLError: QuestDB is unreachable or returns an HTTP error.
+    """
     url = QUESTDB_URL + '/exec?' + urllib.parse.urlencode({'query': query})
     with urllib.request.urlopen(url, timeout=timeout) as resp:
         return json.load(resp)
 
 
 def attached_partitions():
-    """[(name, min_timestamp), ...] for partitions currently in the live
+    """List [(name, min_timestamp), ...] for the live table's partitions, oldest first.
+
+    These are the partitions currently in the live
     table, oldest first. A name that doesn't parse as a date is not ours to
-    touch -- this table is PARTITION BY DAY."""
+    touch -- this table is PARTITION BY DAY.
+
+    Returns:
+        A list of (name, min_timestamp) tuples.
+    """
     result = qdb_exec(
         f"SELECT name, minTimestamp FROM table_partitions('{TABLE}') "
         "WHERE attached = true ORDER BY minTimestamp")
@@ -98,14 +130,32 @@ def attached_partitions():
 
 
 def live_rows(name):
+    """Count the rows QuestDB holds for one day.
+
+    Args:
+        name: Partition name, a YYYY-MM-DD date.
+
+    Returns:
+        The live row count.
+    """
     return qdb_exec(
         f"SELECT count() FROM {TABLE} WHERE timestamp IN '{name}'")['dataset'][0][0]
 
 
 def export_day(name, dest):
-    """Stream QuestDB's own Parquet export of one day into `dest`. Streaming:
+    """Stream QuestDB's own Parquet export of one day into `dest`.
+
+    Streaming:
     the archiver's memory does not grow with the day (curl peaked at 11MB on a
-    34M-row day), and QuestDB peaked at ~4GB of its 8GB doing the same."""
+    34M-row day), and QuestDB peaked at ~4GB of its 8GB doing the same.
+
+    Args:
+        name: Partition name, a YYYY-MM-DD date.
+        dest: Local file path to write the Parquet file to.
+
+    Raises:
+        urllib.error.URLError: The export request failed or timed out.
+    """
     params = {
         'query': f"SELECT * FROM {TABLE} WHERE timestamp IN '{name}'",
         'fmt': 'parquet',
@@ -118,11 +168,19 @@ def export_day(name, dest):
 
 
 def parquet_stats(path):
-    """(rows, min_timestamp, max_timestamp) read back out of the file itself --
-    the proof, as opposed to trusting that the export worked. Timestamps come
+    """Return (rows, min_timestamp, max_timestamp) read back out of the file itself.
+
+    This is the proof, as opposed to trusting that the export worked. Timestamps come
     back as text: QuestDB writes TIMESTAMPTZ, and fetching one as a Python
     datetime needs pytz, which this slim image does not carry (found the hard
-    way on the first real run, 2026-09-19)."""
+    way on the first real run, 2026-09-19).
+
+    Args:
+        path: Path to the Parquet file.
+
+    Returns:
+        A tuple of (row count, min timestamp text, max timestamp text).
+    """
     import duckdb
     con = duckdb.connect()
     try:
@@ -136,6 +194,14 @@ def parquet_stats(path):
 
 
 def drop_partition(name):
+    """Drop one live partition from QuestDB.
+
+    Args:
+        name: Partition name, a YYYY-MM-DD date.
+
+    Returns:
+        True when QuestDB accepted the DDL, False (and an error logged) when not.
+    """
     resp = qdb_exec(f"ALTER TABLE {TABLE} DROP PARTITION LIST '{name}'")
     if 'ddl' not in resp:
         log(f'ERROR: DROP PARTITION failed for {name}: {resp!r}')
@@ -144,9 +210,18 @@ def drop_partition(name):
 
 
 def archive_one(name):
-    """'archived' | 'skipped' | 'failed'. 'skipped' means a day left in place
+    """Return 'archived', 'skipped' or 'failed' for one day.
+
+    'skipped' means a day left in place
     that a human should look at, without blocking the days behind it; 'failed'
-    stops the run."""
+    stops the run.
+
+    Args:
+        name: Partition name, a YYYY-MM-DD date.
+
+    Returns:
+        One of 'archived', 'skipped' or 'failed'.
+    """
     dest = os.path.join(PARQUET_DIR, name + '.parquet')
     expected = live_rows(name)
 
@@ -186,7 +261,13 @@ def archive_one(name):
 
 
 def run_once():
-    """(status, archived, skipped, detail). status: 'ok' | 'attention' | 'error'."""
+    """(status, archived, skipped, detail). status: 'ok' | 'attention' | 'error'.
+
+    Archives every attached partition older than RETENTION_DAYS, oldest first.
+
+    Returns:
+        A tuple of (status, archived count, skipped count, detail text).
+    """
     if not os.path.isfile(SENTINEL):
         detail = (f'{SENTINEL} missing -- archive volume is not really mounted (or the sentinel '
                   'got deleted). Refusing to touch any partitions this run rather than risk '
@@ -224,9 +305,18 @@ STATUS_DDL = (
 
 
 def record_run(status, archived, skipped, detail):
-    """One row per run: what the Grafana rules read. A failure to record must
+    """Record one row per run, which is what the Grafana rules read.
+
+    A failure to record must
     never take the archiver down -- and if QuestDB is unreachable the missing
-    row is itself the signal (the 'no clean run' rule fires)."""
+    row is itself the signal (the 'no clean run' rule fires).
+
+    Args:
+        status: 'ok', 'attention' or 'error'.
+        archived: Number of days archived this run.
+        skipped: Number of days skipped this run.
+        detail: Free text; truncated to 400 characters.
+    """
     try:
         detail = detail.replace("'", "''")[:400]
         qdb_exec(STATUS_DDL)
@@ -238,6 +328,7 @@ def record_run(status, archived, skipped, detail):
 
 
 def main():
+    """Run the archive once a day until SIGTERM or SIGINT."""
     stop = threading.Event()
 
     def handle_signal(signum, frame):

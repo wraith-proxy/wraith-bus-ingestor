@@ -38,6 +38,7 @@ def setup(tmp_path, cand):
                CUTOVER_MIN_MEM_MB="1", CUTOVER_TABLES="localities",
                CUTOVER_BUILD_CMD=STUB, CUTOVER_SRC_ONLY="1",
                CUTOVER_LINT_CMD="true", CUTOVER_VALIDATE_CMD="true",
+               CUTOVER_TEST_CMD="true",
                STUB_BASELINE=SAME, STUB_CANDIDATE=cand)
     return db, env
 
@@ -177,3 +178,36 @@ def test_same_tree_baseline_refused(tmp_path):
     env["CUTOVER_OLD_REF"] = "HEAD"
     r = run(env, "--dry-run")
     assert r.returncode != 0 and "same tree" in r.stdout and "CUTOVER_OLD_REF" in r.stdout
+
+
+def test_default_compare_covers_history_tables_and_dbt_test_is_planned(tmp_path):
+    _, env = setup(tmp_path, SAME)
+    del env["CUTOVER_TABLES"]
+    del env["CUTOVER_TEST_CMD"]
+    r = run(env, "--dry-run")
+    assert r.returncode == 0, r.stdout + r.stderr
+    compare = next(ln for ln in r.stdout.splitlines() if "would: compare" in ln)
+    for t in ("eta_models", "localities", "line_punctuality", "int_eta_daily_stats",
+              "int_journey_delays"):
+        assert t in compare, compare
+    assert "dbt test" in r.stdout and "candidate" in r.stdout
+
+
+def test_dbt_test_runs_in_candidate_copy_before_swap(tmp_path):
+    db, env = setup(tmp_path, SAME)
+    where = tmp_path / "where"
+    env["CUTOVER_TEST_CMD"] = f"pwd > {where}"
+    r = run(env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert where.read_text().strip().endswith("cutover-work/candidate/dbt")
+    assert r.stdout.index("dbt test") < r.stdout.index("STAGE 6 swap")
+
+
+def test_failing_dbt_test_blocks_swap(tmp_path):
+    db, env = setup(tmp_path, SAME)
+    env["CUTOVER_TEST_CMD"] = "echo FAIL assert_x; false"
+    r = run(env)
+    assert r.returncode == 1 and "dbt test failed" in r.stdout, r.stdout + r.stderr
+    assert "STAGE 5 validate" not in r.stdout and "STAGE 6 swap" not in r.stdout
+    assert not list(db.parent.glob("*.pre-cutover-*"))
+    assert list((tmp_path / "logs").glob("cutover-*/test-candidate.log"))

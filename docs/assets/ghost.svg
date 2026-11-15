@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Wraith ghost">
+  <!-- Ghost Stack mark: a ghost whose eyes are a shell prompt (>_). Original artwork. -->
+  <defs>
+    <mask id="eyes">
+      <rect width="64" height="64" fill="#fff"/>
+      <path d="M22 23l8 6.5-8 6.5" fill="none" stroke="#000" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="34" y="32" width="10" height="4.5" rx="1" fill="#000"/>
+    </mask>
+  </defs>
+  <path mask="url(#eyes)" fill="#5eead4" d="M12 54V28a20 20 0 0 1 40 0v26q-3.33 7-6.67 0t-6.67 0-6.66 0-6.67 0-6.67 0-6.66 0z"/>
+</svg>

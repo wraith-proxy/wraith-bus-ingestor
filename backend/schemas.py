@@ -15,12 +15,16 @@ field exactly":
   and running that through marshmallow's dump on every request would defeat
   the point of caching it. Its shape is documented via BusesResponseSchema
   for Swagger UI only.
+
+Must never be used to change a response's actual JSON, and must never validate
+or serialise /buses at request time.
 """
 
 from marshmallow import Schema, fields
 
 
 class ApiErrorSchema(Schema):
+    """Error body, {"error": <message>}, returned with a 4xx or 5xx status."""
     error = fields.String(required=True)
 
 
@@ -29,8 +33,11 @@ class ApiErrorSchema(Schema):
 # ---------------------------------------------------------------------------
 
 class BusFeaturePropertiesSchema(Schema):
-    """bus_properties()'s exact field set -- what every 'bus' Feature on
-    /buses and /route carries, and the base of BusDetailSchema below."""
+    """Schema of bus_properties()'s exact field set.
+
+    This is what every 'bus' Feature on /buses and /route carries, and the base of
+    BusDetailSchema below.
+    """
     bus_id = fields.String(allow_none=True)
     line = fields.String(allow_none=True)
     bearing = fields.Float(allow_none=True)
@@ -52,6 +59,7 @@ class BusFeaturePropertiesSchema(Schema):
 
 
 class ModelFitSchema(Schema):
+    """ETA regression fit behind a prediction: slope, intercept, R2, n_obs."""
     slope_s_per_km = fields.Float(allow_none=True)
     intercept_s = fields.Float(allow_none=True)
     r2 = fields.Float(allow_none=True)
@@ -60,6 +68,7 @@ class ModelFitSchema(Schema):
 
 
 class StopRefSchema(Schema):
+    """A stop reference: name, locality, ATCO code and position."""
     name = fields.String(allow_none=True)
     locality = fields.String(allow_none=True)
     atco = fields.String(allow_none=True)
@@ -68,22 +77,28 @@ class StopRefSchema(Schema):
 
 
 class LastStopSchema(StopRefSchema):
+    """The last stop a bus passed, with the time it was there."""
     time_iso = fields.String(allow_none=True, metadata={"format": "date-time"})
 
 
 class NextStopSchema(StopRefSchema):
+    """The next stop on a bus's route, with its ETA and aimed time."""
     eta_iso = fields.String(allow_none=True, metadata={"format": "date-time"})
     aimed_iso = fields.String(allow_none=True, metadata={"format": "date-time"})
 
 
 class NamesakeSchema(Schema):
+    """Another operator's vehicle that shares a bus_id: operator and line."""
     operator = fields.String(allow_none=True)
     line = fields.String(allow_none=True)
 
 
 class BusDetailSchema(BusFeaturePropertiesSchema):
-    """GET /bus/<bus_id>. Extends the properties every bus Feature carries
-    with the position and route detail only a single-bus lookup computes."""
+    """Schema of the GET /bus/<bus_id> response.
+
+    Extends the properties every bus Feature carries
+    with the position and route detail only a single-bus lookup computes.
+    """
     lat = fields.Float(allow_none=True)
     lon = fields.Float(allow_none=True)
     recorded_at = fields.String(allow_none=True, metadata={"format": "date-time"})
@@ -99,6 +114,7 @@ class BusDetailSchema(BusFeaturePropertiesSchema):
 
 
 class BusDetailQuerySchema(Schema):
+    """Query string of GET /bus/<bus_id>."""
     operator = fields.String(required=False, metadata={
         "description": "NOC to disambiguate a bus_id shared by more than one operator."})
 
@@ -108,12 +124,14 @@ class BusDetailQuerySchema(Schema):
 # ---------------------------------------------------------------------------
 
 class GeometrySchema(Schema):
+    """A GeoJSON geometry, loosely typed: a Point or a LineString."""
     type = fields.String(metadata={"description": "'Point' or 'LineString'"})
     coordinates = fields.Raw(metadata={
         "description": "[lon, lat] for a Point; [[lon, lat], ...] for a LineString."})
 
 
 class FeatureSchema(Schema):
+    """A GeoJSON Feature whose properties shape depends on its kind."""
     type = fields.String(dump_default="Feature")
     geometry = fields.Nested(GeometrySchema)
     properties = fields.Dict(metadata={
@@ -129,6 +147,7 @@ class BusesResponseSchema(Schema):
 
 
 class RouteResponseSchema(Schema):
+    """GeoJSON FeatureCollection returned by GET /route."""
     type = fields.String(dump_default="FeatureCollection")
     features = fields.List(fields.Nested(FeatureSchema))
     properties = fields.Dict(required=False, metadata={
@@ -141,6 +160,7 @@ class RouteQuerySchema(Schema):
     # must fail through the existing LINE_RE check (a 400 with the existing
     # {"error": "invalid line"} shape), not through webargs' own 422/error
     # shape, which would be a real behaviour change for that one case.
+    """Query string of GET /route."""
     line = fields.String(required=False, load_default='',
                           metadata={"description": "Published service number."})
     direction = fields.String(required=False, metadata={
@@ -156,6 +176,7 @@ class RouteQuerySchema(Schema):
 # ---------------------------------------------------------------------------
 
 class SearchMatchSchema(Schema):
+    """One locality match in a search result."""
     locality = fields.String(allow_none=True)
     locality_norm = fields.String()
     lat = fields.Float(allow_none=True)
@@ -164,6 +185,7 @@ class SearchMatchSchema(Schema):
 
 
 class SearchResponseSchema(Schema):
+    """Response of GET /search: matching localities, lines and bus ids."""
     query = fields.String()
     matches = fields.List(fields.Nested(SearchMatchSchema))
     lines = fields.List(fields.String())
@@ -171,6 +193,7 @@ class SearchResponseSchema(Schema):
 
 
 class SearchQuerySchema(Schema):
+    """Query string of GET /search."""
     q = fields.String(required=False, load_default='', metadata={
         "description": "Free-text locality or line search. Fewer than 2 "
                         "normalised characters returns an empty result."})
@@ -181,6 +204,7 @@ class SearchQuerySchema(Schema):
 # ---------------------------------------------------------------------------
 
 class ModelInfoResponseSchema(Schema):
+    """Response of GET /model-info: freshness and state of the dbt marts."""
     built_at = fields.String(allow_none=True, metadata={"format": "date-time"})
     n_models = fields.Integer(allow_none=True)
     duckdb = fields.Boolean()
@@ -194,6 +218,7 @@ class ModelInfoResponseSchema(Schema):
 
 
 class MetricsSummaryResponseSchema(Schema):
+    """Response of GET /metrics/summary: the dashboard's five headline numbers."""
     feed_age_s = fields.Integer(allow_none=True)
     buses_tracked_5m = fields.Integer(allow_none=True)
     positions_1h = fields.Integer(allow_none=True)
@@ -202,11 +227,13 @@ class MetricsSummaryResponseSchema(Schema):
 
 
 class PunctualitySystemSchema(Schema):
+    """System-wide on-time percentage and median delay."""
     pct_on_time = fields.Float(allow_none=True)
     median_delay_s = fields.Float(allow_none=True)
 
 
 class PunctualityModelFitSchema(Schema):
+    """Aggregate quality of the ETA models: R squared, weak-fit share and speed."""
     avg_r2 = fields.Float(allow_none=True)
     pct_weak_fit = fields.Float(allow_none=True)
     avg_speed_kmh = fields.Float(allow_none=True)
@@ -214,6 +241,7 @@ class PunctualityModelFitSchema(Schema):
 
 
 class WorstLineSchema(Schema):
+    """One row of the worst-lines punctuality table."""
     line = fields.String(allow_none=True)
     n_journeys = fields.Integer(allow_none=True)
     pct_on_time = fields.Float(allow_none=True)
@@ -222,6 +250,7 @@ class WorstLineSchema(Schema):
 
 
 class MetricsPunctualityResponseSchema(Schema):
+    """Response of GET /metrics/punctuality."""
     system = fields.Nested(PunctualitySystemSchema, allow_none=True)
     model_fit = fields.Nested(PunctualityModelFitSchema, allow_none=True)
     worst_lines = fields.List(fields.Nested(WorstLineSchema))

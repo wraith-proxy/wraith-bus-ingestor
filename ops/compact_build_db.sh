@@ -32,7 +32,8 @@
 #                        little space on / or vault2, or either history table
 #                        missing or under 9 distinct stats_date (a thin history
 #                        copied is a thin history kept)
-#   STAGE 1  backup      the whole file to /mnt/archive/build_db_backup/,
+#   STAGE 1  backup      the whole file to $COMPACT_BACKUP_DIR (set it in .env, e.g.
+#                        /mnt/vault2/build_db_backup; there is no default),
 #                        throttled, as .part until its size matches. This copy
 #                        is the rollback.
 #   STAGE 2  build       a fresh file beside the old one (same disk, so the

@@ -12,7 +12,14 @@ every quality rule must hold.
     contracts/validate.py --gtfs /tmp/candidate_gtfs.duckdb   # gate a GTFS refresh
 
 Exit code 0 if every obligation holds, 1 otherwise, so it can gate a build.
+Passing --marts selects gate mode: the marts file must open and at least one
+obligation must actually be checked, or the run fails ("nothing checked"). A bare
+run still degrades to a skip when an engine is unreachable (CI has none).
 Rules whose severity is 'info', and `text` rules, are reported but never fail.
+
+This module is a read-only checker. It must never write to a warehouse or to
+QuestDB (DuckDB files are opened read-only, QuestDB is only queried), and it
+never edits a contract; `--generated` regenerates into a temporary directory.
 """
 import argparse
 import json
@@ -59,14 +66,37 @@ OPERATORS = {
 
 
 class Result:
+    """Running tally of passes, failures, warnings and skips, printed as they happen.
+
+    Attributes:
+        failures: "what: detail" lines for unmet error-severity obligations.
+        warnings: "what: detail" lines for failed info-severity rules.
+        passes: Count of obligations that held.
+        skips: Count of obligations that could not be judged.
+    """
+
     def __init__(self):
+        """Start with nothing recorded."""
         self.failures, self.warnings, self.passes, self.skips = [], [], 0, 0
 
     def ok(self, what):
+        """Record and print a passing obligation.
+
+        Args:
+            what: Description of the obligation that held.
+        """
         self.passes += 1
         print(f"  \033[32mPASS\033[0m {what}")
 
     def fail(self, what, detail, severity="error"):
+        """Record and print an unmet obligation.
+
+        Args:
+            what: Description of the obligation.
+            detail: Why it was not met.
+            severity: "info" records a warning that never fails the run; any
+                other value records a failure.
+        """
         line = f"{what}: {detail}"
         if severity == "info":
             self.warnings.append(line)
@@ -76,6 +106,12 @@ class Result:
             print(f"  \033[31mFAIL\033[0m {line}")
 
     def skip(self, what, why):
+        """Record and print an obligation that could not be judged.
+
+        Args:
+            what: Description of the obligation.
+            why: Reason it was skipped.
+        """
         self.skips += 1
         print(f"  \033[90mSKIP\033[0m {what} ({why})")
 
@@ -84,9 +120,19 @@ class Result:
 # Engines
 # ---------------------------------------------------------------------------
 class DuckDBEngine:
+    """Read-only DuckDB file engine used to check the marts and served GTFS contracts."""
+
     name = "duckdb"
 
     def __init__(self, path):
+        """Open a DuckDB file read-only.
+
+        Args:
+            path: Path to the DuckDB database file.
+
+        Raises:
+            RuntimeError: If path does not exist or is a directory.
+        """
         import duckdb
         self.path = path
         if not os.path.exists(path):
@@ -96,34 +142,78 @@ class DuckDBEngine:
         self.con = duckdb.connect(path, read_only=True)
 
     def columns(self, table):
+        """Look up a table's columns.
+
+        Args:
+            table: Table name.
+
+        Returns:
+            {column name: upper-cased data type}; empty if the table is absent.
+        """
         rows = self.con.execute(
             "SELECT column_name, data_type FROM information_schema.columns "
             "WHERE table_name = ?", [table]).fetchall()
         return {name: dtype.upper() for name, dtype in rows}
 
     def scalar(self, sql):
+        """Run a query and return its first value.
+
+        Args:
+            sql: A query returning at least one row and column.
+
+        Returns:
+            The first column of the first row.
+        """
         return self.con.execute(sql).fetchone()[0]
 
     def quote(self, ident):
+        """Quote an identifier for this engine.
+
+        Args:
+            ident: Column or table name.
+
+        Returns:
+            The name double-quoted, with embedded quotes doubled.
+        """
         return '"{}"'.format(ident.replace('"', '""'))
 
     def scope(self, table):
+        """Return the SQL fragment that stands for the table in a check.
+
+        Args:
+            table: Table name.
+
+        Returns:
+            The quoted table name; DuckDB checks cover the whole table.
+        """
         return self.quote(table)
 
     def close(self):
+        """Close the connection."""
         self.con.close()
 
 
 class QuestDBEngine:
-    """QuestDB holds ~1e9 rows of append-only history, so validating the whole
+    """Engine that checks QuestDB over a recent window only.
+
+    QuestDB holds ~1e9 rows of append-only history, so validating the whole
     table is neither affordable nor meaningful -- the contract describes what the
     ingestor is landing NOW, and historical rows predate several of its clauses.
     Every check is therefore scoped to a recent window by substituting a bounded
-    subquery wherever a rule names the object."""
+    subquery wherever a rule names the object.
+
+    Only ever queries QuestDB over HTTP (/exec); it never writes.
+    """
 
     name = "questdb"
 
     def __init__(self, url, window_minutes=5):
+        """Point the engine at a QuestDB HTTP endpoint.
+
+        Args:
+            url: QuestDB HTTP base URL.
+            window_minutes: Recent window, in minutes, every check is scoped to.
+        """
         self.url = url.rstrip("/")
         self.window_minutes = window_minutes
 
@@ -136,27 +226,75 @@ class QuestDBEngine:
         return payload
 
     def columns(self, table):
+        """Look up a table's columns.
+
+        Args:
+            table: Table name.
+
+        Returns:
+            {column name: upper-cased QuestDB type}.
+
+        Raises:
+            RuntimeError: If QuestDB reports an error, for example a missing table.
+        """
         payload = self._exec(f"SELECT * FROM {table} LIMIT 0")
         return {c["name"]: c["type"].upper() for c in payload["columns"]}
 
     def scalar(self, sql):
+        """Run a query and return its first value.
+
+        Args:
+            sql: A query returning at least one row and column.
+
+        Returns:
+            The first column of the first row.
+
+        Raises:
+            RuntimeError: If QuestDB reports an error.
+        """
         return self._exec(sql)["dataset"][0][0]
 
     def quote(self, ident):
+        """Return an identifier for this engine.
+
+        Args:
+            ident: Column or table name.
+
+        Returns:
+            The name unchanged; QuestDB identifiers are not quoted here.
+        """
         return ident
 
     def scope(self, table):
+        """Return the SQL fragment that stands for the table in a check.
+
+        Args:
+            table: Table name.
+
+        Returns:
+            A subquery restricting the table to the recent window.
+        """
         return (f"(SELECT * FROM {table} "
                 f"WHERE timestamp > dateadd('m', -{self.window_minutes}, now()))")
 
     def close(self):
-        pass
+        """Nothing to release; QuestDB is queried statelessly over HTTP."""
 
 
 # ---------------------------------------------------------------------------
 # Contract validation
 # ---------------------------------------------------------------------------
 def types_compatible(declared, actual):
+    """Judge whether a declared physical type matches the engine's actual type.
+
+    Args:
+        declared: Physical type declared in the contract, for example "VARCHAR(18)".
+        actual: Type reported by the engine.
+
+    Returns:
+        True if they are equal, equal after dropping a length suffix, or listed
+        as aliases in TYPE_ALIASES.
+    """
     declared, actual = declared.upper(), actual.upper()
     if declared == actual:
         return True
@@ -168,7 +306,15 @@ def types_compatible(declared, actual):
 
 
 def check_quality(engine, res, rule, table, prop=None):
-    """Run one ODCS quality rule. Returns nothing; records into res."""
+    """Run one ODCS quality rule. Returns nothing; records into res.
+
+    Args:
+        engine: The engine to evaluate against.
+        res: Result that receives the pass, failure or skip.
+        rule: The ODCS quality rule dict.
+        table: Table (object) the rule belongs to.
+        prop: Property (column) the rule belongs to, or None for an object rule.
+    """
     rid = rule.get("id") or rule.get("name") or rule.get("metric") or "unnamed"
     where = f"{table}.{prop}" if prop else table
     label = f"{where} [{rid}]"
@@ -237,6 +383,17 @@ def check_quality(engine, res, rule, table, prop=None):
 
 
 def validate_contract(path, engines, res):
+    """Check one contract's objects, properties and quality rules against live data.
+
+    Args:
+        path: Path to an ODCS contract file.
+        engines: Available engines by server name or type ("duckdb", "gtfs-served",
+            "custom"); the contract's server picks one, falling back to "duckdb".
+        res: Result that receives every pass, failure and skip.
+
+    Returns:
+        The parsed contract.
+    """
     contract = yaml.safe_load(open(path))
     name = contract.get("name", os.path.basename(path))
     server = (contract.get("servers") or [{}])[0]
@@ -316,9 +473,12 @@ _BASE_TYPE_HOLDS = {
 
 
 def _check_through(link, by_alias, unvalidated, res):
-    """A link's `through` join table must resolve: known contract alias, an object
+    """Check that a link's `through` join table resolves.
+
+    A link's `through` join table must resolve: known contract alias, an object
     that exists in it, and every named column present.
-    A contract not validated this run cannot be judged, which is not drift."""
+    A contract not validated this run cannot be judged, which is not drift.
+    """
     through = link.get("through")
     if not through or through["contract"] in unvalidated:
         return
@@ -339,11 +499,14 @@ def _check_through(link, by_alias, unvalidated, res):
 
 
 def _check_pk_parity(obj, by_alias, unvalidated, res):
-    """The columns behind an object's primaryKey must be exactly the contract
+    """Check primaryKey parity between an ontology object and its contract object.
+
+    The columns behind an object's primaryKey must be exactly the contract
     object's primaryKey columns, for objects whose backingDatasets declare
     `grain: row`. Skips what it cannot judge:
     unbound keys, keys spread over several contract objects, or a contract
-    object that declares no primaryKey at all."""
+    object that declares no primaryKey at all.
+    """
     if not any(b.get("grain") == "row" for b in obj.get("backingDatasets", [])):
         return  # derived view (distinct values, an aggregate): its key may differ
     bindings = {p["apiName"]: p.get("binding") for p in obj.get("properties", [])}
@@ -365,9 +528,20 @@ def _check_pk_parity(obj, by_alias, unvalidated, res):
 
 
 def validate_ontology(path, contracts, res):
-    """Every ontology binding must resolve to a real contract property, and any
+    """Validate the ontology against the contracts.
+
+    Every ontology binding must resolve to a real contract property, and any
     enum stated in both places must agree. This is what stops the semantic layer
-    drifting away from the data underneath it."""
+    drifting away from the data underneath it.
+
+    Args:
+        path: Path to the ontology file.
+        contracts: Parsed contracts validated this run, by file basename.
+        res: Result that receives every pass, failure and skip.
+
+    Returns:
+        The parsed ontology.
+    """
     onto = yaml.safe_load(open(path))
     print(f"\n\033[1m{onto.get('name')} ontology v{onto.get('version')} "
           f"({onto.get('status')})\033[0m")
@@ -501,10 +675,19 @@ _METRIC_REF_RE = re.compile(r"\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b(?!\s*\()")
 
 
 def validate_ossie_model(path, onto, contracts, res):
-    """The Ossie model (objects, links, metrics) must agree with the Foundry-style ontology,
+    """Validate the Ossie model against the ontology and the contracts.
+
+    The Ossie model (objects, links, metrics) must agree with the Foundry-style ontology,
     which stays the source of bindings, and through it with the contracts: every dataset
     source names a real contract object, every field reads a real column and the column the
-    Foundry binding names, relationships and metrics use only declared datasets and fields."""
+    Foundry binding names, relationships and metrics use only declared datasets and fields.
+
+    Args:
+        path: Path to the Ossie model file.
+        onto: The parsed Foundry-style ontology, from validate_ontology.
+        contracts: Parsed contracts validated this run, by file basename.
+        res: Result that receives every pass, failure and skip.
+    """
     model = yaml.safe_load(open(path))
     print(f"\n\033[1m{model.get('name')} Ossie model v{model.get('version')}\033[0m")
     by_alias, unvalidated = {}, set()
@@ -611,6 +794,14 @@ def check_generated(root, generate=None):
 
     Only the modelgen version in the header line is tolerated; any other difference,
     a missing file or a stale generated file is a problem. `generate(workdir)` is injectable.
+
+    Args:
+        root: Repository root holding .modelgen.yml and the committed generated files.
+        generate: Callable taking a working directory and regenerating into it;
+            defaults to running modelgen there.
+
+    Returns:
+        One message per problem; empty when everything is in sync.
     """
     import tempfile
     root = str(root)
@@ -635,12 +826,23 @@ def check_generated(root, generate=None):
 
 
 def main():
+    """Run the validator from the command line.
+
+    Reads sys.argv (see the module docstring for the options), connects to the
+    engines that are available, validates each contract, then the ontology and
+    Ossie model, and prints a summary. With --generated it only checks generated
+    dbt files for drift.
+
+    Returns:
+        Process exit code: 0 if every obligation holds, otherwise 1.
+    """
     ap = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--contract", action="append", default=None,
                     help="ODCS contract to validate (repeatable; default: both)")
     ap.add_argument("--ontology", default=os.path.join(HERE, "wraith-bus-ingestor.ontology.yaml"))
-    ap.add_argument("--marts", default=DEFAULT_MARTS, help="path to the DuckDB marts file")
+    ap.add_argument("--marts", default=None,
+                    help="path to the DuckDB marts file (gate mode: nothing checked is a failure)")
     ap.add_argument("--gtfs", default=DEFAULT_GTFS, help="path to the served GTFS DuckDB file")
     ap.add_argument("--questdb", default=DEFAULT_QUESTDB)
     ap.add_argument("--questdb-window", type=int, default=5, metavar="MINUTES",
@@ -663,9 +865,10 @@ def main():
                               ("bus-positions.odcs.yaml", "bus-marts.odcs.yaml",
                                "gtfs-timetable.odcs.yaml")]
 
+    gate = args.marts is not None
     engines, res = {}, Result()
     try:
-        engines["duckdb"] = DuckDBEngine(args.marts)
+        engines["duckdb"] = DuckDBEngine(args.marts or DEFAULT_MARTS)
     except Exception as exc:
         print(f"\033[31mmarts unavailable:\033[0m {exc}")
     try:
@@ -701,6 +904,11 @@ def main():
         onto = validate_ontology(args.ontology, contracts, res)
         if os.path.exists(args.ossie):
             validate_ossie_model(args.ossie, onto, contracts, res)
+
+    if gate and "duckdb" not in engines:
+        res.fail("gate", "the marts file requested with --marts is unavailable: nothing checked")
+    elif gate and res.passes == 0 and not res.failures:
+        res.fail("gate", "no obligation was checked (every contract skipped): nothing checked")
 
     print(f"\n\033[1m{res.passes} passed, {len(res.failures)} failed, "
           f"{len(res.warnings)} warned, {res.skips} skipped\033[0m")

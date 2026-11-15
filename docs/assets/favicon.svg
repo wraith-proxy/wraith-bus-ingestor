@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Ghost Stack favicon: the ghost mark on an ink tile so it reads on light and dark tab bars. Original artwork. -->
+  <rect width="64" height="64" rx="14" fill="#0b1016"/>
+  <path fill="#5eead4" d="M12 55V28a20 20 0 0 1 40 0v27q-3.33 7-6.67 0t-6.67 0-6.66 0-6.67 0-6.67 0-6.66 0z"/>
+  <path d="M21 22l9 7-9 7" fill="none" stroke="#0b1016" stroke-width="5.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="34" y="31" width="11" height="5.5" rx="1" fill="#0b1016"/>
+</svg>

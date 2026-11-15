@@ -174,7 +174,7 @@ little space, or a history table missing or under 9 `stats_date`s (a thin
 history copied is a thin history kept). Logs go to
 `ops/logs/compact-<UTC stamp>/compact.log`. A run that fails before the swap
 leaves the old file untouched; a failure after STAGE 1 leaves a stamped ~10G
-backup in `/mnt/<archive>/build_db_backup/` that is safe to delete.
+backup in `$COMPACT_BACKUP_DIR` (on vault2, e.g. `/mnt/vault2/build_db_backup/`) that is safe to delete.
 
 Rollback needs both the backup restored (the `rsync` line it prints) **and**
 the pre-PR2 code checked out: the backup still has `shoelace_term` and nine

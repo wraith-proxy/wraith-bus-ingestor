@@ -20,6 +20,10 @@ State is a per-vehicle running sum, not a list of pings, and lives in memory: it
 is lost on restart and re-seeded from QuestDB by app.py. It resets when the
 journey changes or the GTFS file is swapped (pattern ids only mean something
 within one build).
+
+Must never touch a database, the network or the filesystem: it holds only
+in-memory per-vehicle state, and callers (app.py) feed it pings and read the
+result. It must never raise on missing coordinates; those pings are skipped.
 """
 
 import math
@@ -40,8 +44,20 @@ M_PER_DEG_LON = 111320.0
 
 
 def distance_m(lat, lon, stops):
-    """Metres from a point to the polyline through these stops, in a local flat
-    projection (fine at bus scale). inf for fewer than one usable stop."""
+    """Return the distance in metres from a point to the polyline through these stops.
+
+    Measured in a local flat
+    projection (fine at bus scale). inf for fewer than one usable stop.
+
+    Args:
+        lat: Latitude of the ping, in degrees.
+        lon: Longitude of the ping, in degrees.
+        stops: Stop dicts with "lat" and "lon" keys, in route order; stops missing
+            either are ignored.
+
+    Returns:
+        Distance in metres, or math.inf when no stop has usable coordinates.
+    """
     kx = M_PER_DEG_LON * math.cos(math.radians(lat))
     pts = [((s['lon'] - lon) * kx, (s['lat'] - lat) * M_PER_DEG_LAT)
            for s in stops if s.get('lat') is not None and s.get('lon') is not None]
@@ -64,8 +80,25 @@ def _label(cand):
 
 
 def observe(vehicle, journey, gen, cands, lat, lon, ts, seeding=False):
-    """Add one ping to a vehicle's trail. A live ping (seeding=False) ahead of a
-    seeded one marks where live data starts, so seeding never double-counts it."""
+    """Add one ping to a vehicle's trail.
+
+    A live ping (seeding=False) ahead of a seeded one marks where live data starts, so seeding
+    never double-counts it.
+
+    Args:
+        vehicle: Vehicle key the trail is stored under.
+        journey: Journey identifier; a change resets the trail.
+        gen: GTFS build generation; a change resets the trail.
+        cands: Candidate patterns from gtfs.candidates, each with "direction",
+            "pattern_id" and "stops".
+        lat: Ping latitude, or None to skip the ping.
+        lon: Ping longitude, or None to skip the ping.
+        ts: Recorded-at timestamp string of the ping, or None.
+        seeding: True when replaying history rather than a live ping.
+
+    Returns:
+        None. The vehicle's trail is updated in place.
+    """
     if lat is None or lon is None or len(cands) < 2:
         return
     if not seeding:
@@ -100,7 +133,17 @@ def observe(vehicle, journey, gen, cands, lat, lon, ts, seeding=False):
 
 
 def needs_seed(vehicle, journey, gen):
-    """True once per (vehicle, journey): the caller should backfill its trail."""
+    """True once per (vehicle, journey): the caller should backfill its trail.
+
+    Args:
+        vehicle: Vehicle key.
+        journey: Journey identifier.
+        gen: GTFS build generation.
+
+    Returns:
+        True the first time it is asked for a vehicle with a live trail for this
+            journey, otherwise False.
+    """
     with _lock:
         t = _trails.get(vehicle)
         if t is None or t['journey'] != journey or t['gen'] != gen or t['seeded']:
@@ -110,7 +153,18 @@ def needs_seed(vehicle, journey, gen):
 
 
 def choose(vehicle, journey, gen, cands):
-    """(candidate, resolved). resolved is False when the prior was used."""
+    """(candidate, resolved). resolved is False when the prior was used.
+
+    Args:
+        vehicle: Vehicle key.
+        journey: Journey identifier.
+        gen: GTFS build generation.
+        cands: Candidate patterns, prior first (the order gtfs.candidates returns).
+
+    Returns:
+        A tuple (candidate, resolved). resolved is True for a single candidate or a
+            clear lead, False when the prior was used.
+    """
     if len(cands) == 1:
         return cands[0], True
     prior = cands[0]
@@ -133,7 +187,14 @@ def choose(vehicle, journey, gen, cands):
 
 
 def prune(now=None):
-    """Forget vehicles not seen for FORGET_S; at most once a minute."""
+    """Forget vehicles not seen for FORGET_S; at most once a minute.
+
+    Args:
+        now: Epoch seconds to treat as the present; defaults to time.time().
+
+    Returns:
+        None. Stale trails are dropped in place.
+    """
     now = now or time.time()
     if now - _pruned['at'] < 60:
         return

@@ -4,6 +4,10 @@ A live (operator, line) that already exists in gtfs_route_patterns needs no
 alias. For the rest, a bus's origin_ref/dest_ref pin it to a GTFS pattern
 (first_atco/last_atco), which names the GTFS operator+line it really runs.
 Never raises on a QuestDB failure: degrades to the previous served table.
+
+This module only reads QuestDB (a bounded 24h query) and writes into the
+DuckDB connection it is given; it must never write to QuestDB or to the
+previously served database, which it only attaches read-only.
 """
 import csv
 import json
@@ -98,8 +102,11 @@ def _learn(con, rows):
 
 
 def _load_review(con):
-    """Allowlist from the review csv: only accepted pairs with no reject row (reject wins).
-    Missing/unparseable csv means an empty allowlist: fail closed, never fail the refresh."""
+    """Build the allowlist from the review csv.
+
+    Only accepted pairs with no reject row (reject wins).
+    Missing/unparseable csv means an empty allowlist: fail closed, never fail the refresh.
+    """
     con.execute(
         "create or replace temp table _allow(lo varchar, ll varchar, go varchar, gl varchar)"
     )
@@ -144,8 +151,11 @@ def _apply_allowlist(con):
 
 
 def _rules(con):
-    """Prefix rows generated from GTFS alone. A rule never shadows a real match:
-    if GTFS itself publishes the prefixed label, the row is not emitted."""
+    """Generate prefix rows from GTFS alone.
+
+    A rule never shadows a real match:
+    if GTFS itself publishes the prefixed label, the row is not emitted.
+    """
     for op, prefix in PREFIX_RULES.items():
         con.execute("""insert into gtfs_line_alias
             select ?, ? || line, ?, line, NULL, NULL, 'rule'
@@ -156,9 +166,12 @@ def _rules(con):
 
 
 def _carry(con, previous_db_path, seen_live=False):
-    """Copy still-valid previous aliases: live pair must still lack a pattern, the
+    """Copy still-valid previous aliases.
+
+    The live pair must still lack a pattern, the
     target must still exist. With seen_live, labels the fresh window covered are
-    left to it (a fresh drop as ambiguous must not be resurrected)."""
+    left to it (a fresh drop as ambiguous must not be resurrected).
+    """
     if not previous_db_path or not os.path.exists(previous_db_path):
         print("build_alias: no previous DB, nothing carried over", flush=True)
         return
@@ -199,6 +212,21 @@ def _carry(con, previous_db_path, seen_live=False):
 
 
 def build_alias(con, questdb_http, previous_db_path):
+    """Build the gtfs_line_alias table on a connection.
+
+    Learns aliases from live data, filters them through the review allowlist,
+    carries over still-valid previous aliases and adds the prefix rules.
+
+    Args:
+        con: DuckDB connection that already holds gtfs_route_patterns and
+            gtfs_agency.
+        questdb_http: QuestDB HTTP base URL.
+        previous_db_path: Path to the previously served database, or a falsy
+            value when there is none.
+
+    Returns:
+        The number of rows in gtfs_line_alias.
+    """
     _load_review(con)
     try:
         rows = _fetch(questdb_http)

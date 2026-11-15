@@ -15,6 +15,10 @@ Coverage caveat: BODS GTFS has no TfL (TFLO) timetable, so routes and line
 localities are empty for London. Stop coordinates come from NaPTAN, which does
 cover London, so the destination-distance ETA and geometric delay still work
 there.
+
+Must never write to the GTFS database, hold a connection open between calls,
+or raise to a caller because the file is missing or unreadable. Building the
+database is gtfs/fetch.py's job, not this module's.
 """
 
 import os
@@ -76,6 +80,12 @@ def _check():
 
 
 def available():
+    """Whether the GTFS database is present and the duckdb driver importable.
+
+    Returns:
+        True when lookups can be answered, False when every lookup will return no
+            answer.
+    """
     _check()
     return _state['mtime'] is not None and duckdb is not None
 
@@ -102,9 +112,11 @@ def _clean(text):
 
 
 def _pack(items):
-    """Many strings as ONE bound parameter, for `unnest(string_split(?, chr(30)))`.
+    """Pack many strings into ONE bound parameter for `unnest(string_split(?, chr(30)))`.
+
     Binding a Python list makes DuckDB do a failed import lookup per element,
-    which cost 6 s for a poll's worth of keys."""
+    which cost 6 s for a poll's worth of keys.
+    """
     return chr(30).join(items)
 
 
@@ -114,7 +126,14 @@ def _stop_dict(atco, name, locality, lat, lon, seq=None, secs=None):
 
 
 def prime(atcos):
-    """Fill the stop cache for many ATCO codes in one query (one poll's worth)."""
+    """Fill the stop cache for many ATCO codes in one query (one poll's worth).
+
+    Args:
+        atcos: Iterable of ATCO codes; falsy and already cached codes are skipped.
+
+    Returns:
+        None. The stop cache is filled in place; unknown codes are cached as None.
+    """
     _check()
     want = sorted({a for a in atcos if a and a not in _stops})
     if not want:
@@ -132,7 +151,14 @@ def prime(atcos):
 
 
 def stop(atco):
-    """{'atco','name','locality','lat','lon',...} for an ATCO code, or None."""
+    """{'atco','name','locality','lat','lon',...} for an ATCO code, or None.
+
+    Args:
+        atco: ATCO code of the stop; falsy returns None.
+
+    Returns:
+        Stop dict with atco, name, locality, lat and lon, or None when unknown.
+    """
     if not atco:
         return None
     _check()
@@ -142,13 +168,15 @@ def stop(atco):
 
 
 def _load_candidates(keys):
-    """Fill _cands for many (operator, line, origin_ref, dest_ref) keys with three
-    queries in one connection, not three per key: a cold poll has over a thousand
+    """Fill _cands for many (operator, line, origin_ref, dest_ref) keys in one connection.
+
+    Uses three queries in one connection, not three per key: a cold poll has over a thousand
     keys, and one query each would take longer than the request budget.
 
     The live (operator, line) is taken as the timetable spells it if the
     timetable has it, else through the reviewed alias table (which never shadows
-    a real match; checking exact first keeps it so)."""
+    a real match; checking exact first keeps it so).
+    """
     if not available():
         return
     try:
@@ -203,8 +231,17 @@ def _load_candidates(keys):
 
 
 def prime_routes(keys):
-    """Batch-load candidates for the (operator, line, origin_ref, dest_ref) keys
-    of one poll; keys already cached, or missing a field, are skipped."""
+    """Batch-load candidates for the keys of one poll.
+
+    The keys are (operator, line, origin_ref, dest_ref); keys already cached, or missing a
+    field, are skipped.
+
+    Args:
+        keys: Iterable of (operator, line, origin_ref, dest_ref) tuples.
+
+    Returns:
+        None. The candidate cache is filled in place.
+    """
     _check()
     todo = sorted({k for k in keys if all(k) and k not in _cands})
     if todo:
@@ -212,10 +249,22 @@ def prime_routes(keys):
 
 
 def candidates(operator, line, origin_ref, dest_ref):
-    """Every timetable pattern of this line that runs origin_ref -> dest_ref,
-    most-run first (trip_share desc, then lowest pattern_id, so the order is
+    """List every timetable pattern of this line that runs origin_ref -> dest_ref.
+
+    Most-run first (trip_share desc, then lowest pattern_id, so the order is
     total). [] when the line is not in the timetable or no pattern matches the
-    endpoints. Each: {pattern_id, direction, trip_share, is_circular, stops}."""
+    endpoints. Each: {pattern_id, direction, trip_share, is_circular, stops}.
+
+    Args:
+        operator: Operator code (NOC).
+        line: Published service number.
+        origin_ref: ATCO code of the journey origin.
+        dest_ref: ATCO code of the journey destination.
+
+    Returns:
+        List of candidate pattern dicts, most-run first; empty when none match or any
+            argument is falsy.
+    """
     key = (operator, line, origin_ref, dest_ref)
     if not all(key):
         return []
@@ -250,10 +299,13 @@ _GTFS_SECS_MACRO = (
 
 
 def _local_date_and_secs(epoch_ms):
-    """(YYYYMMDD, seconds-since-local-midnight) for an epoch-millis timestamp,
+    """Convert an epoch-millis timestamp to a local (YYYYMMDD, seconds) pair.
+
+    The pair is (YYYYMMDD, seconds-since-local-midnight)
     in Europe/London -- the same zone the dbt side and app.py's hour_band /
     day_type use. None on a bad value rather than raising: a malformed
-    aimed-departure field must just fail to pin, not break the poll."""
+    aimed-departure field must just fail to pin, not break the poll.
+    """
     try:
         dt = datetime.fromtimestamp(int(epoch_ms) / 1000.0, tz=_LOCAL_TZ)
     except (TypeError, ValueError, OSError, OverflowError):
@@ -262,8 +314,9 @@ def _local_date_and_secs(epoch_ms):
 
 
 def _load_pins(keys):
-    """Fill _pins for many (operator, line, origin_ref, aimed_dep_ms) keys in
-    one connection. Two interpretations per key are tried and unioned before
+    """Fill _pins for many (operator, line, origin_ref, aimed_dep_ms) keys.
+
+    Done in one connection. Two interpretations per key are tried and unioned before
     counting distinct trips, because GTFS times run past 24:00:00 for a
     service that started the previous calendar day: 'today, plain
     seconds-of-day' and 'yesterday, seconds-of-day + 86400' (a trip departing
@@ -271,7 +324,8 @@ def _load_pins(keys):
     is pinned only if the union of both interpretations resolves to exactly
     one trip_id -- if either interpretation alone is ambiguous but the other
     is empty, or both agree on the same trip, it still counts as one; if they
-    disagree, that is a genuine ambiguity and the key is left unpinned."""
+    disagree, that is a genuine ambiguity and the key is left unpinned.
+    """
     if not available():
         return
     try:
@@ -363,9 +417,11 @@ def _load_pins(keys):
 
 
 def _pin_interpretations(dep_ms):
-    """(date, secs) pairs to try for one aimed-departure timestamp: today's
-    calendar date at plain seconds-of-day, and yesterday's at +86400, per the
-    GTFS past-midnight convention -- see _load_pins."""
+    """Return the (date, secs) pairs to try for one aimed-departure timestamp.
+
+    These are today's calendar date at plain seconds-of-day, and yesterday's at +86400,
+    per the GTFS past-midnight convention -- see _load_pins.
+    """
     parsed = _local_date_and_secs(dep_ms)
     if parsed is None:
         return []
@@ -379,8 +435,17 @@ def _pin_interpretations(dep_ms):
 
 
 def prime_pins(keys):
-    """Batch-load trip pins for (operator, line, origin_ref, aimed_dep_ms)
-    keys; keys already cached, or missing a field, are skipped."""
+    """Batch-load trip pins for the given keys.
+
+    The keys are (operator, line, origin_ref, aimed_dep_ms); keys already cached, or missing
+    a field, are skipped.
+
+    Args:
+        keys: Iterable of (operator, line, origin_ref, aimed_dep_ms) tuples.
+
+    Returns:
+        None. The pin cache is filled in place.
+    """
     _check()
     todo = sorted({key for key in keys if all(key) and key not in _pins})
     if todo:
@@ -388,14 +453,25 @@ def prime_pins(keys):
 
 
 def pin_trip(operator, line, origin_ref, aimed_dep_ms):
-    """{'trip_id', 'anchor_epoch_s', 'stops': [{'atco','seq','arr_secs',
-    'dep_secs'}, ...]} for the one GTFS trip this vehicle's current journey
-    unambiguously matches by (operator, line, origin stop, exact aimed
-    departure) -- or None if it does not pin (no match, more than one match,
-    or a missing field). See the module note above for why exact-match only.
-    anchor_epoch_s + any stop's arr_secs/dep_secs is that stop's real
-    wall-clock epoch (see _load_pins for why a plain "local midnight" does
-    not always work). stops is the WHOLE trip, ordered by stop_sequence."""
+    """Return the one GTFS trip a vehicle's journey pins to, or None.
+
+    Result is {'trip_id', 'anchor_epoch_s', 'stops':
+    [{'atco','seq','arr_secs', 'dep_secs'}, ...]} for the one GTFS trip this vehicle's current
+    journey unambiguously matches by (operator, line, origin stop, exact aimed departure) -- or
+    None if it does not pin (no match, more than one match, or a missing field). See the module
+    note above for why exact-match only. anchor_epoch_s + any stop's arr_secs/dep_secs is that
+    stop's real wall-clock epoch (see _load_pins for why a plain "local midnight" does not always
+    work). stops is the WHOLE trip, ordered by stop_sequence.
+
+    Args:
+        operator: Operator code (NOC).
+        line: Published service number.
+        origin_ref: ATCO code of the journey origin.
+        aimed_dep_ms: Aimed departure from the origin, epoch milliseconds.
+
+    Returns:
+        The pinned trip dict described above, or None when the journey does not pin.
+    """
     key = (operator, line, origin_ref, aimed_dep_ms)
     if not all(key):
         return None
@@ -420,11 +496,13 @@ def _route_dict(stops, operator, r_dir, direction):
 
 
 def _load_lines(keys):
-    """Fill _lines for many (operator, line, direction) keys, operator present,
-    in one connection. A cold poll has over a thousand distinct keys and a
+    """Fill _lines for many (operator, line, direction) keys in one connection.
+
+    Operator is present on every key. A cold poll has over a thousand distinct keys and a
     connection each took ~80 s. Same resolution as _load_candidates; the pattern
     chosen is the primary one in the requested direction if there is one, else
-    outbound, else the one with most trips."""
+    outbound, else the one with most trips.
+    """
     if not available():
         return
     try:
@@ -472,8 +550,16 @@ def _load_lines(keys):
 
 
 def prime_lines(keys):
-    """Batch-load line routes for (operator, line, direction) keys; keys already
-    cached, or without an operator or line, are skipped."""
+    """Batch-load line routes for (operator, line, direction) keys.
+
+    Keys already cached, or without an operator or line, are skipped.
+
+    Args:
+        keys: Iterable of (operator, line, direction) tuples.
+
+    Returns:
+        None. The line cache is filled in place.
+    """
     _check()
     todo = sorted({k for k in keys if k[0] and k[1] and k not in _lines},
                   key=lambda k: tuple(f or '' for f in k))
@@ -482,10 +568,21 @@ def prime_lines(keys):
 
 
 def line_route(operator, line, direction=None):
-    """One representative route for a line, for the map's route overlay:
-    {stops, operator, direction, source}, or None. Chooses among the primary
-    patterns: the requested direction if it exists, else outbound, else any;
-    with no operator, the one carrying the most trips."""
+    """Return one representative route for a line, for the map's route overlay.
+
+    Shape: {stops, operator, direction, source}, or None. Chooses among the primary patterns: the
+    requested direction if it exists, else outbound, else any; with no operator, the one carrying
+    the most trips.
+
+    Args:
+        operator: Operator code (NOC), or falsy to pick across operators.
+        line: Published service number; falsy returns None.
+        direction: Preferred direction, or None.
+
+    Returns:
+        Dict with stops, operator, direction and source, or None when the line has no
+            route.
+    """
     if not line:
         return None
     _check()
@@ -506,7 +603,14 @@ def line_route(operator, line, direction=None):
 
 
 def line_localities(norms):
-    """{locality_norm: {line, ...}} for the search box. Empty for TfL."""
+    """{locality_norm: {line, ...}} for the search box. Empty for TfL.
+
+    Args:
+        norms: Iterable of normalised locality names; falsy entries are ignored.
+
+    Returns:
+        Dict mapping each locality_norm that has lines to the set of line names.
+    """
     norms = sorted({n for n in norms if n})
     if not norms:
         return {}

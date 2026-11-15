@@ -5,6 +5,11 @@ out of the dbt marts (a DuckDB file built by a separate job). The marts are
 optional by design: if the file is missing, half-written or a table is absent
 the API still answers, with status "unknown" and null predictions, rather
 than 500ing.
+
+Must never fail a request because the marts, the GTFS database or QuestDB's
+optional columns are unavailable (degrade to null predictions instead), and
+must never interpolate unvalidated user input into SQL: bus_id, operator and
+line are whitelisted by regex first.
 """
 
 import json
@@ -40,10 +45,11 @@ CORS(app)
 
 
 class _ScriptNamePrefix:
-    """Tells Flask's own url_for() that every URL it generates is reached
-    externally via /api/... , without changing which path Flask matches an
-    INCOMING request against (that's PATH_INFO, untouched here -- routes stay
-    registered at bare paths like every other one in this file).
+    """Make Flask's url_for() emit externally reachable /api/... URLs.
+
+    Tells Flask's own url_for() that every URL it generates is reached externally via /api/...,
+    without changing which path Flask matches an INCOMING request against (that's PATH_INFO,
+    untouched here -- routes stay registered at bare paths like every other one in this file).
 
     ghost-site's nginx does `location /api/ { proxy_pass http://api/; }`
     (trailing slash) -- strips /api/ before forwarding, the same bug class as
@@ -60,7 +66,8 @@ class _ScriptNamePrefix:
     is exactly the WSGI mechanism for "the app knows its own routes as X, but
     the world reaches it at PREFIX+X" -- so url_for('...openapi_json') now
     correctly comes out as /api/openapi.json, matching what nginx actually
-    exposes, while routing itself is unaffected."""
+    exposes, while routing itself is unaffected.
+    """
     def __init__(self, wsgi_app, prefix):
         self.wsgi_app = wsgi_app
         self.prefix = prefix
@@ -239,7 +246,15 @@ _logged = set()
 
 
 def log_once(key, message):
-    """Complain about a broken dependency once, not once per request."""
+    """Complain about a broken dependency once, not once per request.
+
+    Args:
+        key: Identifier of the failure; only the first message per key is printed.
+        message: Text to print, prefixed with "[bus] ".
+
+    Returns:
+        None.
+    """
     if key not in _logged:
         _logged.add(key)
         print(f'[bus] {message}', flush=True)
@@ -250,7 +265,17 @@ def log_once(key, message):
 # --------------------------------------------------------------------------
 
 def haversine_km(lat1, lon1, lat2, lon2):
-    """Great-circle distance in km."""
+    """Great-circle distance in km.
+
+    Args:
+        lat1: Latitude of the first point, degrees.
+        lon1: Longitude of the first point, degrees.
+        lat2: Latitude of the second point, degrees.
+        lon2: Longitude of the second point, degrees.
+
+    Returns:
+        Distance in kilometres.
+    """
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dp = p2 - p1
     dl = math.radians(lon2 - lon1)
@@ -259,7 +284,14 @@ def haversine_km(lat1, lon1, lat2, lon2):
 
 
 def classify_status(delay_s):
-    """RAG bucket for a delay in seconds. See the threshold block above."""
+    """RAG bucket for a delay in seconds. See the threshold block above.
+
+    Args:
+        delay_s: Delay in seconds (positive is late), or None.
+
+    Returns:
+        One of 'early', 'on_time', 'late' or 'unknown' (when delay_s is None).
+    """
     if delay_s is None:
         return 'unknown'
     if delay_s > LATE_THRESHOLD_S:
@@ -270,8 +302,16 @@ def classify_status(delay_s):
 
 
 def normalise_query(q):
-    """Match localities.locality_norm: upper, punctuation stripped,
-    whitespace collapsed, trimmed."""
+    """Normalise a query to match localities.locality_norm.
+
+    Upper, punctuation stripped, whitespace collapsed, trimmed.
+
+    Args:
+        q: Raw user search text.
+
+    Returns:
+        The normalised string; empty when nothing remains.
+    """
     if not q:
         return ''
     s = re.sub(r'[^A-Z0-9 ]+', ' ', str(q).upper())
@@ -287,7 +327,11 @@ def local_zone():
     zoneinfo is stdlib but python:3.11-slim carries no zone database, so the
     image pip-installs `tzdata`. If that ever goes missing we must degrade, not
     crash: on UTC every band is an hour out during BST and the grain quietly
-    coarsens, which is survivable; a stack trace per request is not."""
+    coarsens, which is survivable; a stack trace per request is not.
+
+    Returns:
+        A ZoneInfo for Europe/London, or datetime.UTC when zone data is unavailable.
+    """
     if not _local_tz['resolved']:
         _local_tz['resolved'] = True
         if ZoneInfo is None:
@@ -306,8 +350,16 @@ def local_zone():
 
 
 def local_dt(epoch_s):
-    """Epoch seconds as a Europe/London datetime. Every temporal grain -- both
-    hour_band and day_type -- is derived from this and never from UTC."""
+    """Epoch seconds as a Europe/London datetime.
+
+    Every temporal grain -- both hour_band and day_type -- is derived from this and never from UTC.
+
+    Args:
+        epoch_s: Seconds since the Unix epoch.
+
+    Returns:
+        A timezone-aware datetime in Europe/London.
+    """
     return datetime.fromtimestamp(float(epoch_s), tz=local_zone())
 
 
@@ -317,7 +369,14 @@ def day_type(dt):
     Saturday and Sunday operation differs from Mon-Fri in both frequency and
     running time, so they are fitted separately. Bank holidays run a Sunday-ish
     service and are deliberately NOT handled -- they file as 'weekday'. Building
-    a holiday calendar is out of scope; this is the documented gap."""
+    a holiday calendar is out of scope; this is the documented gap.
+
+    Args:
+        dt: A local datetime.
+
+    Returns:
+        'weekday', 'sat' or 'sun'.
+    """
     weekday = dt.weekday()
     if weekday == 5:
         return 'sat'
@@ -327,9 +386,17 @@ def day_type(dt):
 
 
 def hour_band(dt):
-    """Bucket a LOCAL hour into the bands the dbt model groups on. The marts
-    carry '*' fallback rows, so a disagreement over the boundaries degrades to a
-    coarser model rather than to no model at all."""
+    """Bucket a LOCAL hour into the bands the dbt model groups on.
+
+    The marts carry '*' fallback rows, so a disagreement over the boundaries degrades to a coarser
+    model rather than to no model at all.
+
+    Args:
+        dt: A local datetime.
+
+    Returns:
+        The hour-band label the dbt model groups on.
+    """
     h = dt.hour
     if h < 6 or h >= 22:
         return 'night'
@@ -357,7 +424,19 @@ def pick_model(models, operator, line, direction, day, band):
     columns, so it need not agree with the live feed; and while the marts are
     being rebuilt they may carry no day_type at all, in which case every row
     is filed under '*'. Any mismatch must fall through to a coarser grain
-    rather than yield no prediction."""
+    rather than yield no prediction.
+
+    Args:
+        models: Mapping of grain keys to eta_models rows, as loaded from the marts.
+        operator: Operator code (NOC), or None.
+        line: Published service number.
+        direction: Journey direction, or None.
+        day: Day type from day_type().
+        band: Hour band from hour_band().
+
+    Returns:
+        The most specific matching row, or None when no grain matches.
+    """
     rungs = []
     if operator:
         rungs.extend([
@@ -385,9 +464,17 @@ def pick_model(models, operator, line, direction, day, band):
 
 
 def display_name(value):
-    """The feed hands us names with underscores for spaces
-    (`Stockport_Interchange`). Only swap them back when the string has no real
-    spaces, so a genuinely underscored name survives."""
+    """The feed hands us names with underscores for spaces (`Stockport_Interchange`).
+
+    Only swap them back when the string has no real spaces, so a genuinely underscored name
+    survives.
+
+    Args:
+        value: Stop or place name as supplied by the feed; may be None.
+
+    Returns:
+        The name with underscores turned back into spaces where appropriate.
+    """
     if not value:
         return None
     value = str(value)
@@ -400,12 +487,28 @@ gtfs.name_fn = display_name
 
 
 def iso_from_epoch_s(seconds):
+    """Format epoch seconds as an ISO 8601 UTC string ending in Z.
+
+    Args:
+        seconds: Seconds since the Unix epoch, or None.
+
+    Returns:
+        The ISO string, or None when seconds is None.
+    """
     if seconds is None:
         return None
     return datetime.fromtimestamp(float(seconds), tz=UTC).isoformat().replace('+00:00', 'Z')
 
 
 def iso_from_millis(millis):
+    """Format epoch milliseconds as an ISO 8601 UTC string ending in Z.
+
+    Args:
+        millis: Milliseconds since the Unix epoch, or None.
+
+    Returns:
+        The ISO string, or None when millis is None or not numeric.
+    """
     if millis is None:
         return None
     try:
@@ -415,7 +518,14 @@ def iso_from_millis(millis):
 
 
 def epoch_from_qdb_timestamp(value):
-    """QuestDB hands back '2026-09-12T09:03:00.000000Z'."""
+    """QuestDB hands back '2026-09-12T09:03:00.000000Z'.
+
+    Args:
+        value: QuestDB timestamp string, or falsy.
+
+    Returns:
+        Epoch seconds as a float, or None when value is empty or unparseable.
+    """
     if not value:
         return None
     try:
@@ -459,10 +569,13 @@ _last_eta = {}
 
 
 def _table_columns(con, table):
-    """Columns a mart actually has. The dbt side is rebuilt independently, so
+    """Return the columns a mart actually has.
+
+    The dbt side is rebuilt independently, so
     for a while wraith_bus_ingestor.duckdb still carries the pre-day_type shape. Detect
     rather than assume: a missing column must degrade the grain, not throw and
-    disable every prediction."""
+    disable every prediction.
+    """
     try:
         rows = con.execute(
             'SELECT column_name FROM information_schema.columns '
@@ -568,8 +681,13 @@ def _load_marts(path):
 
 
 def get_marts():
-    """Cached marts, reloaded when the file's mtime moves. The mtime is checked
-    at most once a minute."""
+    """Cached marts, reloaded when the file's mtime moves.
+
+    The mtime is checked at most once a minute.
+
+    Returns:
+        The cached marts dict; its "ok" key says whether the data is usable.
+    """
     state = _marts_state
     if state['data'] is not None and time.time() - state['checked'] < MARTS_TTL:
         return state['data']
@@ -615,21 +733,50 @@ _columns_cache = {'cols': None, 'checked': 0.0}
 
 
 def qdb_exec(sql):
+    """Run a SQL query against QuestDB over HTTP /exec.
+
+    Args:
+        sql: SQL text; the caller is responsible for validating anything interpolated.
+
+    Returns:
+        The decoded JSON response.
+
+    Raises:
+        urllib.error.URLError: If QuestDB is unreachable or answers with an HTTP
+            error.
+    """
     url = QUESTDB_URL + '/exec?query=' + urllib.parse.quote(sql)
     with urllib.request.urlopen(url, timeout=QUESTDB_TIMEOUT) as resp:
         return json.load(resp)
 
 
 def qdb_rows(sql):
-    """Run a query and return rows as dicts keyed by column name."""
+    """Run a query and return rows as dicts keyed by column name.
+
+    Args:
+        sql: SQL text, as for qdb_exec.
+
+    Returns:
+        List of dicts keyed by column name.
+
+    Raises:
+        urllib.error.URLError: If QuestDB is unreachable or answers with an HTTP
+            error.
+    """
     payload = qdb_exec(sql)
     names = [c['name'] for c in payload.get('columns', [])]
     return [dict(zip(names, row)) for row in payload.get('dataset', [])]
 
 
 def available_columns():
-    """The enriched columns are created lazily by the ingestor's ILP writes, so
-    select only what actually exists or QuestDB 400s the whole query."""
+    """Return the enriched columns that exist on bus_positions.
+
+    The enriched columns are created lazily by the ingestor's ILP writes, so
+    select only what actually exists or QuestDB 400s the whole query.
+
+    Returns:
+        Set of column names present on bus_positions.
+    """
     now = time.time()
     if _columns_cache['cols'] is None or now - _columns_cache['checked'] > MARTS_TTL:
         try:
@@ -643,6 +790,11 @@ def available_columns():
 
 
 def select_columns():
+    """Columns to select from bus_positions: the base set plus those extras that exist.
+
+    Returns:
+        List of column names.
+    """
     have = available_columns()
     return BASE_COLUMNS + [c for c in EXTRA_COLUMNS if c in have]
 
@@ -659,6 +811,13 @@ def live_buses(bus_id=None, operator=None):
 
     operator narrows a single-bus lookup to one namesake. It is validated by the
     caller against BUS_ID_RE, like bus_id, because it is interpolated into SQL.
+
+    Args:
+        bus_id: Restrict to this bus_id; validated against BUS_ID_RE by the caller.
+        operator: Restrict to this operator (NOC); validated by the caller.
+
+    Returns:
+        List of row dicts, newest per vehicle.
     """
     cols = ', '.join(select_columns())
     where = f"timestamp > dateadd('m', -{FRESHNESS_MINUTES}, now())"
@@ -675,6 +834,15 @@ def live_buses(bus_id=None, operator=None):
 
 
 def bus_history(bus_id, operator=None):
+    """Recent pings of one bus, newest first.
+
+    Args:
+        bus_id: Bus identifier; validated against BUS_ID_RE by the caller.
+        operator: Operator (NOC) to disambiguate namesakes; validated by the caller.
+
+    Returns:
+        List of dicts with lat, lon and timestamp (at most 500).
+    """
     where = f"bus_id = '{bus_id}' AND timestamp > dateadd('m', -{HISTORY_MINUTES}, now())"
     if operator:
         where = f"operator = '{operator}' AND {where}"
@@ -692,7 +860,17 @@ def schedule_epoch_s(millis, now_s, max_age_s, max_ahead_s):
 
     The feed keeps republishing a vehicle's last journey until it logs on to the
     next one, so an overnight bus advertises yesterday's timetable. Those records
-    are not late buses, they are dead records."""
+    are not late buses, they are dead records.
+
+    Args:
+        millis: Aimed time, epoch milliseconds, or None.
+        now_s: Current epoch seconds.
+        max_age_s: Oldest acceptable age of the aimed time, seconds.
+        max_ahead_s: Furthest acceptable distance into the future, seconds.
+
+    Returns:
+        The aimed time in epoch seconds, or None when missing or out of the window.
+    """
     if millis is None:
         return None
     try:
@@ -709,7 +887,17 @@ def nearest_stop(stops, lat, lon):
     """Closest stop of this route to a position, within STOP_MATCH_KM.
 
     A plain scan: a route has tens of stops, and this runs only for the buses
-    the distance method could not rate, so no spatial index is worth holding."""
+    the distance method could not rate, so no spatial index is worth holding.
+
+    Args:
+        stops: Stop dicts of the route, with lat and lon.
+        lat: Vehicle latitude.
+        lon: Vehicle longitude.
+
+    Returns:
+        A tuple (stop, distance_km); (None, None) when no stop is within
+            STOP_MATCH_KM.
+    """
     if lat is None or lon is None:
         return None, None
     best, best_km = None, STOP_MATCH_KM
@@ -751,7 +939,18 @@ def progress_delay(row, stops, now_s, lat, lon):
 
     Errors in absolute speed cancel too, which is the point: the ETA
     regression's in-sample MAE is 6-11 minutes, wider than the 6-minute on-time
-    window, so it cannot carry the RAG classification on its own."""
+    window, so it cannot carry the RAG classification on its own.
+
+    Args:
+        row: Live vehicle row.
+        stops: Route stop dicts, in order, with scheduled seconds.
+        now_s: Current epoch seconds.
+        lat: Vehicle latitude.
+        lon: Vehicle longitude.
+
+    Returns:
+        A tuple (delay_s, matched_stop); (None, None) when the delay cannot be judged.
+    """
     departed = schedule_epoch_s(row.get('origin_aimed_dep'), now_s,
                                 MAX_SCHEDULE_AGE_S, MAX_SCHEDULE_AHEAD_S)
     aimed_arr = schedule_epoch_s(row.get('dest_aimed_arr'), now_s,
@@ -802,7 +1001,8 @@ def _delay_from_fraction(fraction, departed, scheduled, now_s):
        journey's timetable against this vehicle" are the same picture. The
        ceiling is a fraction of the journey's own scheduled duration, floored so
        that short workings are not held to an implausibly tight bound. See
-       STALE_JOURNEY_FRACTION for the evidence and the proper fix."""
+       STALE_JOURNEY_FRACTION for the evidence and the proper fix.
+    """
     if fraction >= ARRIVED_FRACTION:
         return None                # arrived; see (1)
     fraction = min(1.0, max(0.0, fraction))
@@ -816,7 +1016,9 @@ def _delay_from_fraction(fraction, departed, scheduled, now_s):
 
 
 def geometric_progress_delay(row, marts, now_s):
-    """Same idea as progress_delay, but measuring progress as plain distance
+    """Estimate delay from plain distance covered between origin and destination.
+
+    Same idea as progress_delay, but measuring progress as plain distance
     covered between the origin and destination stops.
 
     progress_delay needs the bus to be near a stop the marts already know on
@@ -825,7 +1027,16 @@ def geometric_progress_delay(row, marts, now_s):
     on almost every vehicle, so it covers most of the fleet. It assumes progress
     is uniform in distance rather than in time -- crude in town centres -- but it
     is unbiased at both ends, and at the destination it collapses to exactly the
-    arrival-vs-timetable comparison."""
+    arrival-vs-timetable comparison.
+
+    Args:
+        row: Live vehicle row.
+        marts: Marts dict (unused when the stops come from GTFS).
+        now_s: Current epoch seconds.
+
+    Returns:
+        Delay in seconds, or None when it cannot be judged.
+    """
     departed = schedule_epoch_s(row.get('origin_aimed_dep'), now_s,
                                 MAX_SCHEDULE_AGE_S, MAX_SCHEDULE_AHEAD_S)
     aimed_arr = schedule_epoch_s(row.get('dest_aimed_arr'), now_s,
@@ -877,7 +1088,16 @@ def position_is_live(row, now_s):
     ingested the row: a stale record is re-served to us every 60 seconds and so
     always looks new. Vehicles with no recorded_at at all (pre-patch rows, and
     operators that omit it) are let through -- the five-minute ingest window is
-    the only freshness signal available for those."""
+    the only freshness signal available for those.
+
+    Args:
+        row: Live vehicle row.
+        now_s: Current epoch seconds.
+
+    Returns:
+        True when the position is fresh enough to trust, False for a replayed dead
+            record.
+    """
     recorded = row.get('recorded_at')
     if recorded is None:
         return True
@@ -889,18 +1109,37 @@ def position_is_live(row, now_s):
 
 
 def pinned_trip(row):
-    """The GTFS trip this row's journey unambiguously pins to (ROADMAP.md
+    """Return the GTFS trip this row's journey unambiguously pins to, or None.
+
+    The trip is the one the journey pins to (ROADMAP.md
     1.13.0 / ADR-0008 Phase 2), or None. A thin wrapper over gtfs.pin_trip
     keyed the same way journey_key() keys a journey, so a repeated call for
-    the same journey is a cache hit, not a re-query."""
+    the same journey is a cache hit, not a re-query.
+
+    Args:
+        row: Live vehicle row.
+
+    Returns:
+        The pinned trip dict from gtfs.pin_trip, or None.
+    """
     return gtfs.pin_trip(row.get('operator'), row.get('line'),
                          row.get('origin_ref'), row.get('origin_aimed_dep'))
 
 
 def pinned_stop_arrival(pin, atco):
-    """This pinned trip's real wall-clock arrival epoch at one stop, or None
+    """Return a pinned trip's wall-clock arrival epoch at one stop, or None.
+
+    This is the pinned trip's real wall-clock arrival epoch at one stop, or None
     if the stop is not on it (should not happen for origin/dest, which is how
-    the pin was found, but a defensive lookup costs nothing)."""
+    the pin was found, but a defensive lookup costs nothing).
+
+    Args:
+        pin: Pinned trip dict from pinned_trip().
+        atco: ATCO code of the stop.
+
+    Returns:
+        Arrival in epoch seconds, or None when the stop is not on the trip.
+    """
     if pin is None or not atco:
         return None
     for st in pin['stops']:
@@ -910,14 +1149,24 @@ def pinned_stop_arrival(pin, atco):
 
 
 def pinned_eta(row, now_s):
-    """(predicted_epoch_s, eta_iso) from a pinned trip's own scheduled
+    """Return (predicted_epoch_s, eta_iso) from a pinned trip's own timetable.
+
+    (predicted_epoch_s, eta_iso) from a pinned trip's own scheduled
     arrival at this journey's destination, or (None, None) if the trip does
     not pin. This is the timetable ITSELF, not a delay adjustment -- delay
     still comes from progress_delay/geometric_progress_delay exactly as
     before; a pinned vehicle still gets progress-based lateness on top,
     same as any other. The reasonableness window is the same one
     schedule_epoch_s applies to the feed's own aimed times, since a pinned
-    arrival is exactly that sort of value."""
+    arrival is exactly that sort of value.
+
+    Args:
+        row: Live vehicle row.
+        now_s: Current epoch seconds.
+
+    Returns:
+        A tuple (predicted_epoch_s, eta_iso); (None, None) when the trip does not pin.
+    """
     pin = pinned_trip(row)
     aimed = pinned_stop_arrival(pin, row.get('dest_ref'))
     if aimed is None:
@@ -935,7 +1184,16 @@ def pinned_eta(row, now_s):
 
 
 def predict(row, marts, now_s):
-    """Return (properties-fragment, model, predicted_epoch_s)."""
+    """Return (properties-fragment, model, predicted_epoch_s).
+
+    Args:
+        row: Live vehicle row.
+        marts: Marts dict from get_marts().
+        now_s: Current epoch seconds.
+
+    Returns:
+        A tuple (properties fragment, model, predicted_epoch_s).
+    """
     line = row.get('line')
     direction = row.get('direction')
     operator = row.get('operator')
@@ -1064,6 +1322,16 @@ def predict(row, marts, now_s):
 
 
 def bus_properties(row, marts, now_s):
+    """GeoJSON properties for one bus: identity, names, times, ETA and status.
+
+    Args:
+        row: Live vehicle row.
+        marts: Marts dict from get_marts().
+        now_s: Current epoch seconds.
+
+    Returns:
+        A tuple (properties dict, model, predicted_epoch_s).
+    """
     frag, model, predicted = predict(row, marts, now_s)
     props = {
         'bus_id': row.get('bus_id'),
@@ -1083,11 +1351,19 @@ def bus_properties(row, marts, now_s):
 
 
 def prefetch_timetable(rows, sync_seed=False):
-    """Load, in two queries, every stop position and route pattern this poll
-    will ask for. Left to the per-bus lookups it would be thousands of queries
-    on the first poll after a GTFS refresh. Then feed each ambiguous bus's
-    latest ping to the pattern tiebreak (sync_seed: backfill a new trail before
-    returning, for a single-bus request, instead of in the background)."""
+    """Load, in two queries, every stop position and route pattern this poll will ask for.
+
+    Left to the per-bus lookups it would be thousands of queries on the first poll after a GTFS
+    refresh. Then feed each ambiguous bus's latest ping to the pattern tiebreak (sync_seed:
+    backfill a new trail before returning, for a single-bus request, instead of in the background).
+
+    Args:
+        rows: Live vehicle rows of one poll.
+        sync_seed: True to backfill new trails before returning.
+
+    Returns:
+        None. Caches are filled as a side effect.
+    """
     gtfs.prime([r.get(k) for r in rows for k in ('origin_ref', 'dest_ref')])
     gtfs.prime_routes({(r.get('operator'), r.get('line'), r.get('origin_ref'),
                         r.get('dest_ref')) for r in rows})
@@ -1106,12 +1382,30 @@ SEED_CHUNK = 200         # bus ids per QuestDB query, to keep the URL short
 
 
 def journey_key(row):
+    """Key identifying a vehicle's current journey.
+
+    Args:
+        row: Live vehicle row.
+
+    Returns:
+        A tuple (journey_ref, origin_ref, origin_aimed_dep).
+    """
     return (row.get('journey_ref'), row.get('origin_ref'), row.get('origin_aimed_dep'))
 
 
 def observe_trails(rows, sync_seed=False):
-    """Score the latest ping of every bus with more than one candidate pattern,
-    and queue the ones without a trail for backfilling."""
+    """Score the latest ping of every multi-candidate bus and queue trail backfills.
+
+    Score the latest ping of every bus with more than one candidate pattern,
+    and queue the ones without a trail for backfilling.
+
+    Args:
+        rows: Live vehicle rows of one poll.
+        sync_seed: True to backfill new trails before returning.
+
+    Returns:
+        None.
+    """
     gen = gtfs.generation
     unseeded = []
     for r in rows:
@@ -1135,9 +1429,19 @@ def observe_trails(rows, sync_seed=False):
 
 
 def seed_trails(items, gen):
-    """Backfill trails from the last SEED_MINUTES of QuestDB pings, so an API
+    """Backfill trails from the last SEED_MINUTES of QuestDB pings.
+
+    Backfill trails from the last SEED_MINUTES of QuestDB pings, so an API
     restart or a newly seen vehicle does not start with no evidence. Failure
-    just leaves the prior in charge."""
+    just leaves the prior in charge.
+
+    Args:
+        items: Tuples (vehicle, journey, candidates) needing backfill.
+        gen: GTFS build generation the candidates belong to.
+
+    Returns:
+        None. Failures are swallowed.
+    """
     try:
         cols = available_columns()
         if 'journey_ref' not in cols or 'origin_aimed_dep' not in cols:
@@ -1169,8 +1473,16 @@ def seed_trails(items, gen):
 
 
 def stop_lookup(atco):
-    """A stop's name and position from its ATCO code, from NaPTAN via the GTFS
-    database. National, so London resolves too."""
+    """A stop's name and position from its ATCO code, from NaPTAN via the GTFS database.
+
+    National, so London resolves too.
+
+    Args:
+        atco: ATCO code, or falsy.
+
+    Returns:
+        Stop dict, or None when unknown or atco is falsy.
+    """
     return gtfs.stop(atco) if atco else None
 
 
@@ -1184,7 +1496,15 @@ def route_for(row):
        not pinned to this journey ('gtfs_line').
     3. Nothing ([], 'none'): a line the timetable lacks, which today means
        London. Callers must not trust a stop sequence that lacks the bus's own
-       origin and destination; progress_delay checks."""
+       origin and destination; progress_delay checks.
+
+    Args:
+        row: Live vehicle row.
+
+    Returns:
+        A tuple (stops, source) where source is e.g. 'gtfs_pattern',
+            'gtfs_pattern_unresolved', 'gtfs_line' or 'none'.
+    """
     operator, line = row.get('operator'), row.get('line')
     cands = gtfs.candidates(operator, line, row.get('origin_ref'), row.get('dest_ref'))
     if cands:
@@ -1199,7 +1519,15 @@ def route_for(row):
 
 
 def find_last_stop(pings, stops):
-    """Newest ping that sits within 100 m of a stop on this line."""
+    """Newest ping that sits within 100 m of a stop on this line.
+
+    Args:
+        pings: Pings, newest first, each with lat, lon and timestamp.
+        stops: Stop dicts of the route.
+
+    Returns:
+        A tuple (stop, timestamp); (None, None) when no ping is near a stop.
+    """
     for ping in pings:
         lat, lon = ping.get('lat'), ping.get('lon')
         if lat is None or lon is None:
@@ -1266,6 +1594,12 @@ def _build_buses():
               'content': {'application/json': {'schema': schemas.BusesResponseSchema}}},
     })
 def buses():
+    """GET /buses: the live fleet as a cached GeoJSON FeatureCollection.
+
+    Returns:
+        The cached JSON response, or a 503 with an empty FeatureCollection when it
+            cannot be built.
+    """
     with _buses_lock:
         if _buses_cache['body'] is None or time.time() - _buses_cache['at'] >= BUSES_TTL:
             _buses_cache['body'] = _build_buses()     # failures are not cached
@@ -1287,11 +1621,21 @@ def buses():
 )
 @buses_blp.alt_response(503, schema=schemas.ApiErrorSchema, description='QuestDB unavailable.')
 def bus_detail(args, bus_id):
-    """One vehicle. bus_id alone is not unique across operators, so an optional
-    ?operator=<NOC> selects one namesake. Old clients send only bus_id and keep
-    working: with namesakes and no operator the FRESHEST one is returned
-    (deterministic, unlike the arbitrary first row this used to hand back) and
-    the payload lists who else answers to that id in `same_bus_id`."""
+    """One vehicle.
+
+    bus_id alone is not unique across operators, so an optional ?operator=<NOC> selects one
+    namesake. Old clients send only bus_id and keep working: with namesakes and no operator the
+    FRESHEST one is returned (deterministic, unlike the arbitrary first row this used to hand back)
+    and the payload lists who else answers to that id in `same_bus_id`.
+
+    Args:
+        args: Validated query arguments; may carry "operator".
+        bus_id: Bus identifier from the URL path.
+
+    Returns:
+        The bus detail dict, or a tuple of a JSON error and status 400 (invalid id),
+            404 (not live) or 503 (upstream unavailable).
+    """
     if not BUS_ID_RE.match(bus_id or ''):
         return jsonify({"error": "invalid bus_id"}), 400
     operator = args.get('operator') or None
@@ -1398,12 +1742,21 @@ def bus_detail(args, bus_id):
 
 
 def road_snapped_geometry(stops):
-    """[[lon, lat], ...] following real roads through these stops in order,
+    """Return [[lon, lat], ...] following real roads through the stops, or None.
+
+    [[lon, lat], ...] following real roads through these stops in order,
     via the self-hosted OSRM car profile (overview=full for the detailed
     shape, not OSRM's default simplified one). None on any failure --
     unreachable OSRM, a stop pair with no drivable path, a timeout -- so the
     caller can fall back to the straight stop-to-stop line rather than
-    breaking the map."""
+    breaking the map.
+
+    Args:
+        stops: Stop dicts in order, with lat and lon.
+
+    Returns:
+        List of [lon, lat] coordinates, or None on any failure.
+    """
     coords = ';'.join('{:.6f},{:.6f}'.format(s['lon'], s['lat']) for s in stops)
     path = urllib.parse.quote(coords, safe=',;')
     url = f'{OSRM_URL}/route/v1/driving/{path}?overview=full&geometries=geojson&steps=false'
@@ -1420,10 +1773,21 @@ def road_snapped_geometry(stops):
 
 
 def route_stops_for_line(operator, line, direction):
-    """Stop sequence plus how it was resolved, for /api/route: the timetable's
-    primary pattern. Returns (stops, operator, direction, day_type, source); the
-    day_type is always None (patterns are not day-specific) and is kept only so
-    the response shape does not change for clients."""
+    """Return the stop sequence plus how it was resolved, for /api/route.
+
+    Stop sequence plus how it was resolved, for /api/route:
+    the timetable's primary pattern. Returns (stops, operator, direction, day_type, source); the
+    day_type is always None (patterns are not day-specific) and is kept only so the response shape
+    does not change for clients.
+
+    Args:
+        operator: Operator code (NOC), or None.
+        line: Published service number.
+        direction: Requested direction, or None.
+
+    Returns:
+        A tuple (stops, operator, direction, day_type, source).
+    """
     found = gtfs.line_route(operator, line, direction)
     if found:
         return (found['stops'], found['operator'], found['direction'], None,
@@ -1437,14 +1801,25 @@ def route_stops_for_line(operator, line, direction):
 @buses_blp.alt_response(400, schema=schemas.ApiErrorSchema,
                          description='Invalid line, direction, day_type or operator.')
 def route(args):
-    """GeoJSON for drawing a line on the map: its stop sequence as a dotted
-    LineString, the stops themselves, and the buses currently working it.
+    """Return GeoJSON for drawing a line on the map.
+
+    GeoJSON for drawing a line on the map:
+    its stop sequence as a dotted LineString, the stops themselves, and the buses currently working
+    it.
 
     `line` is user-controlled via the query string and is interpolated into
     nothing here -- stop lookup is entirely in-memory against the marts, and
     the live-bus filter compares in Python -- but it is still whitelisted
     up front, same discipline as bus_id, because it flows into the response
-    unexamined otherwise."""
+    unexamined otherwise.
+
+    Args:
+        args: Validated query arguments: line, direction, day_type, operator.
+
+    Returns:
+        The FeatureCollection dict, or a tuple of a JSON error and status 400 for an
+            invalid parameter.
+    """
     line = args.get('line', '')
     direction = args.get('direction') or None
     day = args.get('day_type') or None   # validated, then ignored
@@ -1560,6 +1935,15 @@ def route(args):
 @search_blp.arguments(schemas.SearchQuerySchema, location='query')
 @search_blp.response(200, schemas.SearchResponseSchema)
 def search(args):
+    """GET /search: localities, lines and bus ids matching free text.
+
+    Args:
+        args: Validated query arguments; "q" is the search text.
+
+    Returns:
+        Dict with query, matches, lines and bus_ids; empty lists for under two
+            normalised characters.
+    """
     raw = args.get('q', '')
     norm = normalise_query(raw)
     empty = {"query": raw, "matches": [], "lines": [], "bus_ids": []}
@@ -1622,6 +2006,14 @@ STALE_AFTER_HOURS = 7 * 24
 
 
 def marts_age_hours(marts):
+    """Age of the marts build in hours.
+
+    Args:
+        marts: Marts dict from get_marts().
+
+    Returns:
+        Hours since built_at rounded to two places, or None when unknown.
+    """
     if not marts.get('built_at'):
         return None
     built = epoch_from_qdb_timestamp(marts['built_at'])
@@ -1642,6 +2034,11 @@ MARTS_NOTES = {
 @system_blp.route('/model-info')
 @system_blp.response(200, schemas.ModelInfoResponseSchema)
 def model_info():
+    """GET /model-info: freshness and state of the dbt marts.
+
+    Returns:
+        Dict describing the marts state, age and staleness.
+    """
     marts = get_marts()
     age = marts_age_hours(marts)
     reload_state = marts.get('reload_state')
@@ -1696,10 +2093,16 @@ WORST_LINES_MIN_JOURNEYS = 50
 @system_blp.route('/metrics/summary')
 @system_blp.response(200, schemas.MetricsSummaryResponseSchema)
 def metrics_summary():
-    """The five headline numbers from the dashboard's top row. Each is its
-    own qdb_exec call and fails independently -- a QuestDB hiccup on one
-    query shouldn't blank out the four that would have worked, the same
-    reasoning bus_detail() already applies to last_stop/next_stop."""
+    """The five headline numbers from the dashboard's top row.
+
+    Each is its own qdb_exec call and fails independently -- a QuestDB hiccup on one query
+    shouldn't blank out the four that would have worked, the same reasoning bus_detail() already
+    applies to last_stop/next_stop.
+
+    Returns:
+        Dict of the five headline numbers (each may be null), independently of each
+            other.
+    """
     def scalar(sql, key):
         try:
             rows = qdb_rows(sql)
@@ -1728,12 +2131,19 @@ def metrics_summary():
 @system_blp.response(200, schemas.MetricsPunctualityResponseSchema)
 @system_blp.alt_response(503, schema=schemas.ApiErrorSchema, description='QuestDB unavailable.')
 def metrics_punctuality():
-    """System-wide on-time %, delay and ETA model fit, plus the worst lines
+    """Return system-wide punctuality, ETA model fit and the worst lines.
+
+    System-wide on-time %, delay and ETA model fit, plus the worst lines
     table -- the same rollup dbt/publish_punctuality_summary.py writes into
     QuestDB and the same queries the dashboard's 'Punctuality & ETA models'
     row runs. The per-line rollup is a volume-weighted approximation from
     grain-level medians, not a true per-journey percentage -- see that
-    script's own docstring for what it does and doesn't measure."""
+    script's own docstring for what it does and doesn't measure.
+
+    Returns:
+        Dict with system, model_fit and worst_lines, or a tuple of a JSON error and
+            status 503 when QuestDB is unavailable.
+    """
     try:
         system = qdb_rows(
             "select 100.0*sum(on_time_journeys)/sum(n_journeys) as pct_on_time, "

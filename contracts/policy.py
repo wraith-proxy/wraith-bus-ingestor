@@ -3,6 +3,11 @@
 check_change(base, head) compares two contract files and returns the policy
 violations of going from base to head. sunset/backfill are customProperties
 entries ({property, value}) on a schema property.
+
+This module is the pure policy check behind the contract change gate: it reads
+two contract files (and optionally a directory of compiled SQL) and reports
+violations. It must never open a live database or warehouse, and never modify
+any contract file.
 """
 
 from dataclasses import dataclass
@@ -19,12 +24,20 @@ BACKFILLS = {"derive", "null-before", "replay"}
 
 @dataclass(frozen=True)
 class Violation:
+    """One policy violation found by check_change.
+
+    Attributes:
+        code: Stable machine-readable violation code, for example
+            "removal-without-sunset".
+        message: Human-readable description naming the table.column at fault.
+    """
+
     code: str
     message: str
 
 
 def _columns(doc):
-    """{(table, column): property dict}"""
+    """Map (table, column) to its property dict."""
     return {
         (obj["name"], p["name"]): p
         for obj in doc.get("schema", [])
@@ -53,8 +66,11 @@ def _physical_names(doc):
 
 
 def _table_name(t, physical):
-    """Contract table a FROM item reads: its name, or the object whose physicalName
-    matches the file path of a read_parquet/read_csv/... table function."""
+    """Name the contract table a FROM item reads.
+
+    Its name, or the object whose physicalName
+    matches the file path of a read_parquet/read_csv/... table function.
+    """
     if t.name:
         return t.name
     fn = t.this
@@ -133,13 +149,38 @@ def _breaking_change(old, new):
 
 
 def removed_contracts(base_listing, root: Path) -> list[str]:
-    """Contract files on base (paths like contracts/x.odcs.yaml) missing under root."""
+    """Contract files on base (paths like contracts/x.odcs.yaml) missing under root.
+
+    Args:
+        base_listing: Paths of files present on the base ref; only those ending
+            in ".odcs.yaml" are considered.
+        root: Directory the paths are resolved against.
+
+    Returns:
+        The contract paths from base_listing that do not exist under root.
+    """
     return [f for f in base_listing if f.endswith(".odcs.yaml") and not (Path(root) / f).exists()]
 
 
 def check_change(
     base: Path, head: Path, *, today: date | None = None, compiled_sql_dir: Path | None = None
 ) -> list[Violation]:
+    """Compare two contract files and return the policy violations of going from base to head.
+
+    Args:
+        base: Contract file as it is on the base ref.
+        head: Contract file as it is on the head ref.
+        today: Date used to judge sunsets; defaults to date.today().
+        compiled_sql_dir: Optional directory of compiled SQL files. When given, a
+            removed column that any file still reads is a violation.
+
+    Returns:
+        The violations found; an empty list means the change is allowed.
+
+    Raises:
+        FileNotFoundError: If base or head does not exist.
+        yaml.YAMLError: If either file is not valid YAML.
+    """
     base_doc = yaml.safe_load(Path(base).read_text())
     head_doc = yaml.safe_load(Path(head).read_text())
     base_cols, head_cols = _columns(base_doc), _columns(head_doc)
@@ -203,6 +244,19 @@ def check_change(
 
 
 def main(argv):
+    """Command-line entry point for the contract change gate.
+
+    Usage is either `base head [compiled_sql_dir]` to run check_change and print
+    one "code: message" line per violation, or `--deleted listing [root]` to report
+    contract files present on origin/main but missing under root.
+
+    Args:
+        argv: Command-line arguments, without the program name.
+
+    Returns:
+        Process exit code: 1 if any violation or deleted contract was reported,
+        otherwise 0.
+    """
     if argv and argv[0] == "--deleted":
         listing, root = argv[1], argv[2] if len(argv) > 2 else "."
         gone = removed_contracts(Path(listing).read_text().split(), Path(root))

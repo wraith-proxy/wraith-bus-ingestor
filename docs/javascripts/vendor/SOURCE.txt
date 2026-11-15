@@ -1,0 +1,5 @@
+mermaid.min.js: Mermaid 11.17.2 (MIT), the mermaid@11 dist build from the npm registry.
+Vendored so the published site fetches nothing from third parties (about 3.4 MB, an
+accepted cost of that sovereignty, see #61). Material loads its own copy only when
+`mermaid` is undefined; extra_javascript in mkdocs.yml defines it first.
+To update: replace the file and bump the version in this note.

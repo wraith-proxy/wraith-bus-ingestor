@@ -1,6 +1,13 @@
-"""Ready gate: validate the whole extract window against its contract, then write
+"""Validate the extract window against its contract and write the readiness marker.
+
+Ready gate: validate the whole extract window against its contract, then write
 the readiness marker only when every error-severity check passes. Warning-severity
-rules never block. A failed validation never writes the marker."""
+rules never block. A failed validation never writes the marker.
+
+This module reads Parquet extracts with an in-memory DuckDB and writes only the
+marker file. It must never touch a live QuestDB or the warehouse, and it must
+never write the marker after a failed check.
+"""
 
 import operator
 import os
@@ -62,7 +69,17 @@ def _failures(contract: dict, data_dir: Path) -> list[str]:
 
 
 def validate(contract: Path, data_dir: Path, marker: Path) -> bool:
-    """True and marker written when the extract meets the contract; else False, no marker."""
+    """True and marker written when the extract meets the contract; else False, no marker.
+
+    Args:
+        contract: Path to the ODCS contract YAML.
+        data_dir: Directory holding the extract Parquet files.
+        marker: Path of the readiness marker to write on success.
+
+    Returns:
+        True if every error-severity check passed and the marker was written,
+        False otherwise (nothing written).
+    """
     doc = yaml.safe_load(Path(contract).read_text())
     fails = _failures(doc, Path(data_dir))
     for f in fails:

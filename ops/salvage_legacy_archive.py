@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""One-off: salvage the 63 archived days whose symbol maps were lost into Parquet.
+r"""One-off: salvage the 63 archived days whose symbol maps were lost into Parquet.
 
 Kept for provenance, not routine use (docs/adr/0006, docs/adr/0007). Days
 archived before the 2026-09-18 schema migration hold `bus_id` and `line` as
@@ -10,7 +10,7 @@ per day: `timestamp`, `lat`, `lon`, `bearing`, plus the raw `bus_id_key` /
 `line_key` integers (meaningless without the lost maps, kept so nothing that
 survived is thrown away). The file's key/value metadata says so.
 
-    uv run --no-project --with numpy --with pyarrow --with duckdb \\
+    uv run --no-project --with numpy --with pyarrow --with duckdb \
         python ops/salvage_legacy_archive.py            # every old-layout day
         python ops/salvage_legacy_archive.py 2026-08-31 # one day
 
@@ -23,6 +23,9 @@ QuestDB pre-sizes column files, so each holds a short run of zero padding after
 the real rows. It is trimmed, and every assumption is asserted rather than
 trusted: the zeros are contiguous at the tail, the real rows are monotonic and
 inside the day, and the real row count appears in the partition's own `_txn`.
+
+This module must never modify the raw archive and never overwrite an existing
+Parquet file.
 """
 import glob
 import os
@@ -44,16 +47,47 @@ NOTE = (
 
 
 def column(day_dir, name, dtype):
+    """Read one raw QuestDB column file from a partition directory.
+
+    Args:
+        day_dir: Partition directory for the day.
+        name: Column name.
+        dtype: NumPy dtype string of the stored values.
+
+    Returns:
+        The column's values as a NumPy array, padding included.
+    """
     (path,) = glob.glob(os.path.join(day_dir, f"{name}.d*"))  # versioned, e.g. line.d.9
     return np.fromfile(path, dtype)
 
 
 def is_legacy(day_dir):
+    """Report whether a partition uses the old layout (has `vehicle_id` files).
+
+    Args:
+        day_dir: Partition directory for the day.
+
+    Returns:
+        True for an old-layout day.
+    """
     return bool(glob.glob(os.path.join(day_dir, "vehicle_id.*")))
 
 
 def salvage_day(day_dir, dest):
-    """Write `dest` from the raw partition at `day_dir`; return the row count."""
+    """Write `dest` from the raw partition at `day_dir`; return the row count.
+
+    Args:
+        day_dir: Raw partition directory, named for the day.
+        dest: Parquet file to write, via a `.part` file and an atomic rename.
+
+    Returns:
+        The number of real rows written.
+
+    Raises:
+        AssertionError: If any layout assumption fails (no rows, padding not at
+            the tail, rows out of order or outside the day, row count absent
+            from `_txn`).
+    """
     day = os.path.basename(day_dir)
     raw_ts = column(day_dir, "timestamp", "<i8")
     n = int((raw_ts > 0).sum())
@@ -89,6 +123,11 @@ def salvage_day(day_dir, dest):
 
 
 def main(days):
+    """Salvage the given days, or every old-layout day when none are given.
+
+    Args:
+        days: Day names (YYYY-MM-DD) to salvage; empty or None means all.
+    """
     archive = hostenv.get("ARCHIVE_PATH")
     RAW = os.path.join(archive, "bus_positions")
     OUT = os.path.join(archive, "bus_positions_parquet")
